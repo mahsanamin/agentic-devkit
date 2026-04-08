@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# summarizer — Unified CLI for Slack summary system
+#
+# Subcommands:
+#   sendSummary              Poll Slack + filter + summarize + send to DM
+#   createReport             Aggregate last 24h data into a daily report
+#   createReport --no-send   Generate report without sending to Slack DM
+#   consolidate              Consolidate all data into living docs
+#   check                    Validate config and connectivity
+#   list-channels            Fetch available channels from Slack proxy
+#   help                     Show usage
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.env
+[[ -f "$SCRIPT_DIR/config.env" ]] && source "$SCRIPT_DIR/config.env"
+DATA_DIR="${DATA_DIR:-$SCRIPT_DIR}"
+
+# Ensure PATH includes tools needed by child scripts (python3, claude, curl).
+# Critical for cron which runs with a minimal environment.
+export HOME="${HOME:-$(eval echo ~)}"
+for p in "$HOME/.nvm/versions/node/"*/bin "$HOME/.asdf/shims" /opt/homebrew/bin /usr/local/bin; do
+    # Expand glob, skip if no match
+    for resolved in $p; do
+        [[ -d "$resolved" && ":$PATH:" != *":$resolved:"* ]] && export PATH="$resolved:$PATH"
+    done
+done
+
+# Claude CLI stores OAuth token in macOS Keychain, which cron can't access.
+# Extract it and export as CLAUDE_CODE_OAUTH_TOKEN so Claude works in any context.
+if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    KEYCHAIN_TOKEN=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+        | python3 -c "import json,sys; print(json.load(sys.stdin).get('claudeAiOauth',{}).get('accessToken',''))" 2>/dev/null || true)
+    if [[ -n "$KEYCHAIN_TOKEN" ]]; then
+        export CLAUDE_CODE_OAUTH_TOKEN="$KEYCHAIN_TOKEN"
+    fi
+fi
+
+usage() {
+    cat <<EOF
+Usage: ./summarizer <command> [options]
+
+Commands:
+  sendSummary                        Poll Slack, filter new messages, summarize, and send to DM
+  createReport [options]             Aggregate last 24h filtered data into a daily report
+    --output <path>                  Save report to a custom path (default: \$DATA_DIR/summaries/YYYY-MM-DD/daily_report.md)
+    --no-send                        Skip sending report to Slack DM
+  consolidate [options]              Consolidate all data into living docs (links.md, latest_summary.md)
+    --dry-run                        Show what would be done without writing
+    --delete-old                     Delete summary messages older than ${DELETE_OLDER_THAN_DAYS:-7} days from Slack DM
+  check                              Validate config, proxy, channels, Claude auth
+  list-channels [--raw]              Fetch available channels from proxy (ready-to-paste format)
+  help                               Show this usage message
+
+Examples:
+  ./summarizer check                             # verify setup before first run
+  ./summarizer list-channels                     # discover channel IDs
+  ./summarizer sendSummary
+  ./summarizer createReport
+  ./summarizer createReport --no-send
+  ./summarizer createReport --output ~/Desktop/today.md
+  ./summarizer consolidate
+  ./summarizer consolidate --dry-run
+  ./summarizer consolidate --delete-old
+EOF
+}
+
+COMMAND="${1:-help}"
+shift || true
+
+case "$COMMAND" in
+    sendSummary)
+        exec "$SCRIPT_DIR/slack_poller.sh"
+        ;;
+    createReport)
+        REPORT_ARGS=()
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --no-send) REPORT_ARGS+=("--no-send"); shift ;;
+                --output)
+                    [[ -z "${2:-}" ]] && echo "Error: --output requires a path" && exit 1
+                    REPORT_ARGS+=("--output" "$2"); shift 2 ;;
+                *) echo "Unknown option: $1"; usage; exit 1 ;;
+            esac
+        done
+        exec "$SCRIPT_DIR/create_report.sh" "${REPORT_ARGS[@]}"
+        ;;
+    consolidate)
+        exec "$SCRIPT_DIR/consolidate.sh" "$@"
+        ;;
+    check)
+        exec bash "$SCRIPT_DIR/check.sh"
+        ;;
+    list-channels)
+        exec bash "$SCRIPT_DIR/list_channels.sh" "$@"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unknown command: $COMMAND"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac

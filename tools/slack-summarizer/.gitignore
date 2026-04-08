@@ -1,0 +1,14 @@
+# Config with API keys
+config.env
+
+# Runtime data (stored in DATA_DIR, usually outside this repo)
+raw/
+summaries/
+state/
+consolidated/
+
+# Cron log
+cron.log
+
+# macOS
+.DS_Store

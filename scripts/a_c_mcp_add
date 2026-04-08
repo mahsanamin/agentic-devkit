@@ -1,0 +1,131 @@
+#!/bin/bash
+
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+# Define supported MCP servers
+# Format: "name|url|description"
+declare -a MCP_SERVERS=(
+    "atlassian|https://mcp.atlassian.com/v1/mcp|Atlassian MCP (Jira, Confluence, etc.)"
+    "jira|https://mcp.atlassian.com/v1/mcp|Jira via Atlassian MCP"
+    "confluence|https://mcp.atlassian.com/v1/mcp|Confluence via Atlassian MCP"
+    "github|https://mcp.github.com/v1/mcp|GitHub MCP Server"
+    "gitlab|https://mcp.gitlab.com/v1/mcp|GitLab MCP Server"
+    "slack|https://mcp.slack.com/v1/mcp|Slack MCP Server"
+)
+
+# Function to display help
+show_help() {
+    echo "Usage: a_c_mcp_add [OPTIONS]"
+    echo ""
+    echo "Add MCP servers to Claude at user level"
+    echo ""
+    echo "Options:"
+    echo "  -h, --help     Show this help message"
+    echo "  -l, --list     List all supported MCP servers"
+    echo ""
+    echo "Examples:"
+    echo "  a_c_mcp_add              # Interactive mode - select from menu"
+    echo "  a_c_mcp_add --list       # List all available MCP servers"
+    exit 0
+}
+
+# Function to list all supported MCP servers
+list_servers() {
+    echo -e "${BLUE}Supported MCP Servers:${NC}"
+    echo ""
+    local index=1
+    for server in "${MCP_SERVERS[@]}"; do
+        IFS='|' read -r name url description <<< "$server"
+        printf "${YELLOW}%2d.${NC} %-15s - %s\n" "$index" "$name" "$description"
+        echo "    ${BLUE}URL:${NC} $url"
+        echo ""
+        ((index++))
+    done
+}
+
+# Function to add MCP server
+add_mcp_server() {
+    local name=$1
+    local url=$2
+
+    echo -e "${GREEN}Adding MCP server: $name${NC}"
+    echo -e "${BLUE}URL: $url${NC}"
+    echo ""
+
+    # Run the claude mcp add command
+    if claude mcp add --scope user --transport http "$name" "$url"; then
+        echo ""
+        echo -e "${GREEN}✓ Successfully added MCP server: $name${NC}"
+    else
+        echo ""
+        echo -e "${RED}✗ Failed to add MCP server: $name${NC}"
+        exit 1
+    fi
+}
+
+# Parse command line arguments
+case "$1" in
+    -h|--help)
+        show_help
+        ;;
+    -l|--list)
+        list_servers
+        exit 0
+        ;;
+    "")
+        # Interactive mode
+        ;;
+    *)
+        echo -e "${RED}Unknown option: $1${NC}"
+        echo "Use -h or --help for usage information"
+        exit 1
+        ;;
+esac
+
+# Interactive mode
+echo -e "${BLUE}=== Claude MCP Server Setup ===${NC}"
+echo ""
+list_servers
+
+echo -e "${YELLOW}Enter the number or name of the MCP server you want to add:${NC}"
+read -p "> " user_input
+
+# Check if input is a number or name
+if [[ "$user_input" =~ ^[0-9]+$ ]]; then
+    # User entered a number
+    index=$((user_input - 1))
+    if [ $index -ge 0 ] && [ $index -lt ${#MCP_SERVERS[@]} ]; then
+        server="${MCP_SERVERS[$index]}"
+        IFS='|' read -r name url description <<< "$server"
+        add_mcp_server "$name" "$url"
+    else
+        echo -e "${RED}Invalid selection. Please enter a number between 1 and ${#MCP_SERVERS[@]}${NC}"
+        exit 1
+    fi
+else
+    # User entered a name
+    found=false
+    for server in "${MCP_SERVERS[@]}"; do
+        IFS='|' read -r name url description <<< "$server"
+        if [ "$name" == "$user_input" ]; then
+            add_mcp_server "$name" "$url"
+            found=true
+            break
+        fi
+    done
+
+    if [ "$found" = false ]; then
+        echo -e "${RED}MCP server '$user_input' not found in the list.${NC}"
+        echo -e "${YELLOW}Available servers:${NC}"
+        for server in "${MCP_SERVERS[@]}"; do
+            IFS='|' read -r name url description <<< "$server"
+            echo "  - $name"
+        done
+        exit 1
+    fi
+fi
