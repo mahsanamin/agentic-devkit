@@ -1,4 +1,6 @@
 #!/bin/bash
+# NOTE: This script is sourced (not executed) by the wrapper in sourced/worktree.sh
+# so that cd works. Use 'return' instead of 'exit' to avoid killing the terminal.
 
 # Colors for output
 RED='\033[0;31m'
@@ -30,7 +32,7 @@ while [[ "$#" -gt 0 ]]; do
             echo "  a_g_worktree_init feature/auth-improvements"
             echo "  a_g_worktree_init bugfix/login-issue"
             echo "  a_g_worktree_init my-feature -b develop"
-            exit 0
+            return 0
             ;;
         *) FEATURE_NAME="$1" ;;
     esac
@@ -42,14 +44,14 @@ if [ -z "$FEATURE_NAME" ]; then
     echo -e "${RED}Error: Branch name is required${NC}"
     echo "Usage: a_g_worktree_init <branch-name> [-b|--base <branch>]"
     echo "Example: a_g_worktree_init feature/setup-local-data-seeds"
-    exit 1
+    return 1
 fi
 
 # Check if current directory is in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
     echo -e "${RED}Error: Not in a git repository${NC}"
     echo "Run this command from within a git repository"
-    exit 1
+    return 1
 fi
 
 # Get the git root directory
@@ -66,14 +68,14 @@ if [ -z "$BASE_BRANCH" ]; then
     else
         echo -e "${RED}Error: Could not determine base branch${NC}"
         echo "Please specify base branch with -b option"
-        exit 1
+        return 1
     fi
 fi
 
 # Verify base branch exists
 if ! git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
     echo -e "${RED}Error: Base branch '$BASE_BRANCH' does not exist${NC}"
-    exit 1
+    return 1
 fi
 
 # Construct the worktree path
@@ -86,7 +88,7 @@ WORKTREE_PATH="$WORKTREES_DIR/$PROJECT_NAME/$WORKTREE_DIR_NAME"
 # Check if worktree already exists
 if [ -d "$WORKTREE_PATH" ]; then
     echo -e "${RED}Error: Worktree already exists at $WORKTREE_PATH${NC}"
-    exit 1
+    return 1
 fi
 
 # Check if branch already exists
@@ -96,7 +98,7 @@ if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Cancelled."
-        exit 0
+        return 0
     fi
     USE_EXISTING_BRANCH=true
 else
@@ -150,7 +152,7 @@ if [ $? -eq 0 ]; then
     # Auto-cd if being sourced, otherwise provide instructions
     if [[ "${BASH_SOURCE[0]}" != "${0}" ]] || [[ -n "$ZSH_EVAL_CONTEXT" && "$ZSH_EVAL_CONTEXT" =~ :file$ ]]; then
         # Script is being sourced, we can change directory
-        cd "$WORKTREE_PATH" || exit 1
+        cd "$WORKTREE_PATH" || return 1
         echo -e "${GREEN}✓ Changed to worktree directory${NC}"
     else
         # Script is being executed, can't change parent shell directory
@@ -169,5 +171,5 @@ if [ $? -eq 0 ]; then
     fi
 else
     echo -e "${RED}Failed to create worktree${NC}"
-    exit 1
+    return 1
 fi

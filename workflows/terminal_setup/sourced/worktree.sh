@@ -15,6 +15,14 @@ a_g_worktree_init() {
         return 1
     fi
 
+    # Validate branch name before sourcing (source runs in current shell,
+    # so an exit in the script would kill the terminal)
+    if [ -z "$1" ] || [[ "$1" == -* ]]; then
+        echo "Usage: a_g_worktree_init <branch-name> [-b|--base <branch>]"
+        echo "Example: a_g_worktree_init feature/setup-local-data-seeds"
+        return 1
+    fi
+
     # Source the script to allow directory change
     source "$script_path" "$@"
 }

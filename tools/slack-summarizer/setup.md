@@ -185,28 +185,28 @@ echo '{"last_mention_ts":"0","last_thread_ts":"0","channels":{}}' > ~/.slack_sum
 
 ## 6. Set up cron
 
+Open your crontab for editing:
+
 ```bash
 crontab -e
 ```
 
-Add:
+Paste these 5 lines (replace `/path/to/slack-summarizer` with your actual path, e.g. `/Users/jane/repos/my-workflow/tools/slack-summarizer`):
 
-```cron
-# Poll every 10 min, 8am-8pm (Mon-Fri)
-*/10 8-20 * * 1-5 /path/to/slack-summarizer/cron_runner.sh >> ~/.slack_summaries_data/cron.log 2>&1
-
-# Daily reports at 9am, 1pm, 6pm (Mon-Fri)
-0 9 * * 1-5 /path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
-0 13 * * 1-5 /path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
-0 18 * * 1-5 /path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
-
-# Nightly consolidation at 11pm
+```
+*/10 8-20 * * * /path/to/slack-summarizer/cron_runner.sh >> ~/.slack_summaries_data/cron.log 2>&1
+0 9 * * * /path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
+0 13 * * * /path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
+0 18 * * * /path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
 0 23 * * * /path/to/slack-summarizer/summarizer consolidate --delete-old >> ~/.slack_summaries_data/cron.log 2>&1
 ```
 
-Replace `/path/to/slack-summarizer` with the actual path on your machine.
+Save and exit the editor. What each line does:
+- **Line 1:** Poll Slack every 10 min between 8am-8pm (every day including weekends)
+- **Lines 2-4:** Generate daily report at 9am, 1pm, 6pm
+- **Line 5:** Nightly consolidation + cleanup at 11pm
 
-Verify:
+Verify it's installed:
 ```bash
 crontab -l
 ```

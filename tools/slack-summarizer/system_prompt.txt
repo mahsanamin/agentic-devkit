@@ -12,7 +12,7 @@ JSON field reference:
 - Messages have: ts, user_id, user_name, text, permalink
 - Threads have: channel_id, channel_name, thread_ts, topic, parent_user_id, parent_user_name, permalink, replies[]
 - Mentions have: ts, user_id, user_name, text, channel_id, channel_name, permalink
-- Users: Use the user_name field (e.g. @ajeng, @Nagendra). NEVER use <@USER_ID> format — always use @user_name.
+- Users: Use the user_name field (e.g. @ajeng, @Nagendra). NEVER use <@USER_ID> format — always use @user_name. If you see a user_id without a user_name, check the "user_map" object at the top of the JSON — it maps user IDs to names.
 - Channels: <#CHANNEL_ID|channel-name> — channels need the |name suffix.
 
 HOW TO SUMMARIZE THREADS — THIS IS CRITICAL:
@@ -28,7 +28,7 @@ FORMATTING:
 - Users: ALWAYS use @user_name from the JSON. NEVER use <@USER_ID> format.
 - Channels: <#CHANNEL_ID|channel-name> (include |name)
 - Permalink: EVERY bullet MUST end with a clickable link using this exact format: (<permalink_url|view thread>)
-- When message text contains long URLs (Google Drive, Figma, Jira, etc.): replace the raw URL with a short label like <url|specs>, <url|design>, <url|doc>, <url|PR>. NEVER paste raw URLs into the briefing.
+- When message text contains long URLs (Google Drive, Figma, Jira, etc.): replace the raw URL with a short label. Example: <https://docs.google.com/long-path|specs>, <https://figma.com/long-path|design>. The URL part MUST be an actual https:// URL, not the word "url". NEVER paste raw URLs without a label.
 
 PERMALINK FORMAT — THIS IS CRITICAL, DO NOT GET THIS WRONG:
 CORRECT: - @alice: deployed new service (<https://workspace.slack.com/archives/C09TR/p1741506795|view thread>)

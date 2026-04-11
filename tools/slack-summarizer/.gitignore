@@ -10,5 +10,8 @@ consolidated/
 # Cron log
 cron.log
 
+# Python
+__pycache__/
+
 # macOS
 .DS_Store

@@ -6,37 +6,62 @@ Automated Slack briefing system. Polls your workspace, detects new messages, gen
 
 ```
 Cron (every 10 min)
-  └── slack_poller.sh ── cheap HTTP calls to Slack proxy (no AI tokens)
-        ├── Nothing new? Exit. (80-90% of polls — free)
-        └── New messages? Filter → claude_summarizer.sh
-              ├── Pre-filter: 365KB raw → 33KB slim (truncate, limit replies, add permalinks)
-              ├── Claude Haiku: generates Slack mrkdwn briefing (~$0.01-0.03)
-              ├── Send to your DM via proxy
-              └── Publish living doc (local file or mdnest)
+  └── summarizer sendSummary
+        ├── slack_poll.py ── cheap HTTP calls to Slack proxy (no AI tokens)
+        │     └── New messages? Writes filtered JSON
+        └── summarize.sh
+              ├── slim_json.py: 159KB raw → 72KB slim
+              ├── claude -p --model haiku: generates briefing (~$0.01-0.03)
+              ├── send_dm.py: sends to your Slack DM
+              └── publish: writes slack/latest.md (local or mdnest)
 ```
+
+Nothing new? `slack_poll.py` exits immediately — zero AI cost. 80-90% of polls are free.
 
 ## Why a Proxy Instead of MCP?
 
 Data fetching is separated from AI by design:
 
-- **Polling is free.** The cron job hits the proxy via simple HTTP — no LLM tokens burned. Most polls find nothing new and exit immediately.
-- **LLM only sees what's new.** Pre-filtering shrinks payloads 10x before Claude touches them. The AI focuses on summarizing content, not data wrangling.
-- **No MCP round-trip overhead.** One HTTP call gets the data vs. multi-turn tool-use conversations that burn tokens on each step.
-- **Separation of concerns.** Proxy handles auth, rate limits, data format. Summarizer handles intelligence. Either can be swapped independently.
+- **Polling is free.** Simple HTTP calls — no LLM tokens burned.
+- **LLM only sees what's new.** Pre-filtering shrinks payloads 10x before Claude touches them.
+- **No MCP round-trip overhead.** One HTTP call vs. multi-turn tool-use conversations.
+- **Separation of concerns.** Proxy handles auth/data. Claude handles intelligence. Either can be swapped.
 
-See [docs/proxy-api-contract.md](docs/proxy-api-contract.md) for the full proxy API specification.
+See [docs/proxy-api-contract.md](docs/proxy-api-contract.md) for the full proxy API spec.
 
 ## Quick Start
 
 ```bash
-cp config.env.sample config.env     # 1. Create config
-# Edit config.env with your values  # 2. Fill in proxy, user ID, channels
-./summarizer check                  # 3. Validate everything
-./summarizer list-channels          # 4. Discover channel IDs
-./summarizer sendSummary            # 5. First run
+cd tools/slack-summarizer
+
+# 1. Create config
+cp config.env.sample config.env
+
+# 2. Edit config.env — you need:
+#    SLACK_PROXY_URL        → your Slack proxy endpoint
+#    SLACK_PROXY_API_KEY    → proxy API key (ask your team lead)
+#    MY_SLACK_USER_ID       → Slack profile → ... → Copy member ID
+#    MY_SLACK_USER_NAME     → your display name
+#    SLACK_WORKSPACE_URL    → https://yourcompany.slack.com
+#    SLACK_DM_CHANNEL       → open DM with yourself → click name → Channel ID
+
+# 3. Validate proxy + auth
+./summarizer check
+
+# 4. Discover channels (auto-lists all with IDs)
+./summarizer list-channels
+# Copy channels you want into config.env CHANNELS=() array
+
+# 5. Validate everything
+./summarizer check
+
+# 6. First run — briefing arrives in your Slack DM
+./summarizer sendSummary
 ```
 
-See [setup.md](setup.md) for detailed step-by-step instructions.
+See [setup.md](setup.md) for detailed step-by-step instructions with screenshots.
+
+**Using Claude Code?** Just run `claude` in this directory — the CLAUDE.md will guide it through interactive setup.
 
 ## Commands
 
@@ -50,17 +75,40 @@ See [setup.md](setup.md) for detailed step-by-step instructions.
 | `./summarizer consolidate` | Nightly: refresh threads, generate living docs |
 | `./summarizer consolidate --delete-old` | Also delete old DM messages |
 
+## Architecture
+
+Python handles data processing (HTTP, JSON, dedup). Bash only pipes data into `claude -p`.
+
+| Python modules | What they do |
+|---|---|
+| `lib.py` | Shared: config, proxy HTTP, permalinks, user map, publishing |
+| `slack_poll.py` | Poll proxy, filter new messages, update watermarks |
+| `slim_json.py` | Pre-filter JSON for Claude (truncate, limit replies) |
+| `send_dm.py` | Send summary to Slack DM |
+| `convert_mrkdwn.py` | Slack mrkdwn → Markdown |
+| `merge_briefing.py` | Dedup + merge briefings into living doc |
+| `merge_report.py` | Merge 24h data for daily report |
+| `enrich_threads.py` | Scan history, fetch fresh thread state |
+| `check.py` | Validate config + connectivity |
+| `list_channels.py` | Discover channels from proxy |
+
+| Bash scripts | What they do |
+|---|---|
+| `summarizer` | CLI entry point, routes commands, sets up PATH/auth |
+| `summarize.sh` | slim → claude -p → send DM → publish |
+| `report.sh` | merge → slim → claude -p → optional send |
+| `consolidate_run.sh` | enrich → claude links → claude summary → publish |
+| `cron_runner.sh` | PATH wrapper for crontab |
+
 ## Cost
 
-- **Polling:** Free (HTTP calls, no AI)
-- **Per summary:** ~$0.01-0.03 (Claude Haiku, budget capped at $1.00/run)
-- **Daily reports:** ~$0.02-0.05 (larger input)
-- **Nightly consolidation:** ~$0.05-0.10 (Haiku for links + Sonnet for summary)
-- **Typical monthly:** ~$5-15 for a full workweek of 10-min polling
+- **Polling:** Free (HTTP, no AI)
+- **Per summary:** ~$0.01-0.03 (Claude Haiku)
+- **Daily reports:** ~$0.02-0.05
+- **Nightly consolidation:** ~$0.05-0.10 (Haiku + Sonnet)
+- **Typical monthly:** ~$5-15
 
 ## Publishing Modes
-
-Summaries are published as living docs that update with each poll:
 
 | Mode | Where docs go | Extra deps |
 |------|--------------|------------|
@@ -75,5 +123,4 @@ Summaries are published as living docs that update with each poll:
 | Python 3 | Yes | Data processing (stdlib only, no pip) |
 | Claude CLI | Yes | AI summarization |
 | Slack proxy | Yes | Fetches messages via HTTP ([API contract](docs/proxy-api-contract.md)) |
-| curl | Yes | HTTP calls (pre-installed on macOS) |
 | mdnest | No | Only if PUBLISH_MODE=mdnest |
