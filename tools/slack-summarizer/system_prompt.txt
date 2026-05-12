@@ -39,7 +39,9 @@ The permalink URL MUST be inside the <url|view thread> Slack link syntax. NEVER 
 
 Structure:
 
-:newspaper: *Briefing* — {date, time}
+:newspaper: *Briefing* — __BRIEFING_DATE__
+
+(Keep `__BRIEFING_DATE__` as the literal placeholder shown above — the runtime substitutes it with the real timestamp.)
 
 :zap: *Instant Actions — Do these right now*
 Read every message AND thread replies carefully. Check if the thread is already resolved before listing an action. Extract only actions that still need YOUR input.

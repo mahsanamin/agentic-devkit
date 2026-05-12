@@ -4,7 +4,9 @@
 Usage: python3 merge_briefing.py <new.md> <existing.md> <output.md>
 """
 import re, sys, os
-from datetime import datetime
+from datetime import datetime, timedelta
+
+MAX_AGE_DAYS = 2
 
 def extract_link_keys(text):
     """Extract thread keys from all Slack link formats."""
@@ -74,6 +76,14 @@ def merge(new_text, old_text):
                 if body:
                     new_text = new_text.rstrip() + "\n\n" + body
             continue
+
+        if section_date:
+            try:
+                age = datetime.now().date() - datetime.strptime(section_date, "%Y-%m-%d").date()
+                if age > timedelta(days=MAX_AGE_DAYS):
+                    continue
+            except ValueError:
+                pass
 
         section_links = extract_link_keys(section)
         if section_links & new_links:

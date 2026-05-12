@@ -38,6 +38,10 @@ while [[ "$#" -gt 0 ]]; do
             echo "  a_g_worktree_remove feature/auth       # Remove with unpushed warning"
             echo "  a_g_worktree_remove feature/auth -v    # Verify merged first (recommended)"
             echo "  a_g_worktree_remove feature/auth -f    # Force remove, no checks"
+            echo ""
+            echo "Note: <name> matches either the worktree directory name or the"
+            echo "branch checked out inside it. If a name matches multiple worktrees,"
+            echo "the command aborts and lists candidates so you can disambiguate."
             exit 0
             ;;
         *) FEATURE_NAME="$1" ;;
@@ -80,25 +84,71 @@ else
     exit 1
 fi
 
-# Find worktree path (try exact name, then slash-to-dash)
+# Resolve worktree by directory name OR branch name.
+# Match against:
+#   - basename of the worktree path (exact and slash-to-dash forms)
+#   - branch checked out inside the worktree (refs/heads/ stripped)
+# Skip the main worktree (never removable here).
 WORKTREES_DIR="$(dirname "$GIT_ROOT")/WorkTrees"
-WORKTREE_PATH="$WORKTREES_DIR/$PROJECT_NAME/$FEATURE_NAME"
+SLASH_TO_DASH="${FEATURE_NAME//\//-}"
 
-if [ ! -d "$WORKTREE_PATH" ]; then
-    WORKTREE_DIR_NAME="${FEATURE_NAME//\//-}"
-    WORKTREE_PATH="$WORKTREES_DIR/$PROJECT_NAME/$WORKTREE_DIR_NAME"
-fi
+declare -a CANDIDATE_PATHS=()
+declare -a CANDIDATE_BRANCHES=()
+declare -a CANDIDATE_REASONS=()
 
-if [ ! -d "$WORKTREE_PATH" ]; then
+wt_path=""
+wt_branch=""
+while IFS= read -r line; do
+    if [[ "$line" == "worktree "* ]]; then
+        wt_path="${line#worktree }"
+        wt_branch=""
+    elif [[ "$line" == "branch "* ]]; then
+        wt_branch="${line#branch }"
+        wt_branch="${wt_branch#refs/heads/}"
+    elif [[ -z "$line" && -n "$wt_path" ]]; then
+        if [ "$wt_path" != "$MAIN_WORKTREE" ]; then
+            wt_dir=$(basename "$wt_path")
+            reason=""
+            if [ "$wt_dir" = "$FEATURE_NAME" ] || [ "$wt_dir" = "$SLASH_TO_DASH" ]; then
+                reason="directory"
+            fi
+            if [ -n "$wt_branch" ] && [ "$wt_branch" = "$FEATURE_NAME" ]; then
+                if [ -z "$reason" ]; then
+                    reason="branch"
+                else
+                    reason="directory and branch"
+                fi
+            fi
+            if [ -n "$reason" ]; then
+                CANDIDATE_PATHS+=("$wt_path")
+                CANDIDATE_BRANCHES+=("$wt_branch")
+                CANDIDATE_REASONS+=("$reason")
+            fi
+        fi
+        wt_path=""
+        wt_branch=""
+    fi
+done < <(git worktree list --porcelain; echo)
+
+if [ "${#CANDIDATE_PATHS[@]}" -eq 0 ]; then
     echo -e "${RED}Error: Worktree not found${NC}"
     echo ""
     echo "Available worktrees:"
     git worktree list
     exit 1
+elif [ "${#CANDIDATE_PATHS[@]}" -gt 1 ]; then
+    echo -e "${RED}Error: '$FEATURE_NAME' matches multiple worktrees${NC}"
+    echo ""
+    for i in "${!CANDIDATE_PATHS[@]}"; do
+        echo "  • ${CANDIDATE_PATHS[$i]}  [branch: ${CANDIDATE_BRANCHES[$i]:-<detached>}, matched by: ${CANDIDATE_REASONS[$i]}]"
+    done
+    echo ""
+    echo "Disambiguate by passing the full directory name."
+    exit 1
 fi
 
-# Get the branch name from the worktree
-BRANCH_NAME=$(git worktree list --porcelain | grep -A 2 "worktree $WORKTREE_PATH" | grep "^branch " | sed 's/^branch //' | sed 's|^refs/heads/||')
+WORKTREE_PATH="${CANDIDATE_PATHS[0]}"
+BRANCH_NAME="${CANDIDATE_BRANCHES[0]}"
 
 if [ -z "$BRANCH_NAME" ]; then
     echo -e "${YELLOW}Warning: Could not detect branch name${NC}"

@@ -39,6 +39,7 @@ alias cd_wf="cd ${MY_WORKFLOW_DIR}"
 source "$MY_WORKFLOW_DIR/sourced/process.sh"
 source "$MY_WORKFLOW_DIR/sourced/worktree.sh"
 source "$MY_WORKFLOW_DIR/sourced/git.sh"
+source "$MY_WORKFLOW_DIR/sourced/doctor.sh"
 
 ########################### Scripts on PATH ####
 chmod +x "$MY_WORKFLOW_DIR/scripts/"* 2>/dev/null

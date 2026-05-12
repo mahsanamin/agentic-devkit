@@ -25,7 +25,9 @@ while [[ "$#" -gt 0 ]]; do
             echo "  branch-name     Name of the branch to create (use any name you want)"
             echo ""
             echo "Options:"
-            echo "  -b, --base      Base branch to branch from (default: main or master)"
+            echo "  -b, --base      Base branch to branch from (skips the prompt)"
+            echo "                  Default: main/master, or you'll be asked whether to"
+            echo "                  base off your current branch if it's not main/master."
             echo "  -h, --help      Show this help message"
             echo ""
             echo "Examples:"
@@ -58,13 +60,39 @@ fi
 GIT_ROOT=$(git rev-parse --show-toplevel)
 PROJECT_NAME=$(basename "$GIT_ROOT")
 
-# Determine base branch if not specified
+# Determine base branch if not specified.
+# Default is main/master, but if the user is on a non-main branch, offer
+# to base the new worktree off the current branch instead. Explicit -b wins.
 if [ -z "$BASE_BRANCH" ]; then
-    # Try to find main or master branch
+    DEFAULT_BASE=""
     if git show-ref --verify --quiet refs/heads/main; then
-        BASE_BRANCH="main"
+        DEFAULT_BASE="main"
     elif git show-ref --verify --quiet refs/heads/master; then
-        BASE_BRANCH="master"
+        DEFAULT_BASE="master"
+    fi
+
+    CURRENT_BRANCH=$(git symbolic-ref --short -q HEAD || true)
+
+    if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
+        echo -e "${YELLOW}You're currently on branch '$CURRENT_BRANCH'.${NC}"
+        if [ -n "$DEFAULT_BASE" ]; then
+            read -r -p "Branch the new worktree off '$CURRENT_BRANCH' instead of '$DEFAULT_BASE'? [Y/n] " REPLY
+            if [[ -z "$REPLY" || "$REPLY" =~ ^[Yy] ]]; then
+                BASE_BRANCH="$CURRENT_BRANCH"
+            else
+                BASE_BRANCH="$DEFAULT_BASE"
+            fi
+        else
+            read -r -p "Branch the new worktree off '$CURRENT_BRANCH'? [Y/n] " REPLY
+            if [[ -z "$REPLY" || "$REPLY" =~ ^[Yy] ]]; then
+                BASE_BRANCH="$CURRENT_BRANCH"
+            else
+                echo "Cancelled. Specify a base branch with -b."
+                return 1
+            fi
+        fi
+    elif [ -n "$DEFAULT_BASE" ]; then
+        BASE_BRANCH="$DEFAULT_BASE"
     else
         echo -e "${RED}Error: Could not determine base branch${NC}"
         echo "Please specify base branch with -b option"

@@ -70,6 +70,22 @@ a_g_main() {
     git pull origin "$main_branch"
 }
 
+# Print the origin remote URL (useful when jumping between many repos)
+a_g_origin_url() {
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        echo "Error: Not in a git repository"
+        return 1
+    fi
+
+    local url
+    url=$(git remote get-url origin 2>/dev/null)
+    if [ -z "$url" ]; then
+        echo "Error: No 'origin' remote configured"
+        return 1
+    fi
+    echo "$url"
+}
+
 # Discard all local changes - with confirmation because it's destructive
 a_g_reset() {
     echo "This will discard ALL local changes!"

@@ -2,7 +2,7 @@
 # Slim filtered JSON → Claude haiku → send DM → publish living doc
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/config.env"
+set -a; source "$SCRIPT_DIR/config.env"; set +a
 DATA_DIR="${DATA_DIR:-$HOME/.slack_summaries_data}"
 
 POLL_FILE="$1"
@@ -49,6 +49,18 @@ python3 "$SCRIPT_DIR/send_dm.py" "$SUMMARY_FILE"
 if python3 -c "from lib import publish_enabled; exit(0 if publish_enabled() else 1)" 2>/dev/null; then
     # Convert Slack mrkdwn to Markdown
     python3 "$SCRIPT_DIR/convert_mrkdwn.py" "$SUMMARY_FILE" > "$CONVERTED"
+
+    # Normalize briefing header to a deterministic ISO date the merger can dedup on
+    BRIEFING_DATE="$(date '+%Y-%m-%d %H:%M')"
+    python3 -c "
+import re, sys
+path = sys.argv[1]
+stamp = sys.argv[2]
+text = open(path).read()
+text = text.replace('__BRIEFING_DATE__', stamp)
+text = re.sub(r'^(\U0001F4F0 \*Briefing\*)(?:[^\n]*)', r'\1 — ' + stamp, text, count=1, flags=re.MULTILINE)
+open(path, 'w').write(text)
+" "$CONVERTED" "$BRIEFING_DATE"
 
     # Read existing, merge, write
     python3 -c "from lib import publish_read; print(publish_read('slack/latest.md'), end='')" > "$EXISTING" 2>/dev/null || true
