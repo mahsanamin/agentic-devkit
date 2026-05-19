@@ -49,7 +49,7 @@ a_workflow_doctor() {
 
     if [ -n "$sourced_profile" ] && [ -f "$sourced_profile" ]; then
         _doc_ok "$rcfile sources $sourced_profile"
-        local cfg_wf
+        local cfg_wf=""
         cfg_wf=$(grep -E '^[[:space:]]*export[[:space:]]+MY_WORKFLOW_DIR' "$sourced_profile" | tail -1)
         if [ -n "$cfg_wf" ]; then
             echo "   declares: $cfg_wf"
@@ -60,7 +60,7 @@ a_workflow_doctor() {
         _doc_err "$rcfile sources $sourced_profile but that file does not exist"
     elif [ -n "$rcfile" ]; then
         # Fall back to looking for any configs.profile under ~/my_settings/
-        local found_profile
+        local found_profile=""
         found_profile=$(ls "$HOME"/my_settings/*configs.profile 2>/dev/null | head -1)
         if [ -n "$found_profile" ]; then
             _doc_err "$rcfile does not source $found_profile"
@@ -76,7 +76,7 @@ a_workflow_doctor() {
 
     # 4. Git state of the clone
     if [ -d "$MY_WORKFLOW_DIR/.git" ]; then
-        local head branch dirty
+        local head="" branch="" dirty=""
         head=$(git -C "$MY_WORKFLOW_DIR" rev-parse --short HEAD 2>/dev/null)
         branch=$(git -C "$MY_WORKFLOW_DIR" branch --show-current 2>/dev/null)
         _doc_ok "Clone is a git repo (HEAD $head on ${branch:-detached})"
@@ -87,7 +87,7 @@ a_workflow_doctor() {
         fi
 
         # Offline behind-check against cached upstream ref
-        local behind
+        local behind=""
         behind=$(git -C "$MY_WORKFLOW_DIR" rev-list --count "HEAD..@{u}" 2>/dev/null)
         if [ -n "$behind" ] && [ "$behind" -gt 0 ]; then
             _doc_warn "Clone is behind upstream by $behind commit(s) (local refs only; run: git -C \"$MY_WORKFLOW_DIR\" fetch && git -C \"$MY_WORKFLOW_DIR\" pull)"
@@ -147,7 +147,7 @@ a_workflow_doctor() {
     if typeset -f a_g_worktree_init > /dev/null 2>&1; then
         echo "   1. function defined in this shell (wins — PATH is not consulted)"
     fi
-    local path_copies
+    local path_copies=""
     path_copies=$(which -a a_g_worktree_init 2>/dev/null | grep -v '^[a-z_]* is a' | grep '^/')
     if [ -n "$path_copies" ]; then
         local n=0
@@ -155,7 +155,7 @@ a_workflow_doctor() {
             n=$((n+1))
             echo "   $((n+1)). $line"
         done <<< "$path_copies"
-        local copy_count
+        local copy_count=""
         copy_count=$(echo "$path_copies" | wc -l | tr -d ' ')
         if [ "$copy_count" -gt 1 ]; then
             echo -e "   ${YELLOW}! Multiple copies on PATH — stale clones can hijack the script.${NC}"

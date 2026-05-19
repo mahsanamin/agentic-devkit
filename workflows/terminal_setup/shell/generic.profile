@@ -10,13 +10,11 @@ fi
 # export PATH=$PATH:/path/to/your/tools
 
 ########################### Organization-Specific Profile ####
+# Org profiles are per-machine, local, and gitignored — see .gitignore.
+# Path acts as a hint: if the file exists we source it; if not, silent.
 if [ -n "$a_company_name" ] && [ -n "$a_machine_type" ]; then
     export a_org_profile="${MY_WORKFLOW_DIR}/shell/${a_company_name}.${a_machine_type}.profile"
-    if [ -f "$a_org_profile" ]; then
-        source "$a_org_profile"
-    else
-        echo "Warning: Organization profile not found: $a_org_profile"
-    fi
+    [ -f "$a_org_profile" ] && source "$a_org_profile"
 fi
 
 ########################### Directory Aliases ####

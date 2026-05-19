@@ -70,20 +70,35 @@ a_g_main() {
     git pull origin "$main_branch"
 }
 
-# Print the origin remote URL (useful when jumping between many repos)
-a_g_origin_url() {
+# Show the remote tracking info for the current branch
+# (useful when jumping between many repos / worktrees)
+a_g_remote() {
     if ! git rev-parse --git-dir > /dev/null 2>&1; then
         echo "Error: Not in a git repository"
         return 1
     fi
 
-    local url
-    url=$(git remote get-url origin 2>/dev/null)
-    if [ -z "$url" ]; then
-        echo "Error: No 'origin' remote configured"
-        return 1
+    local branch="" upstream="" remote="" url=""
+    branch=$(git symbolic-ref --short -q HEAD)
+    if [ -z "$branch" ]; then
+        echo "Detached HEAD (no current branch)"
+        url=$(git remote get-url origin 2>/dev/null)
+        [ -n "$url" ] && echo "origin: $url"
+        return 0
     fi
-    echo "$url"
+
+    upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
+    if [ -n "$upstream" ]; then
+        remote="${upstream%%/*}"
+        url=$(git remote get-url "$remote" 2>/dev/null)
+        echo "Branch:   $branch"
+        echo "Upstream: $upstream"
+        echo "Remote:   $remote ($url)"
+    else
+        url=$(git remote get-url origin 2>/dev/null)
+        echo "Branch:   $branch (no upstream set)"
+        [ -n "$url" ] && echo "origin:   $url"
+    fi
 }
 
 # Discard all local changes - with confirmation because it's destructive

@@ -8,7 +8,8 @@
 .idea/
 .vscode/
 
-# Org profiles with real credentials (samples are OK to commit)
-# Uncomment if your org profiles contain secrets:
-# shell/*.profile
-# !shell/*.profile.sample
+# Per-machine org profiles — local to each user/machine, never committed.
+# Pattern matches <company>.<machine>.profile but NOT generic.profile.
+# Samples (e.g. org.machine.profile.sample) are still tracked.
+**/shell/*.*.profile
+!**/shell/*.profile.sample
