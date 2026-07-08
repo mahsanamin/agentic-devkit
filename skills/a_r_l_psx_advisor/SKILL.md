@@ -25,7 +25,7 @@ Designed to run unattended (on demand or scheduled). So: be cheap, bounded, and 
 ## The run loop
 
 ### 0. Resolve the mdnest base path
-The base is `mdnest_path` (default `@srv-ahsan-mini/mahsan_brain/StayUptoDate/PSX`). Confirm `@srv-ahsan-mini` is configured: `mdnest list @srv-ahsan-mini` should return the `mahsan_brain` namespace. If the alias is missing, run `mdnest servers -v` IN FULL (do not truncate) and find the alias whose URL is `brain.i.mahsanamin.com` with namespace `mahsan_brain`. This is his personal brain, do not confuse `mahsan_brain` with the work brain `@work/my_brain`.
+The base is `mdnest_path` (default `@srv-ahsan-mini/mahsan_brain/StayUptoDate/PSX`). Confirm `@srv-ahsan-mini` is configured: `mdnest list @srv-ahsan-mini` should return the `mahsan_brain` namespace. If the alias is missing, run `mdnest servers -v` IN FULL (do not truncate) and find the alias whose URL is `personal-brain.example.com` with namespace `mahsan_brain`. This is his personal brain, do not confuse `mahsan_brain` with the work brain `@work/my_brain`.
 
 ### 1. Stamp the run and read prior state
 Get the date now from the environment, not memory: `date -u +%Y-%m-%dT%H:%M:%SZ` (and a human date for the report heading). Try to read `mdnest read <base>/_state.md` and the previous `latest.md`. If present, note the last run's date and KSE-100 level so you can show the move since last run. If nothing exists yet, this is a first run, proceed and bootstrap the files.

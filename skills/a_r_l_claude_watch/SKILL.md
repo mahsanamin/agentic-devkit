@@ -11,7 +11,7 @@ The reason this is a skill and not a background crawler: fetching release notes 
 
 ## What you maintain
 
-Base location in mdnest: the user's PERSONAL brain at `@srv-ahsan-mini/mahsan_brain/StayUptoDate/Claude/` (server `brain.i.mahsanamin.com`). This is the path he pastes as `mdnest://@srv-ahsan-mini/mahsan_brain/StayUptoDate/Claude`. Critical: this personal brain (`mahsan_brain`) is a DIFFERENT server from the work brain (`@work/my_brain` on `work-brain.example.com`). Do not confuse them; the tracker belongs in the personal brain only. Confirm the alias at runtime (step 0), since alias names can differ per machine.
+Base location in mdnest: the user's PERSONAL brain at `@srv-ahsan-mini/mahsan_brain/StayUptoDate/Claude/` (server `personal-brain.example.com`). This is the path he pastes as `mdnest://@srv-ahsan-mini/mahsan_brain/StayUptoDate/Claude`. Critical: this personal brain (`mahsan_brain`) is a DIFFERENT server from the work brain (`@work/my_brain` on `work-brain.example.com`). Do not confuse them; the tracker belongs in the personal brain only. Confirm the alias at runtime (step 0), since alias names can differ per machine.
 
 Four files live there:
 
@@ -30,9 +30,9 @@ Do these in order. Steps 2 and 3 can overlap (kick off research while the probe 
 
 ### 0. Resolve the mdnest base path
 
-Start from the known-good answer and confirm it, rather than parsing blindly. The base is `@srv-ahsan-mini/mahsan_brain/StayUptoDate/Claude` (server `brain.i.mahsanamin.com`, the personal brain). If a prior run left a `resolved_base` in `_state.md`, prefer that. Confirm with `mdnest list @srv-ahsan-mini`, which should return the `mahsan_brain` namespace. Do NOT write to the work brain `@work/my_brain`: it is a different server and the wrong home for this tracker.
+Start from the known-good answer and confirm it, rather than parsing blindly. The base is `@srv-ahsan-mini/mahsan_brain/StayUptoDate/Claude` (server `personal-brain.example.com`, the personal brain). If a prior run left a `resolved_base` in `_state.md`, prefer that. Confirm with `mdnest list @srv-ahsan-mini`, which should return the `mahsan_brain` namespace. Do NOT write to the work brain `@work/my_brain`: it is a different server and the wrong home for this tracker.
 
-Only if `@srv-ahsan-mini` is not configured locally, fall back to `mdnest servers -v`. Run it in full and do not truncate the output (the list can be longer than the first rows suggest, which is exactly how a past run wrote to the wrong brain). Find the alias whose URL is `brain.i.mahsanamin.com` with the `mahsan_brain` namespace. Watch out: the VERSION column wraps onto a second line, so a single server's row spans two lines. Match the namespace to its alias, not to a line.
+Only if `@srv-ahsan-mini` is not configured locally, fall back to `mdnest servers -v`. Run it in full and do not truncate the output (the list can be longer than the first rows suggest, which is exactly how a past run wrote to the wrong brain). Find the alias whose URL is `personal-brain.example.com` with the `mahsan_brain` namespace. Watch out: the VERSION column wraps onto a second line, so a single server's row spans two lines. Match the namespace to its alias, not to a line.
 
 The base is then `<alias>/<namespace>/StayUptoDate/Claude`. If `StayUptoDate/Claude` does not exist yet, this is a first run (see Bootstrap). Record the resolved base in `_state.md` so later runs can sanity-check it.
 

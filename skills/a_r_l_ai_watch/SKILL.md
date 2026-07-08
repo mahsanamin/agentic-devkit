@@ -11,7 +11,7 @@ This skill is designed to run unattended on his local 24/7 machine, possibly sev
 
 ## What you maintain
 
-Base location: `@srv-ahsan-mini/mahsan_brain/StayUptoDate/GloballyAI/` (his personal brain, server `brain.i.mahsanamin.com`, the path he pastes as `mdnest://@srv-ahsan-mini/mahsan_brain/StayUptoDate/GloballyAI`). This is the SAME personal brain as the Claude tracker but a different folder. Do not confuse `mahsan_brain` (personal) with the work brain `@work/my_brain`; the tracker belongs in the personal brain only. Resolve the alias at runtime (step 0).
+Base location: `@srv-ahsan-mini/mahsan_brain/StayUptoDate/GloballyAI/` (his personal brain, server `personal-brain.example.com`, the path he pastes as `mdnest://@srv-ahsan-mini/mahsan_brain/StayUptoDate/GloballyAI`). This is the SAME personal brain as the Claude tracker but a different folder. Do not confuse `mahsan_brain` (personal) with the work brain `@work/my_brain`; the tracker belongs in the personal brain only. Resolve the alias at runtime (step 0).
 
 Four content files, segregated by kind, plus bookkeeping:
 
@@ -31,7 +31,7 @@ Anthropic and Claude items: a high-level Anthropic headline can appear in news f
 
 ### 0. Resolve the base path
 
-The base is `@srv-ahsan-mini/mahsan_brain/StayUptoDate/GloballyAI`. Prefer the `resolved_base` recorded in `_state.md` if present. Confirm with `mdnest list @srv-ahsan-mini` (it should return the `mahsan_brain` namespace). If `@srv-ahsan-mini` is not configured locally, run `mdnest servers -v` IN FULL (do not truncate, the list can be longer than the first rows suggest) and find the alias whose URL is `brain.i.mahsanamin.com` with namespace `mahsan_brain`. The VERSION column wraps across two lines, so match the namespace to its alias, not to a line. If the four files do not exist yet, this is a first run (see Bootstrap).
+The base is `@srv-ahsan-mini/mahsan_brain/StayUptoDate/GloballyAI`. Prefer the `resolved_base` recorded in `_state.md` if present. Confirm with `mdnest list @srv-ahsan-mini` (it should return the `mahsan_brain` namespace). If `@srv-ahsan-mini` is not configured locally, run `mdnest servers -v` IN FULL (do not truncate, the list can be longer than the first rows suggest) and find the alias whose URL is `personal-brain.example.com` with namespace `mahsan_brain`. The VERSION column wraps across two lines, so match the namespace to its alias, not to a line. If the four files do not exist yet, this is a first run (see Bootstrap).
 
 ### 1. Read state and the watermark
 
