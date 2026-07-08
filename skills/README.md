@@ -69,14 +69,9 @@ Full marker glossary (used across the whole repo, not just skills): `a_` = mine 
 | Skill | Runs | What it does |
 |-------|------|--------------|
 | `a_r_l_dependabot_collector` | local | A repo's open Dependabot PRs: fix red bumps to green, flag risky ones, batch the rest onto the current month's release branch, keep one consolidated PR open for review. Runs weekly onto a monthly release; refreshes the PR (new one, close old) so the org stale-PR auto-close can't sweep it. Param: `repo`. |
-| `a_r_l_ai_watch` | local | Unattended tracker for the broader AI field: collect new AI news, advancements, tools, and terms into the mdnest `GloballyAI/` tracker since the last run. |
-| `a_r_l_claude_watch` | local | Unattended Claude/Anthropic tracker: what's new and coming across Claude Code, the apps, API, and models, reconciled against the toolkit I use, into the mdnest `StayUptoDate/Claude/` tracker. |
 | `a_r_l_pr_review` | local | Review GitHub PRs in an isolated worktree with parallel agents, on a `review/pr-<N>` branch that tracks the PR source. Params: `repo`, `pr` (number / `mine`). |
 | `a_r_l_staging_qa_sweep` | local | Unattended staging smoke-test that files only confirmed, reproducible bugs to a Jira epic (settle-and-reproduce gate, dedup-first). Params: `flow_skill`, `base_url`, `epic`. |
 | `a_r_l_weekly_status_report` | local | Reconcile a task-flow workspace against real merge state, then generate the weekly report off the corrected state. Params: `workspace_dir`, `audience`, `report_dest`. |
-| `a_r_l_session_digest` | local | Summarize closed/stale Claude Code sessions (intent, what happened, code paths, outcome) into the mdnest `ClaudeSessions` catalog plus a rolled-up index. Params: `stale_days`, `max`, project filter. |
-| `a_r_l_psx_advisor` | local | Pull the live PSX / KSE-100 state, turn a free-cash amount into a ready-to-place buy plan with exact share units (deterministic sizer, Shariah lean), write a dated report + `latest.md` to the mdnest `StayUptoDate/PSX` tracker, and report in chat. Params: `cash`, `mdnest_path`, `shariah`, `risk`. |
-| `a_r_l_olx_hunter` | local | Scan OLX (or any classifieds site) for a wanted item under budget and save fresh matches. Params: `query`, `max_budget`, `save_dir`, optional `site`. |
 
 ### Interactive (run on demand)
 
@@ -85,10 +80,13 @@ Full marker glossary (used across the whole repo, not just skills): `a_` = mine 
 | `a_sk_message_writer` | Draft / sharpen professional work messages (Slack, email, escalations) from a VP of Engineering standpoint. |
 | `a_sk_routine_instruction_writer` | Turn a rough task description into a clean, self-contained instruction prompt for an autonomous or scheduled routine. |
 | `a_sk_l_review_pr` | Review a GitHub PR end-to-end from just its URL: resolve the repo to your existing local clone (cache → `cd_w` scan, no duplicate clone — via `scripts/a_s_resolve_repo`), worktree the PR's real head branch updated to latest, run the project's `aa-review-pr` (or global `aa-global-pr-reviewer`), auto-post the bar-clearing comments, then tear the worktree + local branch down (remote never touched). Params: `pr` (URL / `owner/repo#N`), `post`, `reviewer`. Local. |
-| `a_sk_mdnest_fix` | Quick fix workflow for the `mdnest` CLI: implement, rebuild test instance, commit. |
 | `a_sk_commit` | Turn the current changes into a clean, convention-matching git commit (delegates the message to `a_sag_commit_writer`). Imported + de-coupled from the framework's `aa-commit`. |
 | `a_sk_pr` | Open a GitHub PR for the current branch, filling the project's PR template (via `a_sag_pr_writer`), correct base, right permission posture. Imported + de-coupled from `aa-pr`. |
 | `a_sk_sonarqube_coverage` | Drive new-code test coverage up to the SonarQube / CI gate (find coverage cmd → test the uncovered changed lines in the project's testing style → re-run until green). Imported + de-coupled from `sonarqube-test-coverage`. |
+
+### Personal-only skills live in a private overlay
+
+Personal-life and personal-tool skills (OLX hunter, PSX advisor, the AI / Claude trackers, session digest, mdnest fix) are **not in this repo**. They live in a private overlay repo that reuses this repo's installers via `CLAUDE_SKILLS_SRC` / `CLAUDE_AGENTS_SRC`, so nothing is duplicated. This repo stays generic and publicly shareable.
 
 ## Adding a new skill
 
