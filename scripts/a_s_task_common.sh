@@ -35,7 +35,7 @@ fi
 A_TASK_AA_WT_DIR="${AA_WORKTREE_DIR:-$HOME/.claude/scripts/aa-worktree}"
 
 # Default Jira project key, used when the user types a bare ticket number.
-A_TASK_DEFAULT_KEY="${A_TASK_DEFAULT_KEY:-WU}"
+A_TASK_DEFAULT_KEY="${A_TASK_DEFAULT_KEY:-PROJ}"
 
 # Matrix "digital rain" splash for a_c_task_start. Delegates to the standalone
 # bash script scripts/a_s_task_fx, run as its OWN process so the bash-only
@@ -111,7 +111,7 @@ a_task_slug() {
 }
 
 # Normalize a ticket id into "KEY-NUM". Accepts a bare number ("123" -> PROJ-123),
-# "PROJ-123" / "wu123" / "WU123", or a pasted Jira URL such as
+# "PROJ-123" / "proj123" / "PROJ123", or a pasted Jira URL such as
 # https://your-org.atlassian.net/browse/PROJ-1009 (and with ?query/#fragment).
 # Echoes "KEY-NUM" or fails (rc 1).
 a_task_norm_ticket() {
@@ -129,7 +129,7 @@ a_task_norm_ticket() {
     # Pull an embedded KEY-NUM token out (e.g. from a pasted Jira URL). The LAST
     # match wins, so a host like foo-2.example.com can't shadow .../browse/PROJ-9.
     # If there is no dashed token, treat the whole input as the candidate (so
-    # "WU123" without a dash still works via the optional-dash regex below).
+    # "PROJ123" without a dash still works via the optional-dash regex below).
     cand="$(printf '%s' "$raw" | grep -oE '[A-Za-z]{1,15}-[0-9]+' | tail -1)"
     [ -z "$cand" ] && cand="$raw"
 

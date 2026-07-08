@@ -174,8 +174,8 @@ func (c *Client) FindPageByTitle(title, parentID string) (*Page, error) {
 }
 
 // FindPageByPath splits a slash-delimited path and walks from the space root.
-// Example: "Engineering/Backend/Umrah" → space root → "Engineering" →
-// "Backend" → "Umrah".
+// Example: "Engineering/Backend/Payments" → space root → "Engineering" →
+// "Backend" → "Payments".
 func (c *Client) FindPageByPath(path string) (*Page, error) {
 	segments := splitPath(path)
 	if len(segments) == 0 {

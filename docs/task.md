@@ -112,8 +112,8 @@ a_c_task_start -y -r myrepo -t 942 -f "list filter" -b main -c -p "read the tick
 
 ## Branch naming
 
-`<TICKET>-<feature-slug>`. The ticket is normalized: `PROJ-123`, `wu123`, a bare
-`123` (default project key `WU`, override with `A_TASK_DEFAULT_KEY`), or a pasted
+`<TICKET>-<feature-slug>`. The ticket is normalized: `PROJ-123`, `proj123`, a bare
+`123` (default project key `PROJ`, override with `A_TASK_DEFAULT_KEY`), or a pasted
 Jira browse URL like `https://your-org.atlassian.net/browse/PROJ-1009` all resolve
 to the key. The feature text is slugified (lowercased, non-alphanumeric runs
 collapse to single dashes). Example: ticket `123` + "Add login page" ->

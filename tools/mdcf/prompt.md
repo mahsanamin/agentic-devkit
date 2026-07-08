@@ -29,7 +29,7 @@ A fast, single-binary CLI for engineers to push Markdown files to Confluence and
    github_repo_url: "https://github.com/org/repo"   ← optional, for Mermaid source links
 
 3. Subdirectory — .mdcf.yaml deeper in tree, inherits from parent, overrides only what differs
-   parent_page_path: "Engineering/Backend/Umrah"
+   parent_page_path: "Engineering/Backend/Payments"
 
 Config resolution for push: start from target file's directory, walk up collecting .mdcf.yaml files, merge all, then merge with global. Deeper wins.
 

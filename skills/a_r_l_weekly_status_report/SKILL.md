@@ -21,7 +21,7 @@ Run autonomously; the only place you pause is the explicit approval gate below, 
 | `fixer_skill` | Reconciliation skill, **run first, every run**. Invoke it by name (it sets `disable-model-invocation`, so it will not auto-fire). | `/aa-task-flow-progress-fixer` |
 | `report_skill` | Report-generation skill. | `/aa-weekly-report` |
 | `config` | Workspace config the skills read (namespace, repos, release branches). | `.claude/config_hints.json` |
-| `slack_channels` | Project Slack channels read (read-only) for conversational hints after the report. **Never hardcode these in the skill** — read them from `config` (`weekly_report.slack_channels`), or pass them in. Each is `{id, name, kind}`. | for Umrah: the code/dev channel + the product channel, configured in `config` |
+| `slack_channels` | Project Slack channels read (read-only) for conversational hints after the report. **Never hardcode these in the skill** — read them from `config` (`weekly_report.slack_channels`), or pass them in. Each is `{id, name, kind}`. | for a project: the code/dev channel + the product channel, configured in `config` |
 
 A typical workspace: per-platform task folders under `Backend/` and `Frontend/` as `OnGoingTasks/` and `DoneTasks/`; status rows in `TasksSummary/<Platform>.md`; config in `config` (namespace, GitHub repos per platform, release branches like `develop` + `release/*`).
 

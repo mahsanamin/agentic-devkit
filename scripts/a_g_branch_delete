@@ -148,7 +148,7 @@ if [ "$IS_MERGED" = false ]; then
         # Try to extract ticket numbers from branch commits and verify in main
         TICKET_VERIFIED=false
         BRANCH_COMMITS=$(git log --oneline "$MERGE_BASE".."$BRANCH_NAME" 2>/dev/null)
-        # Extract ticket patterns like WU-339, JIRA-123, ABC-1234, etc.
+        # Extract ticket patterns like PROJ-339, JIRA-123, ABC-1234, etc.
         TICKETS=$(echo "$BRANCH_COMMITS" | grep -oE '[A-Z]{2,}-[0-9]+' | sort -u)
 
         if [ -n "$TICKETS" ]; then

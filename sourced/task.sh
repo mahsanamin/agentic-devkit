@@ -7,7 +7,7 @@
 # that sit on PATH in scripts/.
 #
 #   a_c_task_start   pick a repo, name a branch from a Jira ticket
-#                    (WU-123-feature), and create a worktree via
+#                    (PROJ-123-feature), and create a worktree via
 #                    aa_g_worktree_init.
 #   a_c_task_resume  switch back into an active task's worktree.
 #   a_c_task_list    show every active task with live state (read-only).

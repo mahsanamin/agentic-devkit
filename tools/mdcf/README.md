@@ -125,7 +125,7 @@ github_repo_url: https://github.com/OWNER/my-repo   # optional — adds "View so
 Inherits from shallower `.mdcf.yaml`s. Override only what differs:
 
 ```yaml
-parent_page_path: Engineering/Backend/Umrah
+parent_page_path: Engineering/Backend/Payments
 ```
 
 When pushing a file, mdcf walks from the file's directory up to `/`, collects every `.mdcf.yaml`, merges them (deeper wins), then merges the global config.

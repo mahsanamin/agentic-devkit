@@ -3,7 +3,7 @@
 #
 # With no argument, shows a numbered list of active tasks (with live dirty /
 # ahead-behind state) and cds into the one you pick. With an argument, matches
-# it against a ticket (WU-123) or a branch name and jumps straight in.
+# it against a ticket (PROJ-123) or a branch name and jumps straight in.
 #
 # Sourced by the wrapper in sourced/task.sh so the cd sticks.
 #
@@ -13,7 +13,7 @@
 #   a_c_task_resume -h                   show this help
 #
 # Argument (optional):
-#   <ticket-or-branch>   a ticket (e.g. WU-123) or branch name to match.
+#   <ticket-or-branch>   a ticket (e.g. PROJ-123) or branch name to match.
 #                        [default: none = show the interactive picker]
 
 # Locate this repo's scripts. Prefer A_C_WORKFLOW_DIR (set when the work repo is
