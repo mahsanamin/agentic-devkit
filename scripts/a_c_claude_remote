@@ -1,0 +1,163 @@
+#!/bin/bash
+# a_c_claude_remote: launch an interactive Claude Code session in a chosen
+# directory with Remote Control already enabled, optionally seeded with a prompt.
+#
+# Safe to call standalone or from other scripts (e.g. `a_c_task_start -c` runs it
+# by path) - it is flag-driven and needs no interactive input.
+#
+# Instead of starting `claude` and then typing `/remote-control`, this uses the
+# native `claude --remote-control` flag, so Remote Control is live from the first
+# second and your initial prompt still runs.
+#
+# The given directory is where the session starts (the script cd's into it before
+# launching, so your own shell stays put).
+#
+# Usage:
+#   a_c_claude_remote <dir> [prompt]
+#   a_c_claude_remote [-n|--name <name>] <dir> [prompt] [-- <extra claude args>]
+#
+# Arguments:
+#   <dir>     Directory to start the session in (required).
+#   prompt    Optional first message sent to Claude. Quote it.
+#
+# Options:
+#   -n, --name <name>   Name for the Remote Control session (shown in the app).
+#   -N, --dry-run       Print the command that would run, then exit.
+#   -h, --help          Show this help.
+#
+# Anything after a literal `--` is passed straight through to `claude`, e.g.
+# a permission mode so a remote-driven session is not blocked on prompts:
+#   a_c_claude_remote ~/Repos/foo "fix the build" -- --permission-mode acceptEdits
+#
+# Examples:
+#   a_c_claude_remote ~/Repos/foo "read docs/spec.md and start working"
+#   a_c_claude_remote .                         # plain remote session, here
+#   a_c_claude_remote -n nightly ~/Repos/foo "run the suite and fix failures"
+
+set -euo pipefail
+
+prog="${0##*/}"
+
+usage() {
+    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# Pre-authorize the SPECIFIC target directory for an unattended remote session so
+# Claude Code does not stall on its per-folder "Do you trust the files in this
+# folder?" dialog. Scope is deliberately just this folder: we set that project's
+# hasTrustDialogAccepted (and, when the launch asks for bypass, that project's
+# bypassPermissionsModeAccepted). We intentionally do NOT flip the machine-wide
+# `bypassPermissionsModeAccepted` switch: accepting bypass risk for the whole
+# machine is a one-time human decision (run `claude --dangerously-skip-permissions`
+# once and accept), not something a launcher should do silently. Best-effort and
+# atomic (temp + os.replace): any parse/write problem leaves the original file
+# untouched and never blocks the launch. Override the config path with A_CLAUDE_JSON.
+_authorize_dir() {
+    local dir="$1" want_bypass="$2"
+    command -v python3 >/dev/null 2>&1 || return 0
+    local cj="${A_CLAUDE_JSON:-$HOME/.claude.json}"
+    [ -f "$cj" ] || return 0
+    A_AUTH_DIR="$dir" A_AUTH_BYPASS="$want_bypass" python3 - "$cj" <<'PY' 2>/dev/null || true
+import json,os,sys,tempfile
+cj=sys.argv[1]
+d=os.environ["A_AUTH_DIR"]; want=os.environ.get("A_AUTH_BYPASS")=="1"
+try:
+    with open(cj) as f: data=json.load(f)
+except Exception:
+    sys.exit(0)                     # unparseable: leave it alone
+if not isinstance(data,dict): sys.exit(0)
+proj=data.setdefault("projects",{})
+if not isinstance(proj,dict): sys.exit(0)
+p=proj.get(d)
+if not isinstance(p,dict): p={}; proj[d]=p
+changed=False
+if p.get("hasTrustDialogAccepted") is not True:
+    p["hasTrustDialogAccepted"]=True; changed=True          # trust THIS folder only
+if want and p.get("bypassPermissionsModeAccepted") is not True:
+    p["bypassPermissionsModeAccepted"]=True; changed=True   # per-project, not global
+if not changed: sys.exit(0)
+dir_=os.path.dirname(cj) or "."
+try:
+    fd,tmp=tempfile.mkstemp(dir=dir_,prefix=".claude.json.",suffix=".tmp")
+    with os.fdopen(fd,"w") as f: json.dump(data,f,indent=2)
+    os.replace(tmp,cj)              # atomic: readers never see a half file
+except Exception:
+    try: os.unlink(tmp)
+    except Exception: pass
+    sys.exit(0)
+PY
+}
+
+name=""
+dry_run=0
+positionals=()
+passthrough=()
+after_ddash=0
+
+while [[ $# -gt 0 ]]; do
+    if [[ $after_ddash -eq 1 ]]; then
+        passthrough+=("$1"); shift; continue
+    fi
+    case "$1" in
+        -h|--help)    usage; exit 0 ;;
+        -N|--dry-run) dry_run=1; shift ;;
+        -n|--name)
+            [[ $# -ge 2 ]] || { echo "$prog: $1 requires a value" >&2; exit 2; }
+            name="$2"; shift 2 ;;
+        --)           after_ddash=1; shift ;;
+        -*)           echo "$prog: unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *)            positionals+=("$1"); shift ;;
+    esac
+done
+
+if [[ ${#positionals[@]} -lt 1 ]]; then
+    echo "$prog: missing required <dir> argument" >&2
+    usage >&2
+    exit 2
+fi
+
+dir="${positionals[0]}"
+prompt="${positionals[*]:1}"   # everything after <dir> joined into one prompt
+
+if [[ ! -d "$dir" ]]; then
+    echo "$prog: not a directory: $dir" >&2
+    exit 1
+fi
+
+# Build the claude argv. The prompt is the single positional; --remote-control
+# goes last (with no name, or with the name right after it) so the optional-value
+# flag never swallows the prompt.
+cmd=(claude)
+[[ -n "$prompt" ]] && cmd+=("$prompt")
+[[ ${#passthrough[@]} -gt 0 ]] && cmd+=("${passthrough[@]}")
+cmd+=(--remote-control)
+[[ -n "$name" ]] && cmd+=("$name")
+
+cd "$dir"
+
+if [[ $dry_run -eq 1 ]]; then
+    printf '%s: would run in %s:\n  ' "$prog" "$PWD"
+    printf '%q ' "${cmd[@]}"
+    printf '\n'
+    exit 0
+fi
+
+if ! command -v claude >/dev/null 2>&1; then
+    echo "$prog: 'claude' not found on PATH - cannot launch a session." >&2
+    exit 127
+fi
+
+# Unattended launch: pre-authorize this dir so Claude honors the requested mode
+# instead of stalling on / downgrading at its trust + bypass gates. Seed the
+# global bypass acceptance only when the launch actually asks for bypass.
+want_bypass=0
+for a in ${passthrough[@]+"${passthrough[@]}"}; do
+    case "$a" in
+        --dangerously-skip-permissions) want_bypass=1 ;;
+        bypassPermissions|--permission-mode=bypassPermissions) want_bypass=1 ;;
+    esac
+done
+_authorize_dir "$PWD" "$want_bypass"
+
+printf '%s: launching in %s\n' "$prog" "$PWD" >&2
+exec "${cmd[@]}"

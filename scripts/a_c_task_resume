@@ -1,0 +1,82 @@
+#!/bin/bash
+# a_c_task_resume - switch back into an active task's worktree.
+#
+# With no argument, shows a numbered list of active tasks (with live dirty /
+# ahead-behind state) and cds into the one you pick. With an argument, matches
+# it against a ticket (WU-123) or a branch name and jumps straight in.
+#
+# Sourced by the wrapper in sourced/task.sh so the cd sticks.
+#
+# Usage:
+#   a_c_task_resume                      pick from a numbered list (Enter = task #1)
+#   a_c_task_resume <ticket-or-branch>   jump straight to the matching task
+#   a_c_task_resume -h                   show this help
+#
+# Argument (optional):
+#   <ticket-or-branch>   a ticket (e.g. WU-123) or branch name to match.
+#                        [default: none = show the interactive picker]
+
+# Locate this repo's scripts. Prefer A_C_WORKFLOW_DIR (set when the work repo is
+# loaded alongside another my_setup checkout); fall back to MY_WORKFLOW_DIR.
+A_C_TASK_BASE="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
+if [ -z "$A_C_TASK_BASE" ]; then
+    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the my_setup repo."
+    return 1 2>/dev/null || exit 1
+fi
+. "$A_C_TASK_BASE/scripts/a_s_task_common.sh"
+
+_a_c_task_resume_main() {
+    case "${1:-}" in
+        -h|--help) sed -n '2,17p' "$A_C_TASK_BASE/scripts/a_c_task_resume" | sed 's/^# \{0,1\}//'; return 0 ;;
+    esac
+    local key="${1:-}" records sel
+    records="$(a_task_records)"
+    if [ -z "$records" ]; then
+        echo -e "${A_T_YELLOW}No active tasks. Start one with a_c_task_start.${A_T_NC}"
+        return 0
+    fi
+
+    if [ -n "$key" ]; then
+        sel="$(a_task_find "$key")"
+        [ -z "$sel" ] && { echo -e "${A_T_RED}No task matches '$key'.${A_T_NC}"; return 1; }
+    else
+        echo -e "${A_T_BLUE}Active tasks:${A_T_NC}" >&2
+        local n=0 t b m r w c
+        while IFS="$(printf '\t')" read -r t b m r w c; do
+            n=$((n + 1))
+            printf '  [%d] %-11s %-28s %-12s %-7s %s\n' \
+                "$n" "$t" "$b" "$(basename "$r")" "$(a_task_wt_dirty "$w")" "$(a_task_wt_ab "$w")" >&2
+        done <<EOF
+$records
+EOF
+        printf "Resume which task (number) [Enter = 1]: " >&2
+        local choice; read -r choice
+        choice="${choice:-1}"          # Enter selects the first task
+        case "$choice" in
+            *[!0-9]*) echo -e "${A_T_RED}Not a number.${A_T_NC}"; return 1 ;;
+        esac
+        sel="$(printf '%s\n' "$records" | sed -n "${choice}p")"
+        [ -z "$sel" ] && { echo -e "${A_T_RED}No task #$choice.${A_T_NC}"; return 1; }
+    fi
+
+    local ticket branch mode repo worktree created
+    IFS="$(printf '\t')" read -r ticket branch mode repo worktree created <<EOF
+$sel
+EOF
+
+    if [ "$mode" = "worktree" ] && [ -d "$worktree" ]; then
+        cd "$worktree" || return 1
+        echo -e "${A_T_GREEN}✓ Resumed $ticket${A_T_NC} ${A_T_DIM}($worktree)${A_T_NC}"
+    elif [ -d "$repo" ]; then
+        cd "$repo" || return 1
+        echo -e "${A_T_YELLOW}Worktree missing - switched to $repo; checking out $branch.${A_T_NC}"
+        git checkout "$branch" 2>/dev/null \
+            || echo -e "${A_T_RED}Branch $branch not found here.${A_T_NC}"
+    else
+        echo -e "${A_T_RED}Neither the worktree nor the repo path exists for $ticket.${A_T_NC}"
+        echo -e "${A_T_DIM}Clean it up with: a_c_task_finish $ticket${A_T_NC}"
+        return 1
+    fi
+}
+
+_a_c_task_resume_main "$@"

@@ -1,0 +1,140 @@
+#!/bin/bash
+# a_c_idea_start: spin up a fresh "idea" scratch dir and drop Claude into it, in
+# one command. Makes $HOME/repos/ideas/<idea-name>, then launches a
+# Claude session there in auto mode with Remote Control on, inside an "ideas"
+# zellij session under a tab named for the idea.
+#
+#   a_c_idea_start <idea-name> "<prompt>" [options]
+#
+# Reuses the same hardened helpers as a_c_review_pr / a_c_task_start:
+#   a_c_claude_remote        launch claude with --remote-control + a kickoff prompt
+#   a_task_zellij_* (in a_s_task_common.sh)  create the session/tab + run in it
+#
+# Arguments (both required):
+#   <idea-name>             names the scratch dir and the default tab (spaces and
+#                           slashes become dashes).
+#   "<prompt>"              the kickoff message sent to Claude (quote it).
+#
+# Options (defaults in brackets):
+#   -t, --tab <name>        zellij TAB name.                    [default: <idea-name>]
+#   -z, --zellij <session>  zellij SESSION that groups the tabs.
+#                           [default: $A_C_IDEAS_ZELLIJ_SESSION, else "ideas"]
+#       --no-zellij         run in the current terminal, no zellij.        [default: off]
+#   -s, --safe              gentler posture: --permission-mode acceptEdits (auto-accepts
+#                           edits, still asks before bash/other tools).     [default: off]
+#   -y, --yolo              full auto (no prompts at all). This is ALREADY the default for
+#                           an idea sandbox, so -y is just an explicit alias.
+#   -n, --dry-run           print the plan and exit; no side effects.      [default: off]
+#   -h, --help              show this help
+#
+# Permission posture DEFAULT: full auto (--dangerously-skip-permissions). A fresh
+# idea dir is your own empty greenfield sandbox, so Claude runs edits AND commands
+# with no gating. Use -s/--safe for the gentler acceptEdits posture.
+#
+# The idea dir root is $A_C_IDEAS_DIR, else <cd_w>/ideas (default
+# $HOME/repos/ideas). Anything after `--` is passed to claude and
+# overrides the default permission posture.
+#
+# Examples:
+#   a_c_idea_start voice-notes "prototype a CLI that transcribes voice memos"
+#   a_c_idea_start psx-screener "build a small PSX screener; plan first" -y
+
+set -u
+prog="${0##*/}"
+here="$(cd "$(dirname "$0")" && pwd)"
+
+_tool() { if [ -x "$here/$1" ]; then printf '%s' "$here/$1"; else printf '%s' "$1"; fi; }
+CLAUDE_REMOTE="$(_tool a_c_claude_remote)"
+
+usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
+
+safe_mode=0; dry=0; no_zellij=0; zellij_session="${A_C_IDEAS_ZELLIJ_SESSION:-ideas}"
+idea=""; prompt=""; tab_arg=""; passthrough=(); after_ddash=0
+while [ "$#" -gt 0 ]; do
+    if [ "$after_ddash" -eq 1 ]; then passthrough+=("$1"); shift; continue; fi
+    case "$1" in
+        -y|--yolo)    : ;;    # full auto is already the default; kept as an explicit alias
+        -s|--safe)    safe_mode=1 ;;
+        -z|--zellij)  zellij_session="${2:-}"; shift ;;
+        -t|--tab)     tab_arg="${2:-}"; shift ;;
+        --no-zellij)  no_zellij=1 ;;
+        -n|--dry-run) dry=1 ;;
+        --)           after_ddash=1 ;;
+        -h|--help)    usage; exit 0 ;;
+        -*)           echo "$prog: unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *)            if [ -z "$idea" ]; then idea="$1"
+                      elif [ -z "$prompt" ]; then prompt="$1"
+                      else echo "$prog: unexpected argument: $1" >&2; exit 2; fi ;;
+    esac
+    shift
+done
+[ -n "$idea" ]   || { echo "$prog: need an <idea-name>" >&2; usage >&2; exit 2; }
+[ -n "$prompt" ] || { echo "$prog: need a \"<prompt>\" (what the idea is)" >&2; usage >&2; exit 2; }
+
+# Filesystem/tab-safe name: spaces and slashes -> dash, drop other risky chars.
+_sanitize() { local s="${1// /-}"; s="${s//\//-}"; printf '%s' "$s" | tr -cd 'A-Za-z0-9._-'; }
+safe="$(_sanitize "$idea")"
+[ -n "$safe" ] || { echo "$prog: idea name '$idea' has no usable characters" >&2; exit 2; }
+# Zellij tab name: -t if given, else the idea-name.
+tab="$(_sanitize "${tab_arg:-$idea}")"; [ -n "$tab" ] || tab="$safe"
+
+IDEAS_ROOT="${A_C_IDEAS_DIR:-${a_dir_w_repos:-$HOME/repos}/ideas}"
+IDEA_DIR="$IDEAS_ROOT/$safe"
+
+# Permission posture. Default is full auto (--dangerously-skip-permissions) for
+# a greenfield idea sandbox; -s/--safe steps down to acceptEdits; a permission
+# flag passed via `-- ...` overrides both.
+has_perm=0
+for a in ${passthrough[@]+"${passthrough[@]}"}; do
+    case "$a" in --permission-mode|--permission-mode=*|--dangerously-skip-permissions|--bare) has_perm=1 ;; esac
+done
+cr_extra=()
+if [ "$has_perm" -eq 1 ]; then :
+elif [ "$safe_mode" -eq 1 ]; then cr_extra+=(--permission-mode acceptEdits)
+else cr_extra+=(--dangerously-skip-permissions); fi
+[ "${#passthrough[@]}" -gt 0 ] && cr_extra+=("${passthrough[@]}")
+
+# Zellij decision: default ON when installed (opt out with --no-zellij).
+use_zellij=0; zj_off_reason="not installed"
+[ "$no_zellij" -eq 1 ] && zj_off_reason="--no-zellij"
+if [ "$no_zellij" -eq 0 ] && [ -n "$zellij_session" ] && command -v zellij >/dev/null 2>&1; then
+    if . "$here/a_s_task_common.sh" 2>/dev/null; then use_zellij=1
+    else zj_off_reason="could not load a_s_task_common.sh"; fi
+fi
+
+if [ "$dry" -eq 1 ]; then
+    echo "would start idea:  $idea"
+    echo "  dir:        $IDEA_DIR  (created if absent)"
+    if [ "$use_zellij" -eq 1 ]; then echo "  zellij:     session '$zellij_session' · tab '$tab' (created if absent)"
+    else echo "  zellij:     off ($zj_off_reason) - launch in current terminal"; fi
+    echo "  claude:     $CLAUDE_REMOTE -n $safe <dir> <prompt> -- ${cr_extra[*]}"
+    exit 0
+fi
+
+# 1. create the idea dir
+mkdir -p "$IDEA_DIR" || { echo "$prog: could not create $IDEA_DIR" >&2; exit 1; }
+echo "$prog: idea dir ready: $IDEA_DIR" >&2
+
+# 2. launch Claude (auto mode + remote control), in a zellij 'ideas' tab if we can
+if [ "$use_zellij" -eq 1 ]; then
+    launcher="$(a_task_zellij_make_launcher "$IDEA_DIR" "$CLAUDE_REMOTE" -n "$safe" "$IDEA_DIR" "$prompt" -- "${cr_extra[@]}")" \
+        || { echo "$prog: could not build launcher" >&2; exit 1; }
+    echo "$prog: opening in zellij session '$zellij_session', tab '$tab' ..." >&2
+    if a_task_zellij_setup "$zellij_session" "$tab" "$IDEA_DIR" "$launcher"; then
+        if [ -z "${ZELLIJ:-}" ]; then
+            zellij attach "$zellij_session"          # not in zellij: land on the new tab (detach to return)
+        elif [ "${ZELLIJ_SESSION_NAME:-}" = "$zellij_session" ]; then
+            zellij action go-to-tab-name "$tab" >/dev/null 2>&1
+            echo "  switched to tab '$tab' (this session)." >&2
+        else
+            a_task_zellij_focus_tab "$zellij_session" "$tab"
+            echo "  idea running in session '$zellij_session', tab '$tab'." >&2
+            echo "  switch to it:  zellij attach $zellij_session   (or Ctrl-o w)" >&2
+        fi
+        exit 0
+    fi
+    echo "$prog: zellij setup failed; launching in this terminal instead." >&2
+fi
+
+# Fallback: launch in the current terminal.
+bash "$CLAUDE_REMOTE" -n "$safe" "$IDEA_DIR" "$prompt" -- "${cr_extra[@]}"

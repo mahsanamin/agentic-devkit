@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+#
+# a_s_crawler - a polite, cache-first web fetcher for the `a_sag_crawler` agent.
+#
+# This script is deliberately dumb about WHAT to fetch. The agent decides the
+# list of sites (via WebSearch + judgement); this tool just fetches a URL
+# politely and caches the response so repeated runs are cheap and we never
+# hammer a site. Think "well-behaved curl with a cache", not a spider.
+#
+# Politeness, by design:
+#   - identifies itself with an honest User-Agent
+#   - serves from cache when a copy is still fresh (TTL), so re-runs make no
+#     network request at all
+#   - sleeps a small crawl-delay before every LIVE request
+#   - bounded timeout + a couple of retries, then gives up (no pounding)
+#   - read-only: GET only, never posts a form, logs in, or submits anything
+#
+# Usage:
+#   crawler fetch <url> [<url> ...]   Fetch URL(s), cache, print body to stdout
+#   crawler path  <url>               Print the cache file path for a URL
+#   crawler meta  <url>               Print stored metadata for a URL (json-ish)
+#   crawler robots <url>              Fetch+print the host's robots.txt (manners)
+#   crawler clear                     Remove the HTTP response cache
+#   crawler help                      This help
+#
+# Options (for `fetch`):
+#   --cache-dir DIR   Root cache dir         (default: $CRAWL_CACHE_DIR or /tmp/crawl_cache)
+#   --ttl SECONDS     Cache freshness window (default: 21600 = 6h)
+#   --delay SECONDS   Crawl-delay before each live request (default: 1)
+#   --out FILE        Also write the body to FILE
+#   --no-cache        Ignore any cached copy; always fetch live
+#   --ua STRING       Override the User-Agent
+#
+# Env:
+#   CRAWL_CACHE_DIR   Default cache root (overridden by --cache-dir)
+#   CRAWLER_UA        Default User-Agent  (overridden by --ua)
+#
+# Exit codes: 0 ok (incl. cache hit) · 2 usage error · 3 fetch failed
+set -euo pipefail
+
+CACHE_DIR="${CRAWL_CACHE_DIR:-/tmp/crawl_cache}"
+TTL=21600
+DELAY=1
+NO_CACHE=0
+OUT=""
+UA="${CRAWLER_UA:-a_sag_crawler/1.0 (personal research bot; cache-first; contact: local user)}"
+
+die()  { printf 'crawler: %s\n' "$*" >&2; exit 2; }
+note() { printf 'crawler: %s\n' "$*" >&2; }
+
+# sha256 of a string -> stable cache key (macOS shasum, Linux sha256sum)
+hash_key() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+  else
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  fi
+}
+
+now_epoch() { date +%s; }
+
+resp_dir() { printf '%s/_http/responses' "$CACHE_DIR"; }
+
+cache_body_path() { printf '%s/%s.body' "$(resp_dir)" "$(hash_key "$1")"; }
+cache_meta_path() { printf '%s/%s.meta' "$(resp_dir)" "$(hash_key "$1")"; }
+
+# Is the cached copy still fresh? 0 = fresh, 1 = stale/missing
+is_fresh() {
+  local meta; meta="$(cache_meta_path "$1")"
+  [ -f "$meta" ] || return 1
+  local fetched_at; fetched_at="$(awk -F'\t' '$1=="fetched_at"{print $2}' "$meta" 2>/dev/null || true)"
+  [ -n "$fetched_at" ] || return 1
+  local age=$(( $(now_epoch) - fetched_at ))
+  [ "$age" -lt "$TTL" ]
+}
+
+do_fetch_one() {
+  local url="$1"
+  local body meta
+  body="$(cache_body_path "$url")"
+  meta="$(cache_meta_path "$url")"
+  mkdir -p "$(resp_dir)"
+
+  if [ "$NO_CACHE" -eq 0 ] && is_fresh "$url"; then
+    note "cache hit  $url"
+    cat "$body"
+    [ -n "$OUT" ] && cp "$body" "$OUT"
+    return 0
+  fi
+
+  # live request - be polite first
+  sleep "$DELAY"
+  note "fetch live $url"
+  local code
+  if ! code="$(curl -sSL --compressed \
+        --max-time 30 --retry 2 --retry-delay 2 \
+        -A "$UA" \
+        -H 'Accept: text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8' \
+        -w '%{http_code}' \
+        -o "$body" \
+        "$url")"; then
+    note "FAILED      $url (network error)"
+    return 3
+  fi
+
+  {
+    printf 'url\t%s\n'         "$url"
+    printf 'http_code\t%s\n'   "$code"
+    printf 'fetched_at\t%s\n'  "$(now_epoch)"
+    printf 'bytes\t%s\n'       "$(wc -c < "$body" | tr -d ' ')"
+    printf 'user_agent\t%s\n'  "$UA"
+  } > "$meta"
+
+  if [ "$code" -ge 400 ] || [ "$code" -eq 000 ]; then
+    note "HTTP $code   $url (kept in cache for inspection)"
+    cat "$body"
+    [ -n "$OUT" ] && cp "$body" "$OUT"
+    return 3
+  fi
+
+  cat "$body"
+  [ -n "$OUT" ] && cp "$body" "$OUT"
+  return 0
+}
+
+cmd_fetch() {
+  local urls=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cache-dir) CACHE_DIR="$2"; shift 2;;
+      --ttl)       TTL="$2";       shift 2;;
+      --delay)     DELAY="$2";     shift 2;;
+      --out)       OUT="$2";       shift 2;;
+      --ua)        UA="$2";        shift 2;;
+      --no-cache)  NO_CACHE=1;     shift;;
+      -*)          die "unknown option: $1";;
+      *)           urls+=("$1");   shift;;
+    esac
+  done
+  [ "${#urls[@]}" -gt 0 ] || die "fetch needs at least one URL"
+  local rc=0
+  for u in "${urls[@]}"; do
+    do_fetch_one "$u" || rc=$?
+  done
+  return "$rc"
+}
+
+cmd_robots() {
+  [ $# -ge 1 ] || die "robots needs a URL"
+  # derive scheme://host/robots.txt
+  local url="$1"
+  local base
+  base="$(printf '%s' "$url" | sed -E 's#^([a-zA-Z]+://[^/]+).*#\1#')"
+  [ -n "$base" ] || die "could not parse host from: $url"
+  do_fetch_one "$base/robots.txt"
+}
+
+case "${1:-help}" in
+  fetch)  shift; cmd_fetch "$@";;
+  path)   shift; [ $# -ge 1 ] || die "path needs a URL";   cache_body_path "$1";;
+  meta)   shift; [ $# -ge 1 ] || die "meta needs a URL";   cat "$(cache_meta_path "$1")" 2>/dev/null || die "no meta cached for that URL";;
+  robots) shift; cmd_robots "$@";;
+  clear)  rm -rf "$(resp_dir)"; note "cleared $(resp_dir)";;
+  help|-h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//';;
+  *)      die "unknown command: ${1:-}. Try: crawler help";;
+esac

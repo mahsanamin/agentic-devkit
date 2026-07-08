@@ -83,6 +83,7 @@ Python handles data processing (HTTP, JSON, dedup). Bash only pipes data into `c
 |---|---|
 | `lib.py` | Shared: config, proxy HTTP, permalinks, user map, publishing |
 | `slack_poll.py` | Poll proxy, filter new messages, update watermarks |
+| `fetch_inbox.py` | Read-only "about me" fetcher: mentions + threads I'm in → one clean JSON doc (powers the `a_c_slack_inbox` script; feeds a reply-drafting routine) |
 | `slim_json.py` | Pre-filter JSON for Claude (truncate, limit replies) |
 | `send_dm.py` | Send summary to Slack DM |
 | `convert_mrkdwn.py` | Slack mrkdwn → Markdown |
@@ -99,6 +100,28 @@ Python handles data processing (HTTP, JSON, dedup). Bash only pipes data into `c
 | `report.sh` | merge → slim → claude -p → optional send |
 | `consolidate_run.sh` | enrich → claude links → claude summary → publish |
 | `cron_runner.sh` | PATH wrapper for crontab |
+
+## My Slack inbox (read-only, for a reply assistant)
+
+Separate from the summarizer's briefing flow, `fetch_inbox.py` pulls just the
+"about me" surface — every message where you're **@mentioned** plus every
+**thread you're in** (started, tagged, or replied to) — and emits one clean JSON
+doc. Unlike `slack_poll.py` it keeps no watermark: it returns the full current
+view, sorted newest-first, with a `needs_reply` flag per thread (true when the
+last message in the thread isn't yours). That's the input a reply-drafting
+routine reads to decide what to answer.
+
+It's exposed as a script on PATH, `a_c_slack_inbox` (in the repo's `scripts/`),
+which just sources this tool's `config.env` and runs `fetch_inbox.py`:
+
+```bash
+a_c_slack_inbox                     # full "about me" view, pretty JSON
+a_c_slack_inbox --needs-reply-only  # only threads awaiting my reply
+a_c_slack_inbox --quiet --save      # write DATA_DIR/inbox/latest.json (for cron)
+a_c_slack_inbox --help              # all flags
+```
+
+Read-only: it never posts. Tests: `python3 test_fetch_inbox.py`.
 
 ## Cost
 

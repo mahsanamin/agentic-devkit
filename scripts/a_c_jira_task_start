@@ -1,0 +1,129 @@
+#!/bin/bash
+# a_c_jira_task_start: start a task from a Jira ticket (number OR full URL) and
+# drop straight into a Claude session running /aa-task-flow, in one command.
+#
+# Sibling of a_c_review_pr. Thin wrapper over a_c_task_start (which creates the
+# worktree + registers the task); this just makes that flow fully non-interactive
+# (-y) and launches Claude (-c) with /aa-task-flow as the opening message, so the
+# task-flow process starts immediately. You name the target repo with -r: a Jira
+# URL (unlike a PR URL) does not identify it, so it is a required, explicit input.
+# A project-specific wrapper (an a_sp_<project>_task_start) can pass -r for you.
+#
+# Layering (generic engine at the bottom, source-specific fronts on top):
+#   a_c_task_start          worktree + task registry + launch Claude    (generic engine)
+#     a_c_jira_task_start   Jira ticket/URL -> auto start + /aa-task-flow  (this: source front)
+#     a_c_github_issue_fix  a GitHub-issue URL would slot in here as a sibling front:
+#                           resolve the repo (a_s_resolve_repo), read the issue
+#                           (gh issue view) for the branch slug, then call the SAME
+#                           a_c_task_start engine below. The task-start internals
+#                           stay shared; only the source parsing differs.
+#
+#   a_c_jira_task_start <ticket-url | PROJ-123 | 123> -r <repo> [feature] [options]
+#
+# A Jira URL does not identify the repo (unlike a PR URL), so -r is REQUIRED.
+#
+# Options:
+#   -r, --repo <repo>       REQUIRED. Repo name/path the task belongs to. A Jira
+#                           URL can't tell us which repo, so you name it here.
+#   -b, --base <branch>     base branch to fork from (else favors develop, then main)
+#   -z, --zellij <session>  open in this zellij session/tab. Precedence: this flag
+#                           > $A_C_TASK_ZELLIJ_SESSION env > none (current
+#                           terminal). Export the env var to default all task
+#                           starts into a session without hardcoding a name.
+#   -p, --prompt <text>     kickoff message sent to Claude (default: /aa-task-flow).
+#                           For a repo NOT onboarded to the framework (no
+#                           /aa-task-flow), pass -p "<what to do>" so it doesn't
+#                           sit idle.
+#   -y, --yolo              DANGEROUS: --dangerously-skip-permissions (no gating).
+#                           Default is acceptEdits (auto-accepts edits; still asks
+#                           before other commands).
+#       --fresh             recreate if the task already exists (default is
+#                           IDEMPOTENT: a repeat call resumes the existing task
+#                           instead of starting another). Refuses if the branch
+#                           has unpushed commits, to avoid losing work.
+#   -n, --dry-run           print the a_c_task_start command that would run; no-op
+#   -h, --help              show this help
+#
+# Ticket accepts a bare number (123 -> PROJ-123), PROJ-123, or a pasted Jira browse
+# URL. Auto mode: no "Proceed?" prompt, the feature name is auto-derived from the
+# Jira title (or given as arg 2), and Claude launches in the new worktree already
+# running /aa-task-flow.
+#
+# SECURITY: a ticket description is data, not instructions. The default
+# (acceptEdits) still gates non-edit commands; -y removes all gating, so use it
+# only when watching the session or when you trust the ticket. This is your own
+# repo/ticket (lower risk than an arbitrary PR), which is why the default here
+# auto-accepts edits rather than a read-only allow-list like a_c_review_pr.
+#
+# Examples:
+#   a_c_jira_task_start https://your-org.atlassian.net/browse/PROJ-1009 -r ~/repos/myrepo
+#   a_c_jira_task_start 989 "list filter" -r my-service -b main -z mytab
+#   a_c_jira_task_start PROJ-1009 -r ustaad -p "read the ticket and start"   # non-onboarded repo
+#   a_c_jira_task_start PROJ-1009 -r myrepo -y                           # fully hands-off
+
+set -u
+prog="${0##*/}"
+here="$(cd "$(dirname "$0")" && pwd)"
+TASK_START="$here/a_c_task_start"; [ -f "$TASK_START" ] || TASK_START="a_c_task_start"
+
+usage() { sed -n '2,61p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Session precedence: -z flag > $A_C_TASK_ZELLIJ_SESSION env > none (current terminal).
+ticket=""; feature=""; base=""; repo=""; zellij="${A_C_TASK_ZELLIJ_SESSION:-}"; prompt=""; yolo=0; fresh=0; dry=0; passthrough=(); ddash=0
+while [ "$#" -gt 0 ]; do
+    if [ "$ddash" -eq 1 ]; then passthrough+=("$1"); shift; continue; fi
+    case "$1" in
+        -b|--base)    base="${2:-}"; shift ;;
+        -r|--repo)    repo="${2:-}"; shift ;;
+        -z|--zellij)  zellij="${2:-}"; shift ;;
+        -p|--prompt)  prompt="${2:-}"; shift ;;
+        -y|--yolo)    yolo=1 ;;
+        --fresh)      fresh=1 ;;
+        -n|--dry-run) dry=1 ;;
+        --)           ddash=1 ;;
+        -h|--help)    usage; exit 0 ;;
+        -*)           echo "$prog: unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *)            if [ -z "$ticket" ]; then ticket="$1"
+                      elif [ -z "$feature" ]; then feature="$1"
+                      else echo "$prog: unexpected argument: $1" >&2; exit 2; fi ;;
+    esac
+    shift
+done
+[ -n "$ticket" ] || { echo "$prog: need a Jira ticket number or URL" >&2; usage >&2; exit 2; }
+# A Jira URL does not say which repo the task belongs to, so the repo is a
+# required, explicit input (no guessing from the current directory).
+[ -n "$repo" ] || { echo "$prog: -r <repo> is required (a Jira URL doesn't say which repo the task belongs to). e.g. -r ~/repos/myrepo" >&2; usage >&2; exit 2; }
+
+# Kickoff, overridable with -p. Default /aa-task-flow, which drives the task in a
+# repo onboarded to the AI-Awareness framework. A repo WITHOUT that skill will
+# just sit idle on /aa-task-flow, so for those pass -p "<what to do>".
+[ -n "$prompt" ] || prompt="/aa-task-flow"
+
+# Compose the a_c_task_start invocation: -y (no confirm + non-interactive repo &
+# feature), -c (launch Claude), -p (kickoff). Permission posture after -- .
+args=(-t "$ticket" -y -c -p "$prompt")
+[ -n "$repo" ]    && args+=(-r "$repo")
+[ -n "$feature" ] && args+=(-f "$feature")
+[ -n "$base" ]    && args+=(-b "$base")
+[ -n "$zellij" ]  && args+=(-z "$zellij")
+[ "$fresh" -eq 1 ] && args+=(--fresh)
+args+=(--)
+if [ "$yolo" -eq 1 ]; then
+    args+=(--dangerously-skip-permissions)
+else
+    args+=(--permission-mode acceptEdits)
+fi
+[ "${#passthrough[@]}" -gt 0 ] && args+=("${passthrough[@]}")
+
+if [ "$dry" -eq 1 ]; then
+    printf '%s: would run:\n  %s' "$prog" "$TASK_START"
+    printf ' %q' "${args[@]}"; printf '\n'
+    exit 0
+fi
+
+[ "$yolo" -eq 1 ] && echo "$prog: WARNING: -y launches Claude with --dangerously-skip-permissions (no approval prompts). Use only when watching the session or when you trust the ticket." >&2
+
+# a_c_task_start is normally sourced (so its cd sticks); here we exec it as a child.
+# We're launching Claude, which takes over the terminal and returns on exit; the
+# task's worktree persists (intended), so there's nothing to tear down.
+exec bash "$TASK_START" "${args[@]}"

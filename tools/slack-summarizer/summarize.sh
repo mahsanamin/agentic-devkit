@@ -3,6 +3,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 set -a; source "$SCRIPT_DIR/config.env"; set +a
+export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
 DATA_DIR="${DATA_DIR:-$HOME/.slack_summaries_data}"
 
 POLL_FILE="$1"
@@ -42,8 +43,10 @@ if [[ ! -s "$SUMMARY_FILE" ]] || grep -qi "not logged in" "$SUMMARY_FILE" 2>/dev
 fi
 rm -f "$DATA_DIR/summaries/$(date +%Y-%m-%d)/claude_err_"*.log 2>/dev/null
 
-# 3. Send to DM
-python3 "$SCRIPT_DIR/send_dm.py" "$SUMMARY_FILE"
+# 3. Send to DM as ONE rolling message per day (merge into today's message,
+#    delete the prior copy; weekly rollup for days older than WEEKLY_AFTER_DAYS).
+#    (Was: send_dm.py, which posted a brand-new message every run and flooded the DM.)
+python3 "$SCRIPT_DIR/dm_rolling.py" "$SUMMARY_FILE"
 
 # 4. Publish living doc (convert mrkdwn → markdown, dedup, merge)
 if python3 -c "from lib import publish_enabled; exit(0 if publish_enabled() else 1)" 2>/dev/null; then

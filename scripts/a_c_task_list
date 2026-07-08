@@ -1,0 +1,46 @@
+#!/bin/bash
+# a_c_task_list - show all active tasks (read-only).
+#
+# Reads the registry written by a_c_task_start and, for each task, reports the
+# live worktree state (clean / dirty / missing) and ahead/behind vs upstream.
+# Does not change directory or touch anything.
+#
+# Usage:
+#   a_c_task_list          list active tasks (no arguments, no options)
+#   a_c_task_list -h       show this help
+#
+# Takes no arguments and has no defaults to configure: it just prints the
+# current task registry. Read-only.
+
+# Locate this repo's scripts. Prefer A_C_WORKFLOW_DIR (set when the work repo is
+# loaded alongside another my_setup checkout); fall back to MY_WORKFLOW_DIR.
+A_C_TASK_BASE="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
+if [ -z "$A_C_TASK_BASE" ]; then
+    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the my_setup repo."
+    return 1 2>/dev/null || exit 1
+fi
+. "$A_C_TASK_BASE/scripts/a_s_task_common.sh"
+
+_a_c_task_list_main() {
+    case "${1:-}" in
+        -h|--help) sed -n '2,14p' "$A_C_TASK_BASE/scripts/a_c_task_list" | sed 's/^# \{0,1\}//'; return 0 ;;
+    esac
+    local records; records="$(a_task_records)"
+    if [ -z "$records" ]; then
+        echo -e "${A_T_YELLOW}No active tasks. Start one with a_c_task_start.${A_T_NC}"
+        return 0
+    fi
+
+    printf "${A_T_BLUE}%-11s %-30s %-12s %-7s %s${A_T_NC}\n" \
+        "TICKET" "BRANCH" "REPO" "STATE" "vs UPSTREAM"
+    echo "------------------------------------------------------------------------------------------"
+    local t b m r w c
+    while IFS="$(printf '\t')" read -r t b m r w c; do
+        printf '%-11s %-30s %-12s %-7s %s\n' \
+            "$t" "$b" "$(basename "$r")" "$(a_task_wt_dirty "$w")" "$(a_task_wt_ab "$w")"
+    done <<EOF
+$records
+EOF
+}
+
+_a_c_task_list_main "$@"

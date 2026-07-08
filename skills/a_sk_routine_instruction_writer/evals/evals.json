@@ -1,0 +1,26 @@
+{
+  "skill_name": "a_sk_routine_instruction_writer",
+  "evals": [
+    {
+      "id": 0,
+      "name": "nightly-e2e-triage-issue",
+      "prompt": "help me write this so it runs clean every morning. i want a routine that checks our nightly playwright e2e run on the web-checkout repo, and if there are failures it should group them, figure out which are real vs flaky retries, and open ONE github issue summarizing them assigned to me (@maria-chen). dont open an issue if everything passed. it runs at 7am daily. im pasting it into the instructions box of a scheduled routine.",
+      "expected_output": "A self-contained, directive instruction prompt: never-ask-questions autonomy line; derived inputs; hard rules (one issue only, assigned to @maria-chen, real-vs-flaky distinction); a quiet no-op exit when the run is green; numbered phases ending with the single-issue hand-off; closing report. Should NOT ask the user mid-run.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "staging-health-loop-slack",
+      "prompt": "clean up this prompt so claude does it right: keep an eye on the staging deploy of payments-api, every 30 min hit /health and the /metrics endpoint, if error rate is above 2% or health is red for two checks in a row post to the #payments-alerts slack channel with whats wrong. dont spam, only alert once per incident.",
+      "expected_output": "A hardened /loop-style instruction: per-iteration unit of work + stop/continue condition, the two-consecutive-checks and >2% thresholds as hard rules, dedup so it alerts once per incident, blast radius capped to posting in one channel. Should recognize this is a recurring poll, not a one-off.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "stale-branch-sweep-notify",
+      "prompt": "make this count, im pasting it into a daily local routine. sweep all branches on OWNER/my-service older than 30 days with no open PR, and for each one ping the last committer on slack asking if it can be deleted. branch first dont push to main obviously. dont delete anything yourself.",
+      "expected_output": "Directive, unattended instruction: derive the 30-day cutoff, discover stale branches, dedupe, never delete (human-gated), one ping per branch owner, quiet exit when none are stale, closing report. Blast radius explicitly capped to notifications.",
+      "files": []
+    }
+  ]
+}

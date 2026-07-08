@@ -1,0 +1,99 @@
+#!/bin/bash
+# a_s_task_fx - a short "Matrix" digital-rain splash for a_c_task_start.
+#
+# Pure eye-candy. It draws green rain on the alternate screen for ~0.7s, then
+# restores the screen and exits, leaving no scrollback behind. An optional label
+# ($1, e.g. the ticket) is flashed in the centre at the end.
+#
+# Always a no-op (exit 0) unless stdout is a real TTY, so piped / scripted /
+# non-interactive runs are never polluted. It is launched as its own bash
+# process by a_task_matrix_fx (in a_s_task_common.sh), so it stays bash-only and
+# cannot disturb the caller's zsh shell.
+#
+# Tuning (env):
+#   A_T_NO_FX=1        disable the splash entirely
+#   A_T_FX_FRAMES=N    number of frames (default 16; ~45ms each)
+#
+# Usage: a_s_task_fx [label]
+#
+# Argument (optional):
+#   label   text flashed in the centre at the end. [default: none]
+# Options:
+#   -h, --help   show this help
+
+case "${1:-}" in -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+
+label="${1:-}"
+
+# Bail out quietly unless we can safely animate an interactive terminal.
+[ -t 1 ] || exit 0
+[ -n "${A_T_NO_FX:-}" ] && exit 0
+[ "${TERM:-dumb}" = "dumb" ] && exit 0
+command -v tput >/dev/null 2>&1 || exit 0
+
+cols=$(tput cols 2>/dev/null || echo 80)
+lines=$(tput lines 2>/dev/null || echo 24)
+[ "${cols:-0}" -ge 4 ] 2>/dev/null || cols=80
+[ "${lines:-0}" -ge 4 ] 2>/dev/null || lines=24
+
+frames=${A_T_FX_FRAMES:-16}
+glyphs='0123456789ABCDEFZ#$%*+=<>?/|abcdef'
+glen=${#glyphs}
+
+cleanup() {
+    tput cnorm 2>/dev/null   # show cursor
+    tput rmcup 2>/dev/null   # leave the alternate screen
+    printf '\033[0m'
+}
+trap cleanup EXIT INT TERM
+
+# Per-column "drop" head row. 0 = the column is currently idle.
+declare -a drop
+c=1
+while [ "$c" -le "$cols" ]; do
+    if [ $(( RANDOM % 2 )) -eq 0 ]; then drop[$c]=$(( RANDOM % lines + 1 )); else drop[$c]=0; fi
+    c=$(( c + 1 ))
+done
+
+tput civis 2>/dev/null       # hide cursor
+tput smcup 2>/dev/null        # alternate screen
+printf '\033[40m\033[2J'      # black background + clear
+
+f=0
+while [ "$f" -lt "$frames" ]; do
+    c=1
+    while [ "$c" -le "$cols" ]; do
+        h=${drop[$c]}
+        if [ "$h" -gt 0 ]; then
+            # bright head
+            printf '\033[%d;%dH\033[1;92m%s' "$h" "$c" "${glyphs:RANDOM%glen:1}"
+            # dim trailing glyph just above the head
+            t=$(( h - 1 ))
+            [ "$t" -ge 1 ] && printf '\033[%d;%dH\033[0;32m%s' "$t" "$c" "${glyphs:RANDOM%glen:1}"
+            # erase the tail so the drop looks like it is falling
+            old=$(( h - 6 ))
+            [ "$old" -ge 1 ] && printf '\033[%d;%dH ' "$old" "$c"
+            # advance / retire
+            if [ $(( h + 1 )) -gt "$lines" ]; then drop[$c]=0; else drop[$c]=$(( h + 1 )); fi
+        else
+            # randomly spawn a fresh drop at the top of this column
+            [ $(( RANDOM % 18 )) -eq 0 ] && drop[$c]=1
+        fi
+        c=$(( c + 1 ))
+    done
+    sleep 0.045 2>/dev/null
+    f=$(( f + 1 ))
+done
+
+# Flash the label (ticket) in the centre.
+if [ -n "$label" ]; then
+    text=">> $label <<"
+    tlen=${#text}
+    row=$(( lines / 2 ))
+    col=$(( (cols - tlen) / 2 )); [ "$col" -lt 1 ] && col=1
+    printf '\033[%d;%dH\033[1;92m%s\033[0m' "$row" "$col" "$text"
+    sleep 0.35 2>/dev/null
+fi
+
+# trap cleanup restores the screen on exit
+exit 0

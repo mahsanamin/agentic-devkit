@@ -1,0 +1,408 @@
+#!/bin/bash
+# a_c_task_start - start a new task.
+#
+# 1. Pick a repo: the repo you are currently in (pinned first, "current =>"),
+#    then the most-recently-worked-in repos under $a_dir_w_repos (cd_w) ranked
+#    by last commit; or type a name / full path.
+# 2. Give a Jira ticket (PROJ-123, 123 -> PROJ-123, or paste a Jira browse URL) and
+#    a short feature name; the branch becomes  <TICKET>-<feature-slug>  e.g.
+#    PROJ-123-add-login-page. When A_JIRA_EMAIL/A_JIRA_TOKEN are set (see
+#    docs/task.md) the ticket title is fetched to pre-fill the feature name.
+# 3. Create a git worktree for that branch via the AI Awareness helper
+#    aa_g_worktree_init (forked off --base when given), then cd into it.
+# 4. Register the task so a_c_task_resume / list / finish can find it.
+# 5. Optionally (-c) launch a Remote-Control Claude session in the new worktree
+#    via a_c_claude_remote, so you can start working / drive it from the app.
+# 6. Optionally (-z <session>) open the worktree inside a named zellij session
+#    instead of the current terminal, under a tab named for the task.
+#
+# Sourced (not executed) by the wrapper in sourced/task.sh so the cd sticks.
+# The body lives in a function so `return` is valid whether sourced or run.
+#
+# Usage: a_c_task_start [-r <repo>] [-t <ticket>] [-f <feature>] [-b <base>]
+#                       [-c] [-p <prompt>] [-z <session>] [-y] [-h] [-- <claude args>]
+#   -r, --repo     Repo name, path, or top-5 menu number (skips the picker)
+#   -t, --ticket   Jira ticket or URL: PROJ-123 / 123 / browse link (skips prompt)
+#   -f, --feature  Short feature description (skips the prompt)
+#   -b, --base     Base branch to fork from, e.g. main or story/PROJ-123-foo
+#                  (skips aa_g_worktree_init's base picker). Omit to be prompted.
+#   -c, --claude   After the worktree is ready, launch an interactive Claude
+#                  Code session in it with Remote Control on (via
+#                  a_c_claude_remote). The session is named after the ticket and
+#                  starts in --permission-mode acceptEdits so a remote-driven
+#                  session is not blocked on terminal approvals. Control returns
+#                  to the worktree shell when Claude exits.
+#   -p, --prompt   First message to send Claude (implies -c). Quote it.
+#   -z, --zellij   Open the worktree in this zellij SESSION instead of the
+#                  current terminal. Creates the session if it is not running,
+#                  then adds a tab named for the ticket + a short feature slug
+#                  (re-running focuses that tab, never duplicates it). Optional;
+#                  omit it to stay in the current terminal. Combine with -c to
+#                  run Claude inside that tab; from a normal terminal the command
+#                  attaches you to the session (detach to return here), and from
+#                  inside zellij it focuses the tab (same session) or tells you
+#                  how to switch (different session).
+#   -y, --yes      Auto-accept: skip the "Proceed?" confirmation (--auto is an
+#                  alias). Also implied when stdin is not a TTY (a Claude /
+#                  automation-driven run), so the task starts without waiting for
+#                  a human to accept.
+#      --fresh     Recreate if the task's worktree already exists. Default is
+#                  IDEMPOTENT: a repeat call resumes the existing task (focuses
+#                  its zellij tab / cd's into the worktree) instead of starting a
+#                  second one. --fresh refuses if the branch has commits not on
+#                  its base, so it never silently drops your work.
+#   -h, --help     Show this help
+#
+# Anything after a literal -- is passed straight through to claude (implies -c),
+# e.g. to override the default permission mode:
+#   a_c_task_start -t 123 -f login -b main -c -- --permission-mode plan
+#
+# It asks you to confirm (Proceed? [Y/n]) before creating anything; -y/--yes
+# skips that, and a non-interactive run (no TTY, e.g. driven by Claude) skips it
+# automatically. With -r, -t, -f, -b (+ -y) set it runs with no prompts at all.
+# Add -c (optionally -p "do X first") to drop straight into a remote session:
+#   a_c_task_start -r myrepo -t 942 -f "list filter" -b main -c -p "read the ticket"
+# Add -z to land in a dedicated zellij session/tab (here, the "pilgc" session):
+#   a_c_task_start -r myrepo -t 942 -f "list filter" -b main -z mytab -c
+
+# Locate this repo's scripts. Prefer A_C_WORKFLOW_DIR (set when the work repo is
+# loaded alongside another my_setup checkout); fall back to MY_WORKFLOW_DIR.
+A_C_TASK_BASE="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
+if [ -z "$A_C_TASK_BASE" ]; then
+    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the my_setup repo."
+    return 1 2>/dev/null || exit 1
+fi
+. "$A_C_TASK_BASE/scripts/a_s_task_common.sh"
+
+_a_c_task_start_help() {
+    sed -n '2,/^# Locate this repo/p' "$A_C_TASK_BASE/scripts/a_c_task_start" \
+        | sed 's/^# \{0,1\}//; /^Locate this repo/d'
+}
+
+_a_c_task_start_main() {
+    local repo_arg="" ticket_arg="" feat_arg="" base_arg="" prompt_arg="" claude_flag=0
+    local zellij_arg="" auto_flag=0 fresh_flag=0 start_pwd="$PWD"
+    local passthrough=() after_ddash=0
+    while [ "$#" -gt 0 ]; do
+        if [ "$after_ddash" -eq 1 ]; then
+            passthrough+=("$1"); shift; continue
+        fi
+        case "$1" in
+            -r|--repo)    repo_arg="$2"; shift ;;
+            -t|--ticket)  ticket_arg="$2"; shift ;;
+            -f|--feature) feat_arg="$2"; shift ;;
+            -b|--base)    base_arg="$2"; shift ;;
+            -c|--claude)  claude_flag=1 ;;
+            -p|--prompt)  prompt_arg="$2"; claude_flag=1; shift ;;
+            -z|--zellij)  zellij_arg="$2"; shift ;;
+            -y|--yes|--auto) auto_flag=1 ;;
+            --fresh)      fresh_flag=1 ;;
+            --)           after_ddash=1 ;;
+            -h|--help)    _a_c_task_start_help; return 0 ;;
+            *) echo -e "${A_T_RED}Unknown argument: $1${A_T_NC}"; _a_c_task_start_help; return 1 ;;
+        esac
+        shift
+    done
+    # Passing claude args after -- only makes sense if we are launching Claude.
+    [ "${#passthrough[@]}" -gt 0 ] && claude_flag=1
+
+    # 1. repo ----------------------------------------------------------------
+    local base="${a_dir_w_repos:-}" repo=""
+    if [ -n "$repo_arg" ]; then
+        repo="$(a_task_resolve_repo "$repo_arg" "$base")" \
+            || { echo -e "${A_T_RED}Could not resolve repo '$repo_arg'.${A_T_NC}"; return 1; }
+    elif [ "$auto_flag" -eq 1 ]; then
+        # Auto mode, no -r: use the repo we're standing in - no interactive picker.
+        repo="$(a_task_current_repo)"
+        [ -z "$repo" ] && { echo -e "${A_T_RED}Auto mode: not inside a git repo and no -r given. cd into the target repo, or pass -r.${A_T_NC}"; return 1; }
+    else
+        a_task_pick_repo "$base" || return 1
+        repo="$A_TASK_PICKED"
+    fi
+    [ -z "$repo" ] && { echo -e "${A_T_RED}No repo selected.${A_T_NC}"; return 1; }
+    if [ ! -e "$repo/.git" ]; then
+        echo -e "${A_T_RED}Not a git repository: $repo${A_T_NC}"; return 1
+    fi
+
+    # 2. ticket --------------------------------------------------------------
+    local ticket="" raw
+    if [ -n "$ticket_arg" ]; then
+        ticket="$(a_task_norm_ticket "$ticket_arg")" \
+            || { echo -e "${A_T_RED}Invalid ticket: $ticket_arg${A_T_NC}"; return 1; }
+    else
+        while [ -z "$ticket" ]; do
+            printf "Jira ticket or URL (PROJ-123, 123 -> %s-123, or paste the link): " "$A_TASK_DEFAULT_KEY" >&2
+            read -r raw
+            [ -z "$raw" ] && { echo -e "${A_T_YELLOW}Cancelled.${A_T_NC}"; return 1; }
+            ticket="$(a_task_norm_ticket "$raw")" \
+                || { echo -e "${A_T_RED}Could not parse '$raw'. Try PROJ-123 or 123.${A_T_NC}"; ticket=""; }
+        done
+    fi
+
+    # 3. feature -> branch ---------------------------------------------------
+    local feat slug branch summary suggested
+    if [ -n "$feat_arg" ]; then
+        feat="$feat_arg"
+    else
+        # Pre-fill the feature name from the Jira ticket title when Jira creds
+        # are configured (A_JIRA_EMAIL/A_JIRA_TOKEN). Silent manual fallback
+        # when unconfigured, offline, or the ticket is not found.
+        suggested=""
+        summary="$(a_task_jira_summary "$ticket" 2>/dev/null)"
+        if [ -n "$summary" ]; then
+            suggested="$(a_task_slug "$summary")"
+            echo -e "  ${A_T_DIM}Jira ${ticket}:${A_T_NC} $summary" >&2
+        fi
+        if [ "$auto_flag" -eq 1 ]; then
+            # Auto mode: take the Jira-title slug (or ticket-only if no title /
+            # no Jira creds) without prompting.
+            feat="$suggested"
+            [ -n "$suggested" ] && echo -e "  ${A_T_DIM}feature (auto):${A_T_NC} $suggested" >&2
+        elif [ -n "$suggested" ]; then
+            printf "Feature name for %s [%s]: " "$ticket" "$suggested" >&2
+            read -r feat
+            feat="${feat:-$suggested}"
+        else
+            printf "Short feature name for %s (e.g. add login page): " "$ticket" >&2
+            read -r feat
+        fi
+    fi
+    slug="$(a_task_slug "$feat")"
+    if [ -z "$slug" ]; then
+        echo -e "${A_T_YELLOW}No feature name given; using the ticket alone as the branch.${A_T_NC}"
+        branch="$ticket"
+    else
+        branch="${ticket}-${slug}"
+    fi
+
+    # 4. create the worktree via aa_g_worktree_init --------------------------
+    local aa_init="$A_TASK_AA_WT_DIR/aa_g_worktree_init"
+    if [ ! -f "$aa_init" ]; then
+        echo -e "${A_T_RED}aa_g_worktree_init not found at $aa_init${A_T_NC}"
+        echo "Install the AI Awareness framework, or set AA_WORKTREE_DIR to its aa-worktree dir."
+        return 1
+    fi
+
+    cd "$repo" || { echo -e "${A_T_RED}Cannot cd into $repo${A_T_NC}"; return 1; }
+
+    # Predict the path aa_g_worktree_init will use, so we can verify + record
+    # it. This mirrors that script: WorkTrees lives beside the MAIN repo root.
+    local common main_root proj wt_dir expected_wt
+    common="$(git rev-parse --git-common-dir 2>/dev/null)"
+    main_root="$(cd "$(dirname "$common")" && pwd)"
+    proj="$(basename "$main_root")"
+    wt_dir="${branch//\//-}"
+    expected_wt="$(dirname "$main_root")/WorkTrees/$proj/$wt_dir"
+
+    # Base branch: favor 'develop' when none was given (fall back to main/master),
+    # so a new task branches off the integration branch by default.
+    if [ -z "$base_arg" ]; then
+        if   git -C "$main_root" show-ref --verify --quiet refs/heads/develop \
+          || git -C "$main_root" show-ref --verify --quiet refs/remotes/origin/develop; then base_arg="develop"
+        elif git -C "$main_root" show-ref --verify --quiet refs/heads/main \
+          || git -C "$main_root" show-ref --verify --quiet refs/remotes/origin/main;    then base_arg="main"
+        elif git -C "$main_root" show-ref --verify --quiet refs/heads/master \
+          || git -C "$main_root" show-ref --verify --quiet refs/remotes/origin/master;  then base_arg="master"
+        fi
+    fi
+
+    # Idempotency: if this task's worktree already exists, don't start a second.
+    # Default = RESUME: reuse the worktree and fall through to the launch section,
+    # which focuses its zellij tab if the session is alive, or reopens a working
+    # Claude session in it if the tab is gone (never a duplicate worktree, never a
+    # dead-end cd). --fresh recreates, but refuses if the branch has commits not
+    # yet on its base (would lose work).
+    local resuming=0
+    if [ -d "$expected_wt" ]; then
+        if [ "$fresh_flag" -eq 0 ]; then
+            resuming=1
+            echo -e "${A_T_GREEN}Task $ticket already exists${A_T_NC} ${A_T_DIM}($expected_wt); resuming (reusing the worktree). Pass --fresh to recreate.${A_T_NC}"
+            a_task_has_branch "$branch" || a_task_record_add "$ticket" "$branch" "worktree" "$main_root" "$expected_wt"
+        else
+            # --fresh: guard against destroying local work before recreating.
+            local ahead; ahead="$(git -C "$main_root" rev-list --count "${base_arg:-HEAD}".."$branch" 2>/dev/null || echo 0)"
+            if [ "${ahead:-0}" -gt 0 ]; then
+                echo -e "${A_T_RED}--fresh refused: branch '$branch' has $ahead commit(s) not on ${base_arg:-its base}.${A_T_NC}"
+                echo -e "  Finish or remove it yourself first (a_c_task_finish $ticket), then re-run."
+                cd "$start_pwd" 2>/dev/null; return 1
+            fi
+            echo -e "${A_T_YELLOW}--fresh: removing the existing worktree for $branch (no unique commits) ...${A_T_NC}"
+            git -C "$main_root" worktree remove --force "$expected_wt" 2>/dev/null
+            git -C "$main_root" branch -D "$branch" 2>/dev/null
+            a_task_record_remove_by_branch "$branch"
+        fi
+    fi
+
+    [ "$resuming" -eq 0 ] && echo -e "${A_T_BLUE}Starting task${A_T_NC} ${A_T_GREEN}$ticket${A_T_NC}"
+    echo -e "  repo:   $main_root"
+    echo -e "  branch: $branch"
+    [ -n "$base_arg" ]       && echo -e "  base:   $base_arg"
+    [ -n "$zellij_arg" ]     && echo -e "  zellij: $zellij_arg"
+    [ "$claude_flag" -eq 1 ] && echo -e "  claude: remote-control session"
+    echo -e "  ${A_T_DIM}worktree: $expected_wt${A_T_NC}"
+    echo ""
+
+    # Acceptance gate: on an interactive terminal, get the user's go-ahead before
+    # creating anything. Skipped in auto mode (-y/--yes/--auto) and when stdin is
+    # not a TTY (a Claude / automation-driven run), so those start the task
+    # without waiting for a human to accept.
+    if [ "$resuming" -eq 0 ] && [ "$auto_flag" -eq 0 ] && [ -t 0 ]; then
+        local ok
+        printf "Proceed? [Y/n] " >&2
+        read -r ok
+        case "$ok" in
+            ''|[Yy]|[Yy][Ee][Ss]) : ;;
+            *) echo -e "${A_T_YELLOW}Aborted. Nothing created.${A_T_NC}"
+               cd "$start_pwd" 2>/dev/null; return 0 ;;
+        esac
+    fi
+
+    # Matrix digital-rain splash (interactive terminals only; A_T_NO_FX=1 skips).
+    [ "$resuming" -eq 0 ] && a_task_matrix_fx "$ticket"
+
+    # Create the worktree (SKIPPED when resuming an existing task). Source it so
+    # its final cd into the new worktree lands in this shell; pass the base branch
+    # through so aa_g_worktree_init skips its interactive base picker.
+    if [ "$resuming" -eq 0 ]; then
+        # Freshen the local base to origin first: aa_g_worktree_init branches from
+        # the LOCAL base ref, so without this the new branch could start from a
+        # stale base. Fast-forward only; never clobber a diverged local base.
+        if [ -n "$base_arg" ]; then
+            git -C "$main_root" fetch origin "$base_arg" --quiet 2>/dev/null || true
+            if git -C "$main_root" show-ref --verify --quiet "refs/heads/$base_arg"; then
+                if [ "$(git -C "$main_root" symbolic-ref --short -q HEAD 2>/dev/null)" = "$base_arg" ]; then
+                    git -C "$main_root" merge --ff-only "origin/$base_arg" --quiet 2>/dev/null \
+                      || echo -e "  ${A_T_YELLOW}note: local $base_arg has diverged from origin; branching from it as-is.${A_T_NC}" >&2
+                else
+                    git -C "$main_root" fetch origin "$base_arg:$base_arg" 2>/dev/null \
+                      || echo -e "  ${A_T_YELLOW}note: could not fast-forward local $base_arg; branching from it as-is.${A_T_NC}" >&2
+                fi
+            else
+                git -C "$main_root" branch "$base_arg" "origin/$base_arg" 2>/dev/null || true
+            fi
+        fi
+        if [ -n "$base_arg" ]; then
+            source "$aa_init" "$branch" -b "$base_arg"
+        else
+            source "$aa_init" "$branch"
+        fi
+    fi
+
+    if [ ! -d "$expected_wt" ]; then
+        echo -e "${A_T_YELLOW}Worktree was not created - task not registered.${A_T_NC}"
+        return 1
+    fi
+
+    if a_task_has_branch "$branch"; then
+        echo -e "${A_T_DIM}(task already in the registry)${A_T_NC}"
+    else
+        a_task_record_add "$ticket" "$branch" "worktree" "$main_root" "$expected_wt"
+    fi
+
+    # Make sure we are standing in the worktree (aa cds there on success, but
+    # be defensive in case it was sourced in a way that did not cd).
+    if [ "$(pwd -P 2>/dev/null)" != "$(cd "$expected_wt" 2>/dev/null && pwd -P)" ]; then
+        cd "$expected_wt" 2>/dev/null || true
+    fi
+
+    # If we branched off develop for a NEW task, also bring the latest master/main
+    # INTO THIS feature branch (not the shared develop), so it starts current with
+    # production. Only this branch is touched; a conflict is aborted, not forced.
+    if [ "$resuming" -eq 0 ] && [ "$base_arg" = "develop" ]; then
+        local prod=""
+        git -C "$main_root" show-ref --verify --quiet refs/remotes/origin/master && prod="master"
+        [ -z "$prod" ] && git -C "$main_root" show-ref --verify --quiet refs/remotes/origin/main && prod="main"
+        if [ -n "$prod" ]; then
+            git -C "$main_root" fetch origin "$prod" --quiet 2>/dev/null || true
+            if git -C "$expected_wt" merge --no-edit "origin/$prod" >/dev/null 2>&1; then
+                echo -e "  ${A_T_DIM}merged origin/$prod into $branch (starts current with $prod).${A_T_NC}"
+            else
+                git -C "$expected_wt" merge --abort 2>/dev/null || true
+                echo -e "  ${A_T_YELLOW}note: origin/$prod did not merge cleanly into $branch; it is on develop only. Merge $prod in the worktree yourself.${A_T_NC}"
+            fi
+        fi
+    fi
+
+    echo ""
+    echo -e "${A_T_GREEN}✓ Task $ticket ready${A_T_NC} ${A_T_DIM}($expected_wt)${A_T_NC}"
+    echo -e "  ${A_T_DIM}list active:${A_T_NC}  a_c_task_list"
+    echo -e "  ${A_T_DIM}resume later:${A_T_NC} a_c_task_resume $ticket"
+    echo -e "  ${A_T_DIM}finish:${A_T_NC}       a_c_task_finish $ticket"
+
+    # 5/6. open in a zellij tab (-z) and/or launch a Claude session (-c) -------
+    # Build the Claude argv up front so the exact same command can run either
+    # inside a zellij tab or (the original behaviour) straight in this terminal.
+    # Default the session to acceptEdits so a remote-driven session is not
+    # blocked on terminal approvals; skip the default if the caller already
+    # passed a permission flag through --.
+    local cr="$A_C_TASK_BASE/scripts/a_c_claude_remote"
+    local cr_args=() a has_perm=0
+    if [ "$claude_flag" -eq 1 ]; then
+        for a in "${passthrough[@]}"; do
+            case "$a" in
+                --permission-mode|--permission-mode=*|--dangerously-skip-permissions) has_perm=1 ;;
+            esac
+        done
+        cr_args=(-n "$ticket" "$expected_wt")
+        [ -n "$prompt_arg" ] && cr_args+=("$prompt_arg")
+        cr_args+=(--)
+        [ "$has_perm" -eq 0 ] && cr_args+=(--permission-mode acceptEdits)
+        [ "${#passthrough[@]}" -gt 0 ] && cr_args+=("${passthrough[@]}")
+    fi
+
+    # -z/--zellij: place the task in a named zellij session (creating it if it is
+    # not running) under a tab named for the ticket + short feature slug. When -c
+    # is also set, Claude runs inside that tab; otherwise the tab is a shell in
+    # the worktree. From a normal terminal we attach so you land on the new tab;
+    # from inside zellij we focus it (same session) or say how to switch.
+    if [ -n "$zellij_arg" ]; then
+        if ! command -v zellij >/dev/null 2>&1; then
+            echo -e "${A_T_YELLOW}zellij not found on PATH - opening here instead of in a session.${A_T_NC}"
+        else
+            local zj_tab launcher=""
+            zj_tab="$(a_task_zellij_tab_name "$ticket" "$slug")"
+            if [ "$claude_flag" -eq 1 ] && [ -f "$cr" ]; then
+                launcher="$(a_task_zellij_make_launcher "$expected_wt" "$cr" "${cr_args[@]}")"
+            fi
+            a_task_zellij_setup "$zellij_arg" "$zj_tab" "$expected_wt" "$launcher"
+            echo ""
+            if [ -z "${ZELLIJ:-}" ]; then
+                echo -e "${A_T_BLUE}Opening in zellij${A_T_NC} ${A_T_DIM}session: $zellij_arg · tab: $zj_tab${A_T_NC}"
+                # Child process (NOT sourced/exec'd): when you detach, control
+                # returns to this worktree shell, like the -c terminal path.
+                zellij attach "$zellij_arg"
+            elif [ "${ZELLIJ_SESSION_NAME:-}" = "$zellij_arg" ]; then
+                echo -e "${A_T_GREEN}✓ Opened tab${A_T_NC} ${A_T_DIM}$zj_tab (this session)${A_T_NC}"
+                zellij action go-to-tab-name "$zj_tab" >/dev/null 2>&1
+            else
+                # We are not inside $zellij_arg (a different session, or a routine
+                # that faked ZELLIJ to avoid the resize-on-attach bug). If you are
+                # nonetheless attached to $zellij_arg in another terminal/pane,
+                # switch you to the freshly-created tab; new-tab alone only marks
+                # it active in state, it does not move an already-attached client.
+                # Guarded so it can never hang the routine when nobody is attached.
+                a_task_zellij_focus_tab "$zellij_arg" "$zj_tab"
+                echo -e "${A_T_GREEN}✓ Tab ready${A_T_NC} ${A_T_DIM}$zj_tab in session '$zellij_arg'.${A_T_NC}"
+                echo -e "  ${A_T_DIM}switch:${A_T_NC} detach (Ctrl-o d), then  zellij attach $zellij_arg  ${A_T_DIM}(or the session manager: Ctrl-o w)${A_T_NC}"
+            fi
+            return 0
+        fi
+    fi
+
+    # Original behaviour: launch a Remote-Control Claude session in this terminal
+    # (also the fallback when -z was requested but zellij is not installed).
+    [ "$claude_flag" -eq 1 ] || return 0
+    if [ ! -f "$cr" ]; then
+        echo -e "${A_T_YELLOW}a_c_claude_remote not found at $cr - skipping Claude launch.${A_T_NC}"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${A_T_BLUE}Launching Claude (remote control)${A_T_NC} ${A_T_DIM}session: $ticket${A_T_NC}"
+    # Run as a child process (NOT sourced): a_c_claude_remote exec's claude, so
+    # only the child is replaced. Control returns here - still in the worktree -
+    # when Claude exits.
+    bash "$cr" "${cr_args[@]}"
+}
+
+_a_c_task_start_main "$@"

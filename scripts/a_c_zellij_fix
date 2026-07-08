@@ -1,0 +1,185 @@
+#!/bin/bash
+# a_c_zellij_fix: repair a zellij session created by these scripts. It fixes the
+# two problems those background-created sessions hit:
+#
+#   1. TINY SIZE. zellij sizes a session to the SMALLEST client that is (or was)
+#      attached. A phone, a small pane, or the background creation of the session
+#      can pin it small, and re-attaching from your big terminal does NOT reliably
+#      grow it back. The cure: detach every client (leaving the --server and the
+#      panes alive), then attach fresh from one full-size terminal.
+#
+#   2. BACKSPACE NAVIGATES TABS. Command tabs were built from a layout whose first
+#      pane is the tab-bar plugin, so zellij put the initial keyboard focus on the
+#      tab bar, not the shell. Keystrokes then drove tab navigation (Backspace /
+#      arrows switched tabs) instead of editing your command line. The cure: walk
+#      every tab and move focus onto the real (command) pane. NEW tabs no longer
+#      have this bug (the layout now marks the command pane focus=true); this fix
+#      is for tabs opened before that change, or any that still land wrong.
+#
+# Focus routing only works while a client is attached, so the focus repair runs
+# after the re-attach (in the background), or on demand via --refocus-only against
+# a session you are already viewing in another terminal.
+#
+# Usage:
+#   a_c_zellij_fix [session]            detach all clients, re-attach full-size,
+#                                       then fix tab focus            (the default)
+#   a_c_zellij_fix [session] -d         just detach all clients (no re-attach)
+#   a_c_zellij_fix [session] -r         just fix tab focus on an already-attached
+#                                       session (do not detach, do not re-attach)
+#   a_c_zellij_fix [session] --no-refocus   size fix only; skip the focus repair
+#   a_c_zellij_fix -l                   list sessions + their attached client PIDs
+#   a_c_zellij_fix -h                   show this help
+#
+# Arguments:
+#   [session]   session to fix.
+#               [default: $ZELLIJ_SESSION_NAME if set, else you must name one]
+#
+# Options:
+#   -d, --detach-only   detach clients but do not re-attach.        [default: off]
+#   -r, --refocus-only  only walk tabs and fix keyboard focus.      [default: off]
+#       --no-refocus    do the size fix but skip the focus repair.  [default: off]
+#   -l, --list          list sessions and attached client PIDs, then exit.
+#   -h, --help          show this help
+#
+# IMPORTANT: for the default (size) fix, run this from a terminal that is NOT
+# inside the target session (open a fresh terminal), or it would kill its own
+# client before it could re-attach; it refuses to do that. --refocus-only is safe
+# to run from anywhere, including a second terminal while you watch the session.
+#
+# Examples:
+#   a_c_zellij_fix ideas          # detach, re-attach full-size, fix tab focus
+#   a_c_zellij_fix ideas -r       # ONLY fix Backspace-navigates-tabs, no re-attach
+#   a_c_zellij_fix pilgc -d       # just detach everyone from 'pilgc'
+#   a_c_zellij_fix -l             # see which sessions have clients stuck attached
+
+set -u
+prog="${0##*/}"
+usage() { sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; }
+
+command -v zellij >/dev/null 2>&1 || { echo "$prog: zellij not found on PATH" >&2; exit 3; }
+
+# Print PIDs of the CLIENT processes attached to session $1 (never the --server).
+# A client looks like `zellij attach <s>`, `zellij a <s>`, or
+# `zellij attach --create-background <s>`: a zellij process, not the server, not a
+# transient `action` call, that carries the session name as an exact argument.
+_clients_of() {
+    ps -Ao pid=,command= | awk -v s="$1" '
+        /--server/ { next }
+        !/zellij/  { next }
+        / action /  { next }
+        {
+            for (i = 2; i <= NF; i++) if ($i == s) { print $1; break }
+        }'
+}
+
+# Walk every tab of session $1 and move keyboard focus onto the real (command)
+# pane, off the tab-bar/status-bar plugin panes. go-to-next-tab and move-focus
+# both work on a session (they do not block like go-to-tab-name), and visiting the
+# tab count returns us to the starting tab. "up then down" reliably lands on the
+# single command pane: the bars are borderless chrome, so from anywhere up-then-
+# down settles on the command pane (and is a harmless no-op if already there).
+# Focus only visibly takes effect when a client is attached.
+_refocus_all_tabs() {
+    local s="$1" n i=0
+    n="$(zellij --session "$s" action query-tab-names 2>/dev/null | grep -c .)"
+    [ "${n:-0}" -ge 1 ] 2>/dev/null || return 0
+    while [ "$i" -lt "$n" ]; do
+        zellij --session "$s" action move-focus up   >/dev/null 2>&1
+        zellij --session "$s" action move-focus down >/dev/null 2>&1
+        zellij --session "$s" action go-to-next-tab  >/dev/null 2>&1
+        i=$((i + 1))
+    done
+}
+
+# Poll until session $1 has at least one attached client, or ~5s pass.
+_wait_for_client() {
+    local s="$1" i=0
+    while [ "$i" -lt 50 ]; do
+        [ -n "$(_clients_of "$s")" ] && return 0
+        sleep 0.1; i=$((i + 1))
+    done
+    return 0
+}
+
+# --- parse -------------------------------------------------------------------
+list=0; detach_only=0; refocus_only=0; do_refocus=1; session=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -l|--list)         list=1 ;;
+        -d|--detach-only)  detach_only=1 ;;
+        -r|--refocus-only) refocus_only=1 ;;
+        --no-refocus)      do_refocus=0 ;;
+        -h|--help)         usage; exit 0 ;;
+        -*)                echo "$prog: unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *)                 if [ -z "$session" ]; then session="$1"
+                           else echo "$prog: unexpected argument: $1" >&2; exit 2; fi ;;
+    esac
+    shift
+done
+
+if [ "$list" -eq 1 ]; then
+    zellij list-sessions -ns 2>/dev/null | awk '{print $1}' | while IFS= read -r s; do
+        [ -n "$s" ] || continue
+        pids="$(_clients_of "$s" | tr '\n' ' ')"
+        printf '  %-16s clients: %s\n' "$s" "${pids:-<none>}"
+    done
+    exit 0
+fi
+
+# --- resolve the session -----------------------------------------------------
+[ -n "$session" ] || session="${ZELLIJ_SESSION_NAME:-}"
+if [ -z "$session" ]; then
+    echo "$prog: name a session (or run inside one). See: $prog -l" >&2
+    usage >&2
+    exit 2
+fi
+
+# --- refocus-only: no detach, no attach --------------------------------------
+if [ "$refocus_only" -eq 1 ]; then
+    if [ -z "$(_clients_of "$session")" ]; then
+        echo "$prog: '$session' has no attached client; focus changes will not be visible" >&2
+        echo "        until you attach. Attach it in one terminal, then run this from another." >&2
+    fi
+    echo "$prog: fixing tab focus on '$session' ..." >&2
+    _refocus_all_tabs "$session"
+    echo "$prog: done. Every tab's keyboard focus is on its shell pane now." >&2
+    exit 0
+fi
+
+# Refuse to run the size fix from inside the session we are fixing: we would kill
+# our own client before we could re-attach.
+if [ -n "${ZELLIJ:-}" ] && [ "${ZELLIJ_SESSION_NAME:-}" = "$session" ]; then
+    echo "$prog: you are INSIDE '$session'. Open a fresh terminal (outside zellij) and run:" >&2
+    echo "        $prog $session          (or, to only fix focus: $prog $session -r)" >&2
+    exit 2
+fi
+
+# --- detach all clients ------------------------------------------------------
+pids="$(_clients_of "$session")"
+if [ -n "$pids" ]; then
+    echo "$prog: detaching clients of '$session': $(echo "$pids" | tr '\n' ' ')" >&2
+    echo "$pids" | while IFS= read -r p; do [ -n "$p" ] && kill "$p" 2>/dev/null; done
+    sleep 0.4   # let the server register the disconnects before we re-attach
+else
+    echo "$prog: no clients currently attached to '$session'." >&2
+fi
+
+# --- detach-only stops here --------------------------------------------------
+if [ "$detach_only" -eq 1 ]; then
+    echo "$prog: done (detach-only). Attach when ready:  zellij attach $session" >&2
+    exit 0
+fi
+
+if [ ! -t 1 ]; then
+    echo "$prog: not an interactive terminal; skipping re-attach. Run:  zellij attach $session" >&2
+    exit 0
+fi
+
+# --- re-attach at full size, and repair focus once the client is up ----------
+# The focus repair must run while a client is attached, so schedule it in the
+# background: it waits for our imminent attach to register, then walks the tabs.
+if [ "$do_refocus" -eq 1 ]; then
+    ( _wait_for_client "$session"; sleep 0.4; _refocus_all_tabs "$session" ) >/dev/null 2>&1 &
+fi
+echo "$prog: attaching to '$session' at this terminal's full size ..." >&2
+exec zellij attach "$session"

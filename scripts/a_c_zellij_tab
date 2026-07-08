@@ -1,0 +1,177 @@
+#!/bin/bash
+# a_c_zellij_tab: open (or focus) a named tab in a named zellij session, the
+# right way, from ANYWHERE (inside zellij or not). This is the ONE place the
+# zellij "open a working tab" logic lives, so every script that wants a tab
+# (a_c_task_start and its Jira/PR fronts) calls this and any zellij quirk is
+# fixed once, here.
+#
+# Usage:
+#   a_c_zellij_tab <session> <tab> [--cwd DIR] [--cmd 'COMMAND'] [--no-focus] [-n]
+#
+# Arguments:
+#   <session>   zellij session name; created detached if it is not running.
+#   <tab>       tab name; idempotent (re-running focuses the existing tab, never
+#               duplicates it).
+#
+# Options:
+#   --cwd DIR      directory the tab starts in (default: current dir).
+#   --cmd 'CMD'    run CMD in the tab, then drop to an interactive shell in DIR so
+#                  the tab stays usable after CMD exits. Without --cmd the tab is
+#                  just a shell sitting in DIR.
+#   --no-focus     create the tab but do not switch the attached client to it.
+#   -n, --dry-run  print what would happen; touch nothing.
+#   -h, --help     show this help.
+#
+# Why this exists / the bug it fixes: a tab that runs a command must be created
+# from a zellij layout. zellij does NOT wrap a bare `--layout` tab in the
+# session's default template, so a layout with only the command pane produces a
+# tab with NO tab-bar and NO status-bar. Focusing it looks like a broken
+# "fullscreen" mode with every other tab hidden (you must press the tab-mode key
+# to escape). The fix is to bake the tab-bar + status-bar plugin panes into the
+# layout ourselves, reproducing the default tab so the created tab looks and
+# behaves exactly like one you open by hand.
+#
+# It also never runs `zellij attach` (attaching from a small pty adds a second
+# client and clamps the whole session's size - the other old bug); focusing is
+# done with a guarded, non-attaching `go-to-tab-name` that can never hang when no
+# client is attached.
+
+set -u
+prog="${0##*/}"
+
+usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
+
+session=""; tab=""; cwd=""; cmd=""; launcher_in=""; focus=1; dry=0
+positional=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --cwd)       cwd="${2:-}"; shift ;;
+        --cmd)       cmd="${2:-}"; shift ;;
+        --launcher)  launcher_in="${2:-}"; shift ;;  # use this ready-made executable as the pane command (skips building one)
+        --no-focus)  focus=0 ;;
+        -n|--dry-run) dry=1 ;;
+        -h|--help)   usage; exit 0 ;;
+        -*)          echo "$prog: unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *)           if [ "$positional" -eq 0 ]; then session="$1"; positional=1
+                     elif [ "$positional" -eq 1 ]; then tab="$1"; positional=2
+                     else echo "$prog: unexpected argument: $1" >&2; exit 2; fi ;;
+    esac
+    shift
+done
+[ -n "$session" ] && [ -n "$tab" ] || { echo "$prog: need <session> and <tab>" >&2; usage >&2; exit 2; }
+[ -n "$cwd" ] || cwd="$PWD"
+
+command -v zellij >/dev/null 2>&1 || { echo "$prog: zellij not found on PATH" >&2; exit 3; }
+
+# --- helpers (self-contained so any caller can use this without sourcing) -----
+
+# Is session $1 currently listed? Match the first field so an "(EXITED)" suffix
+# cannot hide the name.
+_zt_have_session() {
+    local s
+    while IFS= read -r s; do
+        s="${s%% *}"
+        [ "$s" = "$1" ] && return 0
+    done < <(zellij list-sessions -ns 2>/dev/null)
+    return 1
+}
+
+# Does session $1 already have a tab named exactly $2?
+_zt_tab_exists() {
+    local t
+    while IFS= read -r t; do
+        [ "$t" = "$2" ] && return 0
+    done < <(zellij --session "$1" action query-tab-names 2>/dev/null)
+    return 1
+}
+
+# Best-effort: switch the attached client to tab $2 WITHOUT attaching ourselves.
+# go-to-tab-name blocks forever on a session with no attached client, so run it
+# in the background and reap after a short grace window (instant when a client is
+# attached; a harmless no-op otherwise - the tab is already active in state).
+_zt_focus() {
+    local pid i=0
+    zellij --session "$1" action go-to-tab-name "$2" >/dev/null 2>&1 &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 15 ]; do sleep 0.1; i=$((i + 1)); done
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    return 0
+}
+
+if [ "$dry" -eq 1 ]; then
+    echo "$prog: session=$session tab=$tab cwd=$cwd"
+    [ -n "$cmd" ] && echo "  cmd: $cmd (then interactive shell)" || echo "  (plain shell)"
+    echo "  focus after create: $([ "$focus" -eq 1 ] && echo yes || echo no)"
+    exit 0
+fi
+
+# --- 1. ensure the session exists (detached) ---------------------------------
+if ! _zt_have_session "$session"; then
+    zellij attach --create-background "$session" >/dev/null 2>&1
+    i=0
+    while [ "$i" -lt 30 ] && ! _zt_have_session "$session"; do sleep 0.1; i=$((i + 1)); done
+fi
+
+# --- 2. idempotent: existing tab is just focused -----------------------------
+if _zt_tab_exists "$session" "$tab"; then
+    [ "$focus" -eq 1 ] && _zt_focus "$session" "$tab"
+    exit 0
+fi
+
+# --- 3. create the tab -------------------------------------------------------
+if [ -z "$cmd" ] && [ -z "$launcher_in" ]; then
+    # Plain shell tab: --name/--cwd inherits the session's default tab template,
+    # so the tab-bar + status-bar are present automatically.
+    zellij --session "$session" action new-tab --name "$tab" --cwd "$cwd" >/dev/null 2>&1
+else
+    # Command tab: a layout is required to run a command, and a bare layout is NOT
+    # wrapped in the default template, so we bake the tab-bar + status-bar plugin
+    # panes in ourselves - otherwise the tab opens with no bars ("weird
+    # fullscreen", other tabs hidden).
+    if [ -n "$launcher_in" ]; then
+        launcher="$launcher_in"                 # caller supplied a ready-made launcher
+    else
+        # Build one: run CMD then drop to a shell in $cwd so the tab stays usable
+        # after CMD exits.
+        launcher="$(mktemp "${TMPDIR:-/tmp}/a_c_zellij_tab.XXXXXX")" || { echo "$prog: mktemp failed" >&2; exit 1; }
+        {
+            printf '#!/usr/bin/env bash\n'
+            printf '# Auto-generated by a_c_zellij_tab; runs a command then keeps the tab as a shell.\n'
+            # Keep the trailing interactive shell from hanging on oh-my-zsh's
+            # "Would you like to update? [Y/n]" prompt in an unattended tab.
+            printf 'export DISABLE_AUTO_UPDATE=true DISABLE_UPDATE_PROMPT=true\n'
+            printf 'cd %q 2>/dev/null\n' "$cwd"
+            printf '%s\n' "$cmd"
+            printf 'exec "${SHELL:-/bin/zsh}" -i\n'
+        } > "$launcher"
+        chmod +x "$launcher"
+    fi
+
+    layout="$(mktemp "${TMPDIR:-/tmp}/a_c_zellij_tab.XXXXXX")" || { echo "$prog: mktemp failed" >&2; exit 1; }
+    esc="$(printf '%s' "$tab" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+    {
+        printf 'layout {\n'
+        printf '    tab name="%s" {\n' "$esc"
+        printf '        pane size=1 borderless=true {\n'
+        printf '            plugin location="zellij:tab-bar"\n'
+        printf '        }\n'
+        # focus=true is REQUIRED: without it zellij focuses the first pane in the
+        # layout (the tab-bar plugin above), so keystrokes drive the tab bar and
+        # Backspace/arrows navigate tabs instead of editing the shell line. Marking
+        # the command pane focused puts the keyboard where the user expects it.
+        printf '        pane command="%s" focus=true\n' "$launcher"
+        printf '        pane size=2 borderless=true {\n'
+        printf '            plugin location="zellij:status-bar"\n'
+        printf '        }\n'
+        printf '    }\n'
+        printf '}\n'
+    } > "$layout"
+    # The temp files are left in TMPDIR on purpose: zellij execs the launcher a
+    # moment after the tab is created, so deleting them eagerly would race startup.
+    zellij --session "$session" action new-tab --layout "$layout" >/dev/null 2>&1
+fi
+
+# --- 4. best-effort focus (never attaches, never hangs) ----------------------
+[ "$focus" -eq 1 ] && _zt_focus "$session" "$tab"
+exit 0

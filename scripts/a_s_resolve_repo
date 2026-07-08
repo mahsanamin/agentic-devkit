@@ -1,0 +1,170 @@
+#!/bin/bash
+# a_s_resolve_repo - resolve a GitHub PR/repo reference to a LOCAL clone path, reusing
+# the clone you already have instead of duplicating it.
+#
+# Given a PR URL (or owner/repo slug, or a repo URL), print the absolute path to
+# a local clone of that repo, resolving in this order:
+#   1. cache      - a tiny TSV of owner/repo -> path (fast path; re-verified so a
+#                   moved/deleted clone is dropped and re-resolved).
+#   2. workspace  - scan $a_dir_w_repos (the cd_w root) and match by the origin
+#                   remote's owner/repo, then by repo-name alone when that is
+#                   unique (covers forks). An existing clone is reused, never
+#                   duplicated.
+#   3. clone      - git clone into $a_dir_w_repos so it becomes a first-class repo.
+# The resolved path is written to the cache for next time. ONLY the path goes to
+# stdout; every diagnostic goes to stderr, so callers can safely do
+#   path="$(a_s_resolve_repo <url>)"
+#
+# Usage: a_s_resolve_repo [-n|--no-clone] [-q|--quiet] <pr-url | owner/repo | repo-url>
+#   -n, --no-clone   Resolve from cache/workspace only; never clone. If missing,
+#                    exit 3 (with any same-name candidates printed to stderr).
+#   -q, --quiet      Suppress the stderr progress lines.
+#   -h, --help       Show this help.
+#
+# Exit codes: 0 resolved · 2 bad usage/parse · 3 not found (with --no-clone) or
+# ambiguous same-name matches · 4 clone failed.
+#
+# Env overrides:
+#   a_dir_w_repos          workspace root to scan/clone into (from the cd_w alias)
+#   A_PR_REPO_CACHE        cache file (default ~/.a_tasks/pr_repos.tsv)
+#   A_PR_REPO_CLONE_PROTO  ssh | https  (default ssh)
+
+set -u
+
+prog="${0##*/}"
+no_clone=0
+quiet=0
+input=""
+
+_say() { [ "$quiet" -eq 1 ] || printf '%s\n' "$*" >&2; }
+_err() { printf '%s: %s\n' "$prog" "$*" >&2; }
+
+_usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -n|--no-clone) no_clone=1 ;;
+        -q|--quiet)    quiet=1 ;;
+        -h|--help)     _usage; exit 0 ;;
+        --)            shift; input="${1:-}"; break ;;
+        -*)            _err "unknown option: $1"; _usage >&2; exit 2 ;;
+        *)             input="$1" ;;
+    esac
+    shift
+done
+
+[ -n "$input" ] || { _err "need a PR URL, owner/repo, or repo URL"; _usage >&2; exit 2; }
+
+# --- owner/repo extraction ------------------------------------------------
+# Pull "owner/repo" out of any of: https://github.com/O/R[/pull/N], O/R#N, O/R,
+# git@github.com:O/R.git, git@<alias>.github.com:O/R.git, ssh://git@host/O/R.git
+_slug_from() {
+    local s="$1"
+    s="${s%%#*}"            # drop a #N suffix (owner/repo#123)
+    s="${s%.git}"           # drop trailing .git
+    case "$s" in
+        *github.com*) s="${s#*github.com}";;   # strip scheme+host (covers ssh aliases)
+        *@*:*)        s="${s#*:}";;            # bare scp form git@host:owner/repo
+    esac
+    s="${s#:}"; s="${s#/}"                     # strip a leading : or /
+    local owner repo
+    owner="$(printf '%s' "$s" | cut -d/ -f1)"
+    repo="$(printf '%s'  "$s" | cut -d/ -f2)"
+    repo="${repo%.git}"
+    [ -n "$owner" ] && [ -n "$repo" ] || return 1
+    printf '%s/%s' "$owner" "$repo"
+}
+
+_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+SLUG="$(_slug_from "$input")" || { _err "could not parse a github owner/repo from: $input"; exit 2; }
+OWNER="${SLUG%%/*}"; REPO="${SLUG#*/}"
+SLUG_LC="$(_lc "$SLUG")"; REPO_LC="$(_lc "$REPO")"
+
+WS="${a_dir_w_repos:-}"
+CACHE="${A_PR_REPO_CACHE:-$HOME/.a_tasks/pr_repos.tsv}"
+mkdir -p "$(dirname "$CACHE")" 2>/dev/null
+
+# Does clone at $1 point at our target slug (by its origin remote)?
+_matches_slug() {
+    local d="$1" u other
+    u="$(git -C "$d" remote get-url origin 2>/dev/null)" || return 1
+    other="$(_slug_from "$u")" || return 1
+    [ "$(_lc "$other")" = "$SLUG_LC" ]
+}
+
+# --- 1. cache -------------------------------------------------------------
+if [ -f "$CACHE" ]; then
+    # first field == slug (any case); print stored path
+    cached="$(awk -F'\t' -v k="$SLUG_LC" 'tolower($1)==k {print $2; exit}' "$CACHE" 2>/dev/null)"
+    if [ -n "${cached:-}" ] && [ -d "$cached/.git" ] && _matches_slug "$cached"; then
+        _say "resolved from cache: $cached"
+        printf '%s\n' "$cached"; exit 0
+    fi
+    if [ -n "${cached:-}" ]; then
+        _say "cache entry for $SLUG is stale ($cached) - re-resolving"
+        # drop the stale row; re-added below once re-resolved
+        tmp="${CACHE}.tmp.$$"
+        awk -F'\t' -v k="$SLUG_LC" 'tolower($1)!=k' "$CACHE" > "$tmp" 2>/dev/null && mv "$tmp" "$CACHE"
+    fi
+fi
+
+_cache_put() {  # $1 = path
+    local tmp="${CACHE}.tmp.$$"
+    { [ -f "$CACHE" ] && awk -F'\t' -v k="$SLUG_LC" 'tolower($1)!=k' "$CACHE"; \
+      printf '%s\t%s\n' "$SLUG" "$1"; } > "$tmp" 2>/dev/null && mv "$tmp" "$CACHE"
+}
+
+# --- 2. workspace scan ----------------------------------------------------
+if [ -n "$WS" ] && [ -d "$WS" ]; then
+    exact="" ; name_matches=()
+    for d in "$WS"/*/; do
+        d="${d%/}"
+        [ -e "$d/.git" ] || continue
+        if _matches_slug "$d"; then exact="$d"; break; fi
+        # repo-name-only candidate (fork case: same repo, different owner)
+        u="$(git -C "$d" remote get-url origin 2>/dev/null)"
+        s2="$(_slug_from "${u:-}" 2>/dev/null)" || s2=""
+        if [ -n "$s2" ] && [ "$(_lc "${s2#*/}")" = "$REPO_LC" ]; then
+            name_matches+=("$d")
+        fi
+    done
+    if [ -n "$exact" ]; then
+        _say "reusing workspace clone (owner/repo match): $exact"
+        _cache_put "$exact"; printf '%s\n' "$exact"; exit 0
+    fi
+    if [ "${#name_matches[@]}" -eq 1 ]; then
+        _say "reusing workspace clone (repo-name match, likely a fork): ${name_matches[0]}"
+        _cache_put "${name_matches[0]}"; printf '%s\n' "${name_matches[0]}"; exit 0
+    fi
+    if [ "${#name_matches[@]}" -gt 1 ]; then
+        _err "ambiguous: multiple workspace clones named '$REPO' (different owners):"
+        printf '  %s\n' "${name_matches[@]}" >&2
+        _err "pass the exact owner (this repo is $SLUG) or clone manually, then retry."
+        exit 3
+    fi
+fi
+
+# --- 3. clone -------------------------------------------------------------
+if [ "$no_clone" -eq 1 ]; then
+    _err "no local clone of $SLUG found under ${WS:-<a_dir_w_repos unset>} (and --no-clone set)"
+    exit 3
+fi
+[ -n "$WS" ] && [ -d "$WS" ] || { _err "a_dir_w_repos is not a directory: '${WS:-}' - cannot clone"; exit 4; }
+
+dest="$WS/$REPO"
+[ -e "$dest" ] && dest="$WS/${REPO}-${OWNER}"   # name taken by a different repo
+proto="${A_PR_REPO_CLONE_PROTO:-ssh}"
+if [ "$proto" = "https" ]; then
+    url="https://github.com/$OWNER/$REPO.git"
+else
+    url="git@github.com:$OWNER/$REPO.git"
+fi
+_say "no local clone found - cloning $url into $dest"
+if git clone "$url" "$dest" >&2; then
+    _cache_put "$dest"
+    _say "cloned: $dest"
+    printf '%s\n' "$dest"; exit 0
+fi
+_err "clone failed: $url"
+exit 4

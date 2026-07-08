@@ -1,0 +1,28 @@
+#!/bin/zsh
+
+########################### Machine-Specific Configuration ####
+# Copy this file to ~/my_settings/configs.profile and customize.
+#
+# Then add to your ~/.zshrc (or ~/.bashrc):
+#   source ~/my_settings/configs.profile
+
+# Machine type: 'm1' for Apple Silicon, 'i7' for Intel
+export a_machine_type='m1'
+
+# Organization name (used to load org-specific profile from shell/<org>.<machine>.profile)
+# Leave empty to skip org-specific loading
+export a_company_name=''
+
+# Your repos directories - used by cd_p and cd_w aliases
+export a_dir_p_repos='/path/to/personal/repos'
+export a_dir_w_repos='/path/to/work/repos'
+
+# Where this repo (my_setup) is cloned
+export MY_WORKFLOW_DIR="${a_dir_p_repos}/my_setup"
+
+# Optional: Google Drive path (uncomment and set if needed)
+# export a_dir_gd='/Users/YOUR_USER/Library/CloudStorage/GoogleDrive-YOU@EMAIL/My\ Drive'
+
+########################### Load Generic Profile ####
+# This loads all shared aliases, exports, and utility commands
+source "${MY_WORKFLOW_DIR}/shell/generic.profile"

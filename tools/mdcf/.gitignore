@@ -1,0 +1,6 @@
+# Build artifacts
+/bin/
+
+# Local workspace config — never commit (may carry parent paths, repo URLs that are not portable)
+# (the workspace config itself is OK to commit; uncomment if you want to keep it out)
+# .mdcf.yaml

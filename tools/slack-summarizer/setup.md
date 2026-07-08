@@ -191,7 +191,7 @@ Open your crontab for editing:
 crontab -e
 ```
 
-Paste these 5 lines (replace `/path/to/slack-summarizer` with your actual path, e.g. `/Users/jane/repos/my-workflow/tools/slack-summarizer`):
+Paste these 5 lines (replace `/path/to/slack-summarizer` with your actual path, e.g. `/Users/jane/repos/my_setup/tools/slack-summarizer`):
 
 ```
 */10 8-20 * * * /path/to/slack-summarizer/cron_runner.sh >> ~/.slack_summaries_data/cron.log 2>&1

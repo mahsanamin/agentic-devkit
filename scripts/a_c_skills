@@ -1,0 +1,209 @@
+#!/bin/bash
+#
+# a_c_skills - manage Claude Code skills that live in this repo.
+#
+# Each skill under <repo>/skills/<name>/ (any dir containing a SKILL.md) is
+# symlinked into your global skills dir (~/.claude/skills/<name>). Because the
+# link points at the repo, editing a skill here updates the live skill with no
+# reinstall. Pull the repo, and every machine you linked picks up the change.
+#
+# Usage:
+#   a_c_skills install [name...]     Symlink repo skills into ~/.claude/skills
+#   a_c_skills uninstall [name...]   Remove the symlinks this tool created
+#   a_c_skills status                Show link state for every repo skill
+#   a_c_skills list                  List the skills available in this repo
+#
+# Flags (for install/uninstall):
+#   -n, --dry-run    Print what would change without touching the filesystem
+#   -f, --force      Repoint a symlink that currently points somewhere else
+#   -h, --help       Show this help
+#
+# With no [name...], the command applies to every skill in the repo.
+# Override the target dir with CLAUDE_SKILLS_DIR (defaults to ~/.claude/skills).
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; DIM='\033[2m'; NC='\033[0m'
+
+# Resolve this script's real location, then the repo's skills dir.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+SKILLS_SRC="$REPO_ROOT/skills"
+TARGET_DIR="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+# Backups live OUTSIDE the skills dir so Claude Code never scans them as skills.
+BACKUP_DIR="${CLAUDE_SKILLS_BACKUP_DIR:-${TARGET_DIR%/}.backups}"
+
+DRY_RUN=false
+FORCE=false
+
+usage() { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//; /^set -euo/d'; }
+
+# Discover skills: subdirs of SKILLS_SRC that contain a SKILL.md
+discover_skills() {
+    local d
+    for d in "$SKILLS_SRC"/*/; do
+        [ -f "${d}SKILL.md" ] || continue
+        basename "$d"
+    done
+}
+
+run() {
+    if $DRY_RUN; then
+        echo -e "  ${DIM}would run:${NC} $*"
+    else
+        "$@"
+    fi
+}
+
+# Where does the global entry currently point? echoes one of:
+#   linked   - symlink already points at our repo copy
+#   elsewhere- symlink points somewhere else
+#   realdir  - a real (non-symlink) file/dir exists
+#   missing  - nothing there
+link_state() {
+    local name="$1"
+    local target="$TARGET_DIR/$name"
+    local want="$SKILLS_SRC/$name"
+    if [ -L "$target" ]; then
+        local cur; cur="$(readlink "$target")"
+        if [ "$cur" = "$want" ]; then echo linked; else echo "elsewhere:$cur"; fi
+    elif [ -e "$target" ]; then
+        echo realdir
+    else
+        echo missing
+    fi
+}
+
+install_one() {
+    local name="$1"
+    local target="$TARGET_DIR/$name"
+    local want="$SKILLS_SRC/$name"
+    local state; state="$(link_state "$name")"
+    case "$state" in
+        linked)
+            echo -e "  ${GREEN}ok${NC}        $name ${DIM}(already linked)${NC}" ;;
+        missing)
+            run ln -s "$want" "$target"
+            echo -e "  ${GREEN}linked${NC}    $name ${DIM}-> $want${NC}" ;;
+        elsewhere:*)
+            local cur="${state#elsewhere:}"
+            if $FORCE; then
+                run rm "$target"
+                run ln -s "$want" "$target"
+                echo -e "  ${YELLOW}repointed${NC} $name ${DIM}(was -> $cur)${NC}"
+            else
+                echo -e "  ${YELLOW}skip${NC}      $name ${DIM}symlink points elsewhere ($cur); use --force${NC}"
+            fi ;;
+        realdir)
+            # If the live dir is byte-identical to the repo copy, there is
+            # nothing to preserve: drop it and link. Only back up (loudly) when
+            # the global copy has diverged from the repo source.
+            if diff -rq "$target" "$want" >/dev/null 2>&1; then
+                run rm -rf "$target"
+                run ln -s "$want" "$target"
+                echo -e "  ${GREEN}linked${NC}    $name ${DIM}(replaced identical real dir)${NC}"
+            else
+                local backup="$BACKUP_DIR/$name.$(date +%Y%m%d-%H%M%S)"
+                run mkdir -p "$BACKUP_DIR"
+                run mv "$target" "$backup"
+                run ln -s "$want" "$target"
+                echo -e "  ${YELLOW}backed up${NC} $name ${DIM}DIFFERS from repo -> $backup, then linked${NC}"
+            fi ;;
+    esac
+}
+
+uninstall_one() {
+    local name="$1"
+    local target="$TARGET_DIR/$name"
+    local state; state="$(link_state "$name")"
+    case "$state" in
+        linked)
+            run rm "$target"
+            echo -e "  ${GREEN}unlinked${NC}  $name" ;;
+        missing)
+            echo -e "  ${DIM}absent${NC}    $name" ;;
+        realdir)
+            echo -e "  ${YELLOW}skip${NC}      $name ${DIM}is a real dir, not our symlink; left untouched${NC}" ;;
+        elsewhere:*)
+            echo -e "  ${YELLOW}skip${NC}      $name ${DIM}symlink points outside this repo; left untouched${NC}" ;;
+    esac
+}
+
+cmd_status() {
+    echo -e "${BLUE}Repo skills:${NC} $SKILLS_SRC"
+    echo -e "${BLUE}Target dir:${NC}  $TARGET_DIR"
+    echo ""
+    local name state
+    while read -r name; do
+        [ -z "$name" ] && continue
+        state="$(link_state "$name")"
+        case "$state" in
+            linked)     echo -e "  ${GREEN}● linked${NC}      $name" ;;
+            missing)    echo -e "  ${DIM}○ not linked${NC}  $name" ;;
+            realdir)    echo -e "  ${YELLOW}▲ real dir${NC}     $name ${DIM}(shadows repo copy)${NC}" ;;
+            elsewhere:*) echo -e "  ${RED}✗ elsewhere${NC}   $name ${DIM}-> ${state#elsewhere:}${NC}" ;;
+        esac
+    done < <(discover_skills)
+}
+
+cmd_list() {
+    echo -e "${BLUE}Skills in this repo${NC} ${DIM}($SKILLS_SRC)${NC}"
+    local name desc
+    while read -r name; do
+        [ -z "$name" ] && continue
+        # Pull the description line from SKILL.md frontmatter (first ~200 chars).
+        desc="$(awk -F': ' '/^description:/{ $1=""; print substr($0,2,160); exit }' "$SKILLS_SRC/$name/SKILL.md" 2>/dev/null)"
+        echo -e "  ${GREEN}$name${NC}"
+        [ -n "$desc" ] && echo -e "    ${DIM}${desc}...${NC}"
+    done < <(discover_skills)
+}
+
+main() {
+    [ -d "$SKILLS_SRC" ] || { echo -e "${RED}No skills dir at $SKILLS_SRC${NC}"; exit 1; }
+
+    local action="${1:-status}"; shift || true
+    local names=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -n|--dry-run) DRY_RUN=true ;;
+            -f|--force)   FORCE=true ;;
+            -h|--help)    usage; exit 0 ;;
+            -*)           echo -e "${RED}Unknown flag: $1${NC}"; exit 1 ;;
+            *)            names+=("$1") ;;
+        esac
+        shift
+    done
+
+    # No explicit names -> operate on all discovered skills.
+    if [ "${#names[@]}" -eq 0 ]; then
+        while read -r n; do [ -n "$n" ] && names+=("$n"); done < <(discover_skills)
+    fi
+    if [ "${#names[@]}" -eq 0 ] && [ "$action" = install -o "$action" = uninstall ]; then
+        echo -e "${YELLOW}No skills found in $SKILLS_SRC${NC}"; exit 0
+    fi
+
+    case "$action" in
+        -h|--help|help) usage ;;
+        list)   cmd_list ;;
+        status) cmd_status ;;
+        install)
+            mkdir -p "$TARGET_DIR"
+            $DRY_RUN && echo -e "${YELLOW}(dry run)${NC}"
+            echo -e "${BLUE}Installing into${NC} $TARGET_DIR"
+            for n in "${names[@]}"; do install_one "$n"; done ;;
+        uninstall)
+            $DRY_RUN && echo -e "${YELLOW}(dry run)${NC}"
+            echo -e "${BLUE}Uninstalling from${NC} $TARGET_DIR"
+            for n in "${names[@]}"; do uninstall_one "$n"; done ;;
+        *) echo -e "${RED}Unknown command: $action${NC}"; echo "Try: a_c_skills --help"; exit 1 ;;
+    esac
+}
+
+main "$@"

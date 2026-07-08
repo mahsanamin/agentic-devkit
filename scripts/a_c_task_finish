@@ -1,0 +1,97 @@
+#!/bin/bash
+# a_c_task_finish - wrap up a task: remove its worktree (and branch) via the
+# AI Awareness helper aa_g_worktree_remove, then drop it from the registry.
+#
+# With no argument it lists active tasks and lets you pick one. Flags are passed
+# straight through to aa_g_worktree_remove:
+#   -v, --verify     verify the branch is merged into main before removing (safe)
+#   -f, --force      skip all checks and confirmations
+#       --keep-remote  do not delete the remote branch
+#
+# Sourced by the wrapper in sourced/task.sh so it can step out of the worktree
+# it is about to remove.
+#
+# Usage: a_c_task_finish [<ticket-or-branch>] [-v|--verify] [-f|--force] [--keep-remote]
+
+# Locate this repo's scripts. Prefer A_C_WORKFLOW_DIR (set when the work repo is
+# loaded alongside another my_setup checkout); fall back to MY_WORKFLOW_DIR.
+A_C_TASK_BASE="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
+if [ -z "$A_C_TASK_BASE" ]; then
+    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the my_setup repo."
+    return 1 2>/dev/null || exit 1
+fi
+. "$A_C_TASK_BASE/scripts/a_s_task_common.sh"
+
+_a_c_task_finish_main() {
+    local key="" passthru=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -v|--verify|-f|--force|--keep-remote) passthru+=("$1") ;;
+            -h|--help)
+                echo "Usage: a_c_task_finish [<ticket-or-branch>] [-v|--verify] [-f|--force] [--keep-remote]"
+                return 0 ;;
+            -*) echo -e "${A_T_RED}Unknown flag: $1${A_T_NC}"; return 1 ;;
+            *)  key="$1" ;;
+        esac
+        shift
+    done
+
+    local records sel; records="$(a_task_records)"
+    if [ -z "$records" ]; then
+        echo -e "${A_T_YELLOW}No active tasks.${A_T_NC}"; return 0
+    fi
+
+    if [ -n "$key" ]; then
+        sel="$(a_task_find "$key")"
+        [ -z "$sel" ] && { echo -e "${A_T_RED}No task matches '$key'.${A_T_NC}"; return 1; }
+    else
+        echo -e "${A_T_BLUE}Finish which task?${A_T_NC}" >&2
+        local n=0 t b m r w c
+        while IFS="$(printf '\t')" read -r t b m r w c; do
+            n=$((n + 1))
+            printf '  [%d] %-11s %-28s %-12s %s\n' \
+                "$n" "$t" "$b" "$(basename "$r")" "$(a_task_wt_dirty "$w")" >&2
+        done <<EOF
+$records
+EOF
+        printf "Number: " >&2
+        local choice; read -r choice
+        case "$choice" in
+            ''|*[!0-9]*) echo -e "${A_T_YELLOW}Cancelled.${A_T_NC}"; return 1 ;;
+        esac
+        sel="$(printf '%s\n' "$records" | sed -n "${choice}p")"
+        [ -z "$sel" ] && { echo -e "${A_T_RED}No task #$choice.${A_T_NC}"; return 1; }
+    fi
+
+    local ticket branch mode repo worktree created
+    IFS="$(printf '\t')" read -r ticket branch mode repo worktree created <<EOF
+$sel
+EOF
+
+    echo -e "${A_T_BLUE}Finishing${A_T_NC} ${A_T_GREEN}$ticket${A_T_NC} ${A_T_DIM}($branch)${A_T_NC}"
+
+    # Step into the main repo so we are not standing inside the worktree we
+    # remove (aa_g_worktree_remove refuses to delete the worktree you are in).
+    if [ -d "$repo" ]; then cd "$repo" 2>/dev/null || true; fi
+
+    local dir_name="${branch//\//-}" rc=0
+    if command -v aa_g_worktree_remove >/dev/null 2>&1; then
+        aa_g_worktree_remove "$dir_name" "${passthru[@]}"; rc=$?
+    elif [ -f "$A_TASK_AA_WT_DIR/aa_g_worktree_remove" ]; then
+        bash "$A_TASK_AA_WT_DIR/aa_g_worktree_remove" "$dir_name" "${passthru[@]}"; rc=$?
+    else
+        echo -e "${A_T_RED}aa_g_worktree_remove not found (AA_WORKTREE_DIR=$A_TASK_AA_WT_DIR).${A_T_NC}"
+        echo -e "${A_T_DIM}Leaving the task in the registry.${A_T_NC}"
+        return 1
+    fi
+
+    if [ "$rc" -eq 0 ]; then
+        a_task_record_remove_by_branch "$branch"
+        echo -e "${A_T_GREEN}✓ Task $ticket finished and unregistered.${A_T_NC}"
+    else
+        echo -e "${A_T_YELLOW}Worktree removal did not complete (rc=$rc); task left in the registry.${A_T_NC}"
+        return "$rc"
+    fi
+}
+
+_a_c_task_finish_main "$@"

@@ -37,6 +37,15 @@ def main():
     my_threads_resp = proxy_get("/api/activity/my-threads?count=20&includeReplies=true", cfg)
     my_threads = my_threads_resp.get("data", {}).get("threads", []) if my_threads_resp.get("success") else []
 
+    # If every core call failed, the proxy is unreachable (e.g. dead tunnel /
+    # changed Tailscale IP). Don't masquerade that as "No new messages" — a
+    # silent failure here once hid a multi-day outage. Fail loudly so cron.log
+    # shows the real cause.
+    if not any(r.get("success") for r in (mentions_resp, threads_resp, my_threads_resp)):
+        err = mentions_resp.get("error", "unknown error")
+        log(f"ERROR: proxy unreachable at {cfg['proxy_url']} ({err})", "poll")
+        sys.exit(1)
+
     # Merge my-threads, dedup
     seen = {(t.get("thread_ts", ""), t.get("channel_id", "")) for t in threads}
     for mt in my_threads:

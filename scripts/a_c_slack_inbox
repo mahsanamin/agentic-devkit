@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# a_c_slack_inbox - Fetch everything in Slack that is "about me" (messages where
+# I'm @mentioned + threads I'm involved in) and print it as one clean JSON doc.
+#
+# Read-only. It never posts. It is the data-fetch step that a downstream
+# reply-drafting routine consumes.
+#
+# Reuses the slack-summarizer backend (the Slack proxy + its lib.py). Config and
+# credentials come from tools/slack-summarizer/config.env - the same file the
+# summarizer already uses, so there's one place to manage proxy URL/key/identity.
+#
+# Usage:
+#   a_c_slack_inbox                      # full "about me" view as pretty JSON
+#   a_c_slack_inbox --needs-reply-only   # only threads where the last word isn't mine
+#   a_c_slack_inbox --compact --quiet --save   # write DATA_DIR/inbox/latest.json (cron)
+#   a_c_slack_inbox --count 50 --since 1712345678.000000
+#   a_c_slack_inbox --help               # full flag list (from fetch_inbox.py)
+#
+# Cron example (poll my Slack inbox every 15 min during the day):
+#   */15 8-20 * * * /ABSOLUTE/PATH/scripts/a_c_slack_inbox --quiet --save >> ~/.slack_summaries_data/inbox.log 2>&1
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+# PATH setup (critical under cron, which has a minimal PATH).
+export HOME="${HOME:-$(eval echo ~)}"
+NVM_LATEST="$HOME/.nvm/versions/node/$(ls -r "$HOME/.nvm/versions/node/" 2>/dev/null | head -1)/bin"
+for p in "$NVM_LATEST" "$HOME/.asdf/shims" /opt/homebrew/bin /usr/local/bin /usr/bin /bin; do
+    [[ -d "$p" && ":$PATH:" != *":$p:"* ]] && export PATH="$PATH:$p"
+done
+
+# Locate the slack-summarizer tool dir (holds fetch_inbox.py, lib.py, config.env).
+# This script lives in <repo>/scripts; the tool is <repo>/tools/slack-summarizer.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TOOL_DIR=""
+for cand in \
+    "$SCRIPT_DIR/../tools/slack-summarizer" \
+    "${MY_WORKFLOW_DIR:-}/tools/slack-summarizer" \
+    "${A_C_WORKFLOW_DIR:-}/tools/slack-summarizer"; do
+    if [[ -n "$cand" && -f "$cand/fetch_inbox.py" ]]; then
+        TOOL_DIR="$(cd "$cand" && pwd)"
+        break
+    fi
+done
+
+if [[ -z "$TOOL_DIR" ]]; then
+    echo "a_c_slack_inbox: cannot locate tools/slack-summarizer (looked beside this script and under \$MY_WORKFLOW_DIR)." >&2
+    exit 1
+fi
+
+if [[ ! -f "$TOOL_DIR/config.env" ]]; then
+    echo "a_c_slack_inbox: $TOOL_DIR/config.env not found. Copy config.env.sample and fill it in (see the tool's setup.md)." >&2
+    exit 1
+fi
+
+# Load config and export the vars lib.load_config() reads.
+# shellcheck disable=SC1091
+source "$TOOL_DIR/config.env"
+DATA_DIR="${DATA_DIR:-$TOOL_DIR}"
+export DATA_DIR SLACK_PROXY_URL SLACK_PROXY_API_KEY MY_SLACK_USER_ID MY_SLACK_USER_NAME
+export SLACK_WORKSPACE_URL SLACK_DM_CHANNEL PUBLISH_MODE PUBLISH_DIR
+export MDNEST_SERVER MDNEST_NS STALE_DAYS DELETE_OLDER_THAN_DAYS
+
+exec python3 "$TOOL_DIR/fetch_inbox.py" "$@"

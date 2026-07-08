@@ -1,5 +1,6 @@
 # Local settings
 .claude/settings.local.json
+**/.claude/settings.local.json
 
 # macOS
 .DS_Store
@@ -8,8 +9,27 @@
 .idea/
 .vscode/
 
-# Per-machine org profiles — local to each user/machine, never committed.
+# Per-machine org profiles: local to each user/machine, never committed.
 # Pattern matches <company>.<machine>.profile but NOT generic.profile.
 # Samples (e.g. org.machine.profile.sample) are still tracked.
 **/shell/*.*.profile
 !**/shell/*.profile.sample
+
+# Skill optimizer / eval runtime artifacts (regenerated, not source)
+skills/*-workspace/
+skills/**/opt-results/
+skills/**/opt-report.html
+skills/**/opt-loop.log
+
+# Skill runtime state (watermarks, regenerated each run)
+skills/**/state/
+
+# Tool runtime state + secrets
+tools/**/state/
+tools/**/config.env
+tools/mdcf/mdcf
+tools/mdcf/dist/
+
+# Python bytecode
+__pycache__/
+*.pyc

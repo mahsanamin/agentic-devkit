@@ -2,7 +2,8 @@
 # Enrich threads → Claude links.md → Claude summary.md → publish → optional DM cleanup
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/config.env"
+set -a; source "$SCRIPT_DIR/config.env"; set +a
+export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
 DATA_DIR="${DATA_DIR:-$HOME/.slack_summaries_data}"
 
 DRY_RUN=0
