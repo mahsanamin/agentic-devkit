@@ -22,6 +22,9 @@
 # Names may be given with or without the .md suffix. With no [name...], the
 # command applies to every agent in the repo (README.md is never a agent).
 # Override the target dir with CLAUDE_AGENTS_DIR (defaults to ~/.claude/agents).
+# Override the SOURCE agents dir with CLAUDE_AGENTS_SRC (defaults to <repo>/agents)
+# so an overlay repo (e.g. a private dev kit) can reuse this installer instead of
+# shipping its own copy: CLAUDE_AGENTS_SRC=/path/to/other/agents a_c_agents install
 
 set -euo pipefail
 
@@ -37,7 +40,9 @@ while [ -L "$SOURCE" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
-AGENTS_SRC="$REPO_ROOT/agents"
+# CLAUDE_AGENTS_SRC lets an overlay repo point this installer at its own agents
+# dir, so the private dev kit reuses this tool rather than duplicating it.
+AGENTS_SRC="${CLAUDE_AGENTS_SRC:-$REPO_ROOT/agents}"
 TARGET_DIR="${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}"
 # Backups live OUTSIDE the agents dir so Claude Code never scans them as agents.
 BACKUP_DIR="${CLAUDE_AGENTS_BACKUP_DIR:-${TARGET_DIR%/}.backups}"
