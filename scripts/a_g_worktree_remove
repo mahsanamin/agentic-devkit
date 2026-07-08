@@ -64,7 +64,10 @@ fi
 
 # Get main worktree and ensure we're there
 CURRENT_DIR=$(git rev-parse --show-toplevel)
-MAIN_WORKTREE=$(git worktree list | head -n 1 | awk '{print $1}')
+# Use --porcelain + substr extraction so worktree paths containing spaces survive
+# (default `git worktree list` is space-separated; awk '{print $1}' would truncate
+# "/Users/me/My Repos/foo" at "/Users/me/My").
+MAIN_WORKTREE=$(git worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}' | head -n 1)
 
 if [ "$CURRENT_DIR" != "$MAIN_WORKTREE" ]; then
     echo -e "${YELLOW}Switching to main repository...${NC}"
@@ -92,9 +95,12 @@ fi
 WORKTREES_DIR="$(dirname "$GIT_ROOT")/WorkTrees"
 SLASH_TO_DASH="${FEATURE_NAME//\//-}"
 
-declare -a CANDIDATE_PATHS=()
-declare -a CANDIDATE_BRANCHES=()
-declare -a CANDIDATE_REASONS=()
+# Merge path + branch + reason into single delimited array so the loop works in
+# both bash (0-indexed) and zsh (1-indexed by default). Pure element iteration
+# avoids ${!ARR[@]} (bash-only) and ${ARR[$i]} (indexing diverges between shells).
+# TAB is a safe delimiter — git refuses TABs in branch/path names.
+TAB=$'\t'
+CANDIDATES=()
 
 wt_path=""
 wt_branch=""
@@ -120,9 +126,7 @@ while IFS= read -r line; do
                 fi
             fi
             if [ -n "$reason" ]; then
-                CANDIDATE_PATHS+=("$wt_path")
-                CANDIDATE_BRANCHES+=("$wt_branch")
-                CANDIDATE_REASONS+=("$reason")
+                CANDIDATES+=("${wt_path}${TAB}${wt_branch}${TAB}${reason}")
             fi
         fi
         wt_path=""
@@ -130,25 +134,36 @@ while IFS= read -r line; do
     fi
 done < <(git worktree list --porcelain; echo)
 
-if [ "${#CANDIDATE_PATHS[@]}" -eq 0 ]; then
+n_candidates=${#CANDIDATES[@]}
+if [ "$n_candidates" -eq 0 ]; then
     echo -e "${RED}Error: Worktree not found${NC}"
     echo ""
     echo "Available worktrees:"
     git worktree list
     exit 1
-elif [ "${#CANDIDATE_PATHS[@]}" -gt 1 ]; then
+elif [ "$n_candidates" -gt 1 ]; then
     echo -e "${RED}Error: '$FEATURE_NAME' matches multiple worktrees${NC}"
     echo ""
-    for i in "${!CANDIDATE_PATHS[@]}"; do
-        echo "  • ${CANDIDATE_PATHS[$i]}  [branch: ${CANDIDATE_BRANCHES[$i]:-<detached>}, matched by: ${CANDIDATE_REASONS[$i]}]"
+    for entry in "${CANDIDATES[@]}"; do
+        path="${entry%%${TAB}*}"
+        rest="${entry#*${TAB}}"
+        branch="${rest%%${TAB}*}"
+        rsn="${rest#*${TAB}}"
+        echo "  • $path  [branch: ${branch:-<detached>}, matched by: $rsn]"
     done
     echo ""
     echo "Disambiguate by passing the full directory name."
     exit 1
 fi
 
-WORKTREE_PATH="${CANDIDATE_PATHS[0]}"
-BRANCH_NAME="${CANDIDATE_BRANCHES[0]}"
+# Single match — extract path and branch from the only entry
+WORKTREE_PATH=""
+BRANCH_NAME=""
+for entry in "${CANDIDATES[@]}"; do
+    WORKTREE_PATH="${entry%%${TAB}*}"
+    rest="${entry#*${TAB}}"
+    BRANCH_NAME="${rest%%${TAB}*}"
+done
 
 if [ -z "$BRANCH_NAME" ]; then
     echo -e "${YELLOW}Warning: Could not detect branch name${NC}"
@@ -255,8 +270,14 @@ if [ "$VERIFY_MODE" = true ] && [ -n "$BRANCH_NAME" ]; then
                     echo "  [d] Delete anyway"
                     echo "  [c] Cancel"
                     echo ""
-                    read -p "Choice [r/d/c]: " -n 1 -r
-                    echo
+                    # Single-keypress prompt — preserves the UX from before the
+                    # zsh-compat fix that switched to plain `read -r`. zsh's
+                    # `read -k 1` and bash's `read -n 1` aren't interchangeable.
+                    if [ -n "$ZSH_VERSION" ]; then
+                        printf "Choice [r/d/c]: "; read -k 1 REPLY; echo
+                    else
+                        read -p "Choice [r/d/c]: " -n 1 -r REPLY; echo
+                    fi
 
                     if [[ $REPLY =~ ^[Rr]$ ]]; then
                         echo ""
@@ -272,8 +293,11 @@ if [ "$VERIFY_MODE" = true ] && [ -n "$BRANCH_NAME" ]; then
                                 IS_MERGED=true
                             else
                                 echo -e "${YELLOW}$COMMITS_AFTER unique commit(s) remain (NOT in main)${NC}"
-                                read -p "Still delete? (y/N): " -n 1 -r
-                                echo
+                                if [ -n "$ZSH_VERSION" ]; then
+                                    printf "Still delete? (y/N): "; read -k 1 REPLY; echo
+                                else
+                                    read -p "Still delete? (y/N): " -n 1 -r REPLY; echo
+                                fi
                                 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                                     echo "Cancelled."
                                     exit 0
@@ -330,8 +354,11 @@ elif [ "$VERIFY_MODE" = false ] && [ -n "$BRANCH_NAME" ] && [ "$FORCE_MODE" = fa
     if [ "$UNPUSHED_WARNING" = true ]; then
         echo -e "${RED}⚠️  WARNING: $UNPUSHED_REASON${NC}"
         echo ""
-        read -p "Delete anyway? (y/N): " -n 1 -r
-        echo
+        if [ -n "$ZSH_VERSION" ]; then
+            printf "Delete anyway? (y/N): "; read -k 1 REPLY; echo
+        else
+            read -p "Delete anyway? (y/N): " -n 1 -r REPLY; echo
+        fi
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             echo "Cancelled. Push first or use --force."
             exit 0
@@ -351,11 +378,47 @@ if [ "$FORCE_MODE" = false ]; then
         echo "  • Remote branch: origin/$BRANCH_NAME"
     fi
     echo ""
-    read -p "Proceed? (y/N): " -n 1 -r
-    echo
+    if [ -n "$ZSH_VERSION" ]; then
+        printf "Proceed? (y/N): "; read -k 1 REPLY; echo
+    else
+        read -p "Proceed? (y/N): " -n 1 -r REPLY; echo
+    fi
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Cancelled."
         exit 0
+    fi
+fi
+
+#############################
+# Dirty working tree check
+#############################
+# `git worktree remove` without --force already refuses on a dirty tree; we
+# only pass --force when the user has explicitly accepted data loss (or asked
+# for it via --force on the command line). This keeps git's own safety net in
+# play by default and gives the user a chance to back out.
+USE_FORCE=false
+if [ "$FORCE_MODE" = true ]; then
+    USE_FORCE=true
+elif [ -d "$WORKTREE_PATH" ]; then
+    DIRTY_STATUS=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null || true)
+    if [ -n "$DIRTY_STATUS" ]; then
+        echo ""
+        echo -e "${RED}⚠️  WARNING: Worktree has uncommitted changes${NC}"
+        echo ""
+        echo "$DIRTY_STATUS"
+        echo ""
+        echo -e "${YELLOW}These changes will be permanently lost if you proceed.${NC}"
+        echo ""
+        if [ -n "$ZSH_VERSION" ]; then
+            printf "Discard uncommitted changes and remove anyway? (y/N): "; read -k 1 REPLY; echo
+        else
+            read -p "Discard uncommitted changes and remove anyway? (y/N): " -n 1 -r REPLY; echo
+        fi
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Cancelled. Commit, stash, or re-run with --force to discard."
+            exit 0
+        fi
+        USE_FORCE=true
     fi
 fi
 
@@ -364,7 +427,11 @@ fi
 #############################
 echo ""
 echo "Removing worktree..."
-git worktree remove "$WORKTREE_PATH" --force
+if [ "$USE_FORCE" = true ]; then
+    git worktree remove "$WORKTREE_PATH" --force
+else
+    git worktree remove "$WORKTREE_PATH"
+fi
 echo -e "${GREEN}✓ Worktree removed${NC}"
 
 if [ -n "$BRANCH_NAME" ]; then

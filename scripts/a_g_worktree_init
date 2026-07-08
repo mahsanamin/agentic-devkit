@@ -19,21 +19,32 @@ while [[ "$#" -gt 0 ]]; do
         -h|--help)
             echo "Usage: a_g_worktree_init <branch-name> [-b|--base <branch>]"
             echo ""
-            echo "Creates a new git worktree for feature development."
+            echo "Creates a git worktree. <branch-name> can be:"
+            echo "  • a new branch (created from --base / story-picker / current / main)"
+            echo "  • an existing local branch (checked out as-is)"
+            echo "  • a branch that only exists on origin (auto-detected after fetch;"
+            echo "    a local tracking branch is created from origin/<name>)"
+            echo ""
+            echo "If a worktree for the branch ALREADY exists, this does not error: it"
+            echo "falls back to switching to that worktree (cd's in when sourced, prints"
+            echo "the path when executed), like a_g_worktree_switch."
             echo ""
             echo "Arguments:"
-            echo "  branch-name     Name of the branch to create (use any name you want)"
+            echo "  branch-name     Name of the branch (new or existing, local or remote)"
             echo ""
             echo "Options:"
-            echo "  -b, --base      Base branch to branch from (skips the prompt)"
-            echo "                  Default: main/master, or you'll be asked whether to"
-            echo "                  base off your current branch if it's not main/master."
+            echo "  -b, --base      Base branch for NEW branches (skips the picker)."
+            echo "                  When omitted and the branch is new, the script collects"
+            echo "                  candidate bases: main/master, current non-main branch,"
+            echo "                  every local 'story/*' branch. Single candidate → silent;"
+            echo "                  multiple → numbered picker. Ignored when <branch-name>"
+            echo "                  already exists locally or on origin."
             echo "  -h, --help      Show this help message"
             echo ""
             echo "Examples:"
-            echo "  a_g_worktree_init feature/auth-improvements"
-            echo "  a_g_worktree_init bugfix/login-issue"
-            echo "  a_g_worktree_init my-feature -b develop"
+            echo "  a_g_worktree_init feature/auth-improvements          # new branch from main"
+            echo "  a_g_worktree_init my-feature -b develop              # new branch from develop"
+            echo "  a_g_worktree_init feature/teammates-pr               # auto-checkout from origin"
             return 0
             ;;
         *) FEATURE_NAME="$1" ;;
@@ -56,88 +67,219 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     return 1
 fi
 
-# Get the git root directory
+# Get the current worktree's toplevel (still useful for some operations).
 GIT_ROOT=$(git rev-parse --show-toplevel)
-PROJECT_NAME=$(basename "$GIT_ROOT")
 
-# Determine base branch if not specified.
-# Default is main/master, but if the user is on a non-main branch, offer
-# to base the new worktree off the current branch instead. Explicit -b wins.
-if [ -z "$BASE_BRANCH" ]; then
-    DEFAULT_BASE=""
-    if git show-ref --verify --quiet refs/heads/main; then
-        DEFAULT_BASE="main"
-    elif git show-ref --verify --quiet refs/heads/master; then
-        DEFAULT_BASE="master"
-    fi
+# Derive the MAIN repo root from the git common dir. When invoked from inside a
+# linked worktree, --show-toplevel points at the worktree (which would nest new
+# worktrees as …/WorkTrees/<proj>/WorkTrees/<proj>/<new>). The common dir always
+# resolves to the main checkout's .git, so its parent is the main repo root.
+# Note: --git-common-dir can be relative (a bare ".git"), so resolve it via cd.
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+MAIN_ROOT=$(cd "$(dirname "$GIT_COMMON_DIR")" && pwd)
+PROJECT_NAME=$(basename "$MAIN_ROOT")
 
-    CURRENT_BRANCH=$(git symbolic-ref --short -q HEAD || true)
-
-    if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
-        echo -e "${YELLOW}You're currently on branch '$CURRENT_BRANCH'.${NC}"
-        if [ -n "$DEFAULT_BASE" ]; then
-            read -r -p "Branch the new worktree off '$CURRENT_BRANCH' instead of '$DEFAULT_BASE'? [Y/n] " REPLY
-            if [[ -z "$REPLY" || "$REPLY" =~ ^[Yy] ]]; then
-                BASE_BRANCH="$CURRENT_BRANCH"
-            else
-                BASE_BRANCH="$DEFAULT_BASE"
-            fi
-        else
-            read -r -p "Branch the new worktree off '$CURRENT_BRANCH'? [Y/n] " REPLY
-            if [[ -z "$REPLY" || "$REPLY" =~ ^[Yy] ]]; then
-                BASE_BRANCH="$CURRENT_BRANCH"
-            else
-                echo "Cancelled. Specify a base branch with -b."
-                return 1
-            fi
-        fi
-    elif [ -n "$DEFAULT_BASE" ]; then
-        BASE_BRANCH="$DEFAULT_BASE"
-    else
-        echo -e "${RED}Error: Could not determine base branch${NC}"
-        echo "Please specify base branch with -b option"
-        return 1
-    fi
-fi
-
-# Verify base branch exists
-if ! git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
-    echo -e "${RED}Error: Base branch '$BASE_BRANCH' does not exist${NC}"
-    return 1
-fi
-
-# Construct the worktree path
-WORKTREES_DIR="$(dirname "$GIT_ROOT")/WorkTrees"
+# Construct the worktree path. WorkTrees lives alongside the main repo (sibling
+# of MAIN_ROOT), so new worktrees land in <repos>/WorkTrees/<proj>/<branch> — a
+# sibling of the current worktree, never nested as …/WorkTrees/<proj>/WorkTrees/…
+WORKTREES_DIR="$(dirname "$MAIN_ROOT")/WorkTrees"
 # Branch keeps original name (slashes allowed), directory name converts slashes to dashes
 BRANCH_NAME="$FEATURE_NAME"
 WORKTREE_DIR_NAME="${FEATURE_NAME//\//-}"
 WORKTREE_PATH="$WORKTREES_DIR/$PROJECT_NAME/$WORKTREE_DIR_NAME"
 
-# Check if worktree already exists
-if [ -d "$WORKTREE_PATH" ]; then
-    echo -e "${RED}Error: Worktree already exists at $WORKTREE_PATH${NC}"
-    return 1
+# No-op guard: if we're already inside the linked worktree for this exact branch,
+# there's nothing to create — short-circuit before any fetch/prompt. Detect
+# "inside a linked worktree" robustly: either ".git" is a FILE (gitdir pointer)
+# or the resolved git-dir lives under a /worktrees/ path. Only short-circuit on
+# an exact branch match.
+CURRENT_HEAD_BRANCH=$(git symbolic-ref --short -q HEAD || true)
+IN_LINKED_WORKTREE=false
+if [ -f "$GIT_ROOT/.git" ]; then
+    IN_LINKED_WORKTREE=true
+elif [[ "$(git rev-parse --git-dir 2>/dev/null)" == */worktrees/* ]]; then
+    IN_LINKED_WORKTREE=true
+fi
+if [ "$IN_LINKED_WORKTREE" = true ] && [ -n "$CURRENT_HEAD_BRANCH" ] && [ "$CURRENT_HEAD_BRANCH" = "$BRANCH_NAME" ]; then
+    echo -e "${YELLOW}Already on this branch's worktree ($BRANCH_NAME) — nothing to do.${NC}"
+    return 0 2>/dev/null || exit 0
 fi
 
-# Check if branch already exists
+# ── Switch fallback (don't error when a worktree for this branch already exists) ──
+# If the branch is already checked out in a linked worktree, or a worktree already
+# sits at the target path, fall back to "switch": go to the existing worktree
+# instead of failing to create a duplicate. The main checkout is intentionally NOT a
+# switch target (feature work lives in linked worktrees, never the primary clone).
+EXISTING_WT=$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH_NAME" '
+    /^worktree / { p = substr($0, 10) }
+    $0 == "branch " b { print p; exit }
+')
+# Path exists and is a real worktree but git didn't report it on this branch
+# (e.g. detached), still prefer switching over clobbering it.
+if [ -z "$EXISTING_WT" ] && [ -d "$WORKTREE_PATH" ] \
+   && git -C "$WORKTREE_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    EXISTING_WT="$WORKTREE_PATH"
+fi
+
+if [ -n "$EXISTING_WT" ] && [ "$EXISTING_WT" = "$MAIN_ROOT" ]; then
+    echo -e "${YELLOW}Branch '$BRANCH_NAME' is currently checked out in the main checkout ($MAIN_ROOT).${NC}"
+    echo "Git won't check the same branch out twice. Either work there, or switch the main"
+    echo "checkout to another branch first, then re-run this to get an isolated worktree."
+    return 1 2>/dev/null || exit 1
+elif [ -n "$EXISTING_WT" ]; then
+    echo -e "${YELLOW}A worktree for '$BRANCH_NAME' already exists, switching to it (no new worktree created).${NC}"
+    echo "  Path: $EXISTING_WT"
+    # Auto-cd when sourced; print the path when executed (e.g. the non-interactive
+    # Bash tool), same sourced-vs-executed handling as a successful create below.
+    if [[ "${BASH_SOURCE[0]}" != "${0}" ]] || [[ -n "$ZSH_EVAL_CONTEXT" && "$ZSH_EVAL_CONTEXT" =~ :file$ ]]; then
+        cd "$EXISTING_WT" || return 1
+        echo -e "${GREEN}✓ Switched to worktree directory${NC}"
+    else
+        echo -e "${BLUE}To switch to it, run:${NC}"
+        echo "  cd $EXISTING_WT"
+        echo -e "${YELLOW}Tip: source the script (or run a_g_worktree_switch $FEATURE_NAME) to auto-cd.${NC}"
+    fi
+    return 0 2>/dev/null || exit 0
+fi
+
+# A directory sits at the target path but it is NOT a git worktree (stale/foreign).
+# Don't clobber it; surface it clearly.
+if [ -d "$WORKTREE_PATH" ]; then
+    echo -e "${RED}Error: $WORKTREE_PATH exists but is not a git worktree.${NC}"
+    echo "Remove or rename it, then retry (or: a_g_worktree_remove $WORKTREE_DIR_NAME)."
+    return 1 2>/dev/null || exit 1
+fi
+
+# Fetch first so we can detect branches that only exist on origin.
+# We need both: the requested branch (in case it's a remote-only branch) and
+# the base branch (in case we'll create a new branch from it).
+echo -e "${YELLOW}Fetching latest from remote...${NC}"
+git fetch origin "$BRANCH_NAME" 2>/dev/null || true
+[ -n "$BASE_BRANCH" ] && git fetch origin "$BASE_BRANCH" 2>/dev/null || true
+
+# Decide how to materialize the branch:
+#   existing-local  -> branch already in this repo, just check it out
+#   existing-remote -> branch only on origin, create local tracking branch
+#   new             -> branch nowhere yet, create from BASE_BRANCH
 if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-    echo -e "${YELLOW}Branch $BRANCH_NAME already exists${NC}"
-    read -p "Use existing branch? (y/N): " -n 1 -r
-    echo
+    echo -e "${YELLOW}Branch $BRANCH_NAME already exists locally${NC}"
+    printf "Use existing branch? (y/N): "
+    read -r REPLY
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Cancelled."
         return 0
     fi
-    USE_EXISTING_BRANCH=true
+    BRANCH_MODE="existing-local"
+    BRANCH_SOURCE="$BRANCH_NAME (local)"
+elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+    echo -e "${YELLOW}Branch $BRANCH_NAME exists on origin (not locally yet)${NC}"
+    printf "Check out origin/%s in the new worktree? [Y/n] " "$BRANCH_NAME"
+    read -r REPLY
+    if [[ -z "$REPLY" || "$REPLY" =~ ^[Yy] ]]; then
+        BRANCH_MODE="existing-remote"
+        BRANCH_SOURCE="origin/$BRANCH_NAME"
+    else
+        echo "Cancelled."
+        return 0
+    fi
 else
-    USE_EXISTING_BRANCH=false
+    BRANCH_MODE="new"
+    # For a new branch, resolve BASE_BRANCH if it wasn't passed explicitly.
+    # Collect candidates (current non-main + story/* branches), use a numbered
+    # picker when there are multiple; silent default when single; explicit -b
+    # always wins (we wouldn't be here if it was set).
+    if [ -z "$BASE_BRANCH" ]; then
+        DEFAULT_BASE=""
+        if git show-ref --verify --quiet refs/heads/main; then
+            DEFAULT_BASE="main"
+        elif git show-ref --verify --quiet refs/heads/master; then
+            DEFAULT_BASE="master"
+        fi
+
+        CURRENT_BRANCH=$(git symbolic-ref --short -q HEAD || true)
+        CURRENT_IS_NONMAIN=false
+        if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
+            CURRENT_IS_NONMAIN=true
+        fi
+
+        # Merge value + label into a single array (each entry = "value<TAB>label").
+        # Pure element iteration works in both bash and zsh; "${!ARR[@]}" and
+        # "${ARR[$i]}" do NOT (bash-only / zsh-1-indexed differences). TAB is a
+        # safe delimiter — git branch names can't contain it.
+        TAB=$'\t'
+        CHOICES=()
+
+        if [ "$CURRENT_IS_NONMAIN" = true ]; then
+            CHOICES+=("${CURRENT_BRANCH}${TAB}${CURRENT_BRANCH} (current branch, default)")
+            if [ -n "$DEFAULT_BASE" ]; then
+                CHOICES+=("${DEFAULT_BASE}${TAB}${DEFAULT_BASE}")
+            fi
+        elif [ -n "$DEFAULT_BASE" ]; then
+            CHOICES+=("${DEFAULT_BASE}${TAB}${DEFAULT_BASE} (default)")
+        fi
+
+        # Append every local story/* branch that isn't already in CHOICES.
+        while IFS= read -r br; do
+            [ -z "$br" ] && continue
+            dup=false
+            for entry in "${CHOICES[@]}"; do
+                value="${entry%%${TAB}*}"
+                [ "$value" = "$br" ] && dup=true && break
+            done
+            if [ "$dup" = false ]; then
+                CHOICES+=("${br}${TAB}${br}")
+            fi
+        done < <(git for-each-ref --format='%(refname:short)' refs/heads/story/ 2>/dev/null)
+
+        n_choices=${#CHOICES[@]}
+        if [ "$n_choices" -eq 0 ]; then
+            echo -e "${RED}Error: Could not determine base branch${NC}"
+            echo "Please specify base branch with -b option"
+            return 1
+        elif [ "$n_choices" -eq 1 ]; then
+            for entry in "${CHOICES[@]}"; do
+                BASE_BRANCH="${entry%%${TAB}*}"
+            done
+        else
+            echo -e "${YELLOW}Base branch for the new worktree:${NC}"
+            num=0
+            for entry in "${CHOICES[@]}"; do
+                num=$((num + 1))
+                label="${entry#*${TAB}}"
+                echo "  [$num] $label"
+            done
+            # printf + read works in both bash and zsh; read -r -p is bash-only.
+            printf "Choose (1-%d, default 1): " "$n_choices"
+            read -r REPLY
+            REPLY="${REPLY:-1}"
+            if ! [[ "$REPLY" =~ ^[0-9]+$ ]] || [ "$REPLY" -lt 1 ] || [ "$REPLY" -gt "$n_choices" ]; then
+                echo -e "${RED}Invalid choice. Cancelled.${NC}"
+                return 1
+            fi
+            num=0
+            for entry in "${CHOICES[@]}"; do
+                num=$((num + 1))
+                if [ "$num" = "$REPLY" ]; then
+                    BASE_BRANCH="${entry%%${TAB}*}"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    # Verify base branch exists
+    if ! git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
+        echo -e "${RED}Error: Base branch '$BASE_BRANCH' does not exist${NC}"
+        return 1
+    fi
+    BRANCH_SOURCE="new branch from $BASE_BRANCH"
 fi
 
 # Show what will be created
 echo -e "${BLUE}Creating worktree:${NC}"
 echo "  Project:    $PROJECT_NAME"
 echo "  Branch:     $BRANCH_NAME"
-echo "  Base:       $BASE_BRANCH"
+echo "  Source:     $BRANCH_SOURCE"
 echo "  Directory:  $WORKTREE_DIR_NAME"
 echo "  Path:       $WORKTREE_PATH"
 echo ""
@@ -145,24 +287,28 @@ echo ""
 # Create worktrees directory if it doesn't exist
 mkdir -p "$WORKTREES_DIR/$PROJECT_NAME"
 
-# Fetch latest from remote (optional but recommended)
-echo -e "${YELLOW}Fetching latest from remote...${NC}"
-git fetch origin "$BASE_BRANCH" 2>/dev/null || true
-
 # Create the worktree
-if [ "$USE_EXISTING_BRANCH" = true ]; then
-    git worktree add "$WORKTREE_PATH" "$BRANCH_NAME"
-else
-    git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_BRANCH"
-fi
+case "$BRANCH_MODE" in
+    existing-local)
+        git worktree add "$WORKTREE_PATH" "$BRANCH_NAME"
+        ;;
+    existing-remote)
+        git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "origin/$BRANCH_NAME"
+        ;;
+    new)
+        git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_BRANCH"
+        ;;
+esac
 
 if [ $? -eq 0 ]; then
     echo ""
     echo -e "${GREEN}✓ Worktree created successfully!${NC}"
 
-    # Copy dotfiles from the main repo to the new worktree
+    # Copy dotfiles from the main repo to the new worktree. Iterate MAIN_ROOT so
+    # dotfiles are always copied FROM the main checkout, regardless of where the
+    # script was invoked (e.g. from inside another linked worktree).
     DOTFILES_COPIED=0
-    for dotfile in "$GIT_ROOT"/.*; do
+    for dotfile in "$MAIN_ROOT"/.*; do
         basename="$(basename "$dotfile")"
         # Skip ., .., .git, and any dotfile already present (tracked ones)
         if [[ "$basename" == "." || "$basename" == ".." || "$basename" == ".git" ]]; then
