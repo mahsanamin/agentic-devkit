@@ -30,9 +30,13 @@ else
     A_T_RED=''; A_T_GREEN=''; A_T_YELLOW=''; A_T_BLUE=''; A_T_DIM=''; A_T_NC=''
 fi
 
-# Where the AI Awareness worktree companion scripts live. The framework exports
-# AA_WORKTREE_DIR; fall back to the conventional install path.
-A_TASK_AA_WT_DIR="${AA_WORKTREE_DIR:-$HOME/.claude/scripts/aa-worktree}"
+# Where this repo's worktree helper scripts (a_g_worktree_init /
+# a_g_worktree_remove) live. They ship in this repo's own scripts/ dir and are on
+# PATH once the profile is sourced; resolve the dir explicitly (from the workflow
+# root the caller already established) so the task commands work even when run by
+# absolute path before PATH is set. Override with A_TASK_WT_DIR if they live
+# elsewhere.
+A_TASK_WT_DIR="${A_TASK_WT_DIR:-${A_C_TASK_BASE:-${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}}/scripts}"
 
 # Default Jira project key, used when the user types a bare ticket number.
 A_TASK_DEFAULT_KEY="${A_TASK_DEFAULT_KEY:-PROJ}"

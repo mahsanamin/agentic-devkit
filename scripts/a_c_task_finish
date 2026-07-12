@@ -1,9 +1,9 @@
 #!/bin/bash
-# a_c_task_finish - wrap up a task: remove its worktree (and branch) via the
-# AI Awareness helper aa_g_worktree_remove, then drop it from the registry.
+# a_c_task_finish - wrap up a task: remove its worktree (and branch) via this
+# repo's helper a_g_worktree_remove, then drop it from the registry.
 #
 # With no argument it lists active tasks and lets you pick one. Flags are passed
-# straight through to aa_g_worktree_remove:
+# straight through to a_g_worktree_remove:
 #   -v, --verify     verify the branch is merged into main before removing (safe)
 #   -f, --force      skip all checks and confirmations
 #       --keep-remote  do not delete the remote branch
@@ -71,16 +71,16 @@ EOF
     echo -e "${A_T_BLUE}Finishing${A_T_NC} ${A_T_GREEN}$ticket${A_T_NC} ${A_T_DIM}($branch)${A_T_NC}"
 
     # Step into the main repo so we are not standing inside the worktree we
-    # remove (aa_g_worktree_remove refuses to delete the worktree you are in).
+    # remove (a_g_worktree_remove refuses to delete the worktree you are in).
     if [ -d "$repo" ]; then cd "$repo" 2>/dev/null || true; fi
 
     local dir_name="${branch//\//-}" rc=0
-    if command -v aa_g_worktree_remove >/dev/null 2>&1; then
-        aa_g_worktree_remove "$dir_name" "${passthru[@]}"; rc=$?
-    elif [ -f "$A_TASK_AA_WT_DIR/aa_g_worktree_remove" ]; then
-        bash "$A_TASK_AA_WT_DIR/aa_g_worktree_remove" "$dir_name" "${passthru[@]}"; rc=$?
+    if command -v a_g_worktree_remove >/dev/null 2>&1; then
+        a_g_worktree_remove "$dir_name" "${passthru[@]}"; rc=$?
+    elif [ -f "$A_TASK_WT_DIR/a_g_worktree_remove" ]; then
+        bash "$A_TASK_WT_DIR/a_g_worktree_remove" "$dir_name" "${passthru[@]}"; rc=$?
     else
-        echo -e "${A_T_RED}aa_g_worktree_remove not found (AA_WORKTREE_DIR=$A_TASK_AA_WT_DIR).${A_T_NC}"
+        echo -e "${A_T_RED}a_g_worktree_remove not found (looked on PATH and in A_TASK_WT_DIR=$A_TASK_WT_DIR).${A_T_NC}"
         echo -e "${A_T_DIM}Leaving the task in the registry.${A_T_NC}"
         return 1
     fi

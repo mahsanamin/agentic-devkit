@@ -8,11 +8,11 @@
 #
 #   a_c_task_start   pick a repo, name a branch from a Jira ticket
 #                    (PROJ-123-feature), and create a worktree via
-#                    aa_g_worktree_init.
+#                    a_g_worktree_init.
 #   a_c_task_resume  switch back into an active task's worktree.
 #   a_c_task_list    show every active task with live state (read-only).
 #   a_c_task_finish  remove a finished task's worktree + branch (via
-#                    aa_g_worktree_remove) and unregister it.
+#                    a_g_worktree_remove) and unregister it.
 #
 # These scripts live in the my_setup repo. Normally that repo is
 # $MY_WORKFLOW_DIR, but when it is loaded ALONGSIDE another my_setup checkout
