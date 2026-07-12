@@ -1,22 +1,22 @@
 # Task workflow (`a_c_task_*`)
 
-A thin, ticket-aware layer on top of the AI Awareness worktree helpers. One
+A thin, ticket-aware layer on top of this repo's worktree helpers. One
 command starts a task (pick repo -> name a branch from a Jira ticket -> make a
 worktree), the rest let you list, resume, and finish tasks across every repo.
 
 ```mermaid
 flowchart LR
-    START["a_c_task_start"] -->|pick repo + ticket| AA["aa_g_worktree_init &lt;branch&gt;"]
-    AA -->|cd into worktree| WT["WorkTrees/&lt;repo&gt;/PROJ-123-feature"]
+    START["a_c_task_start"] -->|pick repo + ticket| INIT["a_g_worktree_init &lt;branch&gt;"]
+    INIT -->|cd into worktree| WT["WorkTrees/&lt;repo&gt;/PROJ-123-feature"]
     START -->|append row| REG[("~/.a_tasks/tasks.tsv")]
     REG --> LIST["a_c_task_list"]
     REG --> RES["a_c_task_resume"]
     REG --> FIN["a_c_task_finish"]
     RES -->|cd| WT
-    FIN -->|aa_g_worktree_remove| WT
+    FIN -->|a_g_worktree_remove| WT
     FIN -->|drop row| REG
     style START fill:#1f7a3a,stroke:#0f4d24,color:#ffffff,stroke-width:2px
-    style AA fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff,stroke-width:2px
+    style INIT fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff,stroke-width:2px
     style REG fill:#334155,stroke:#1e293b,color:#ffffff,stroke-width:2px
 ```
 
@@ -24,10 +24,10 @@ flowchart LR
 
 | Command | What it does |
 |---|---|
-| `a_c_task_start [-r repo] [-t ticket] [-f feature] [-b base] [-c] [-p prompt] [-z session] [-y] [-- claude args]` | Pick a repo (the repo you're currently in is pinned first as `current =>`, then the most-recently-worked-in repos under `cd_w` ranked by last commit; or a name / full path), turn a Jira ticket into a branch `PROJ-123-feature-name`, create a worktree via `aa_g_worktree_init`, cd in, and register the task. `-b` forks from that base branch (e.g. `main` or `story/PROJ-123-foo`) and skips `aa_g_worktree_init`'s base picker; omit it to be prompted. Before creating anything it asks `Proceed? [Y/n]`; `-y` (or a non-interactive run) skips that (see "Confirmation & auto mode"). With `-r -t -f -b -y` set it runs with no prompts at all. `-c` then launches a Remote-Control Claude session in the new worktree (see below). `-z` opens the worktree in a named zellij session/tab instead of the current terminal (see below). |
+| `a_c_task_start [-r repo] [-t ticket] [-f feature] [-b base] [-c] [-p prompt] [-z session] [-y] [-- claude args]` | Pick a repo (the repo you're currently in is pinned first as `current =>`, then the most-recently-worked-in repos under `cd_w` ranked by last commit; or a name / full path), turn a Jira ticket into a branch `PROJ-123-feature-name`, create a worktree via `a_g_worktree_init`, cd in, and register the task. `-b` forks from that base branch (e.g. `main` or `story/PROJ-123-foo`) and skips `a_g_worktree_init`'s base picker; omit it to be prompted. Before creating anything it asks `Proceed? [Y/n]`; `-y` (or a non-interactive run) skips that (see "Confirmation & auto mode"). With `-r -t -f -b -y` set it runs with no prompts at all. `-c` then launches a Remote-Control Claude session in the new worktree (see below). `-z` opens the worktree in a named zellij session/tab instead of the current terminal (see below). |
 | `a_c_task_resume [ticket\|branch]` | Jump back into an active task's worktree. No argument -> numbered menu with live dirty / ahead-behind state. |
 | `a_c_task_list` | Read-only table of all active tasks and their worktree state. |
-| `a_c_task_finish [ticket\|branch] [-v] [-f] [--keep-remote]` | Remove the worktree + branch via `aa_g_worktree_remove` and drop the task from the registry. Flags pass straight through (`-v` verifies merged first). |
+| `a_c_task_finish [ticket\|branch] [-v] [-f] [--keep-remote]` | Remove the worktree + branch via `a_g_worktree_remove` and drop the task from the registry. Flags pass straight through (`-v` verifies merged first). |
 
 ## Start straight into Claude (Remote Control)
 
@@ -65,11 +65,11 @@ instead of the current terminal. If that session is not already running it is
 created (detached), then a tab named for the ticket + a short feature slug is
 added to it (e.g. `PROJ-123 add-login-page`). Re-running for the same task just
 focuses that tab, it never piles up duplicates. The session name is yours to
-choose, so you can keep one session per area of work (here, `pilgc`):
+choose, so you can keep one session per area of work (here, `work`):
 
 ```bash
-# open the worktree as a tab in the "pilgc" session (create the session if needed)
-a_c_task_start -r myrepo -t 942 -f "list filter" -b main -z mytab
+# open the worktree as a tab in the "work" session (create the session if needed)
+a_c_task_start -r myrepo -t 942 -f "list filter" -b main -z work
 
 # combine with -c so Claude runs inside that tab (single pane, drops to a shell on exit)
 a_c_task_start -r myrepo -t 942 -f "list filter" -b main -z mytab -c
@@ -170,11 +170,11 @@ work. It is interactive-only and self-disabling everywhere else. Env knobs:
 
 ## Dependencies
 
-These wrap the **AI Awareness** framework's `aa_g_worktree_init` /
-`aa_g_worktree_remove` (looked up via `AA_WORKTREE_DIR`, default
-`~/.claude/scripts/aa-worktree`). If the framework lives elsewhere, export
-`AA_WORKTREE_DIR`. Worktrees land at `<repos>/WorkTrees/<project>/<branch>`,
-exactly where the AA helpers put them.
+These wrap this repo's own `a_g_worktree_init` / `a_g_worktree_remove`
+(in `scripts/`, on PATH once the shell profile is loaded). The scripts dir is
+resolved from `A_C_WORKFLOW_DIR` / `MY_WORKFLOW_DIR`; override with
+`A_TASK_WT_DIR` if the helpers live elsewhere. Worktrees land at
+`<repos>/WorkTrees/<project>/<branch>`, exactly where those helpers put them.
 
 ## How it is wired
 

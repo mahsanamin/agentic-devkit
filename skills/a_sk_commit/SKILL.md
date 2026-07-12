@@ -1,6 +1,6 @@
 ---
 name: a_sk_commit
-description: Create a clean, human-readable git commit for the current changes. Groups the diff into a coherent commit, writes a clear message in the project's style, and commits (respecting the repo's permission posture). Say "a_sk_commit" or "commit" when ready to commit. Generic and project-agnostic — imported from the AI-Awareness framework (aa-commit) and de-coupled from it.
+description: Create a clean, human-readable git commit for the current changes. Groups the diff into a coherent commit, writes a clear message in the project's style, and commits (respecting the repo's permission posture). Say "a_sk_commit" or "commit" when ready to commit. Generic and project-agnostic — imported from an upstream framework and de-coupled from it.
 ---
 
 # a_sk_commit — clean git commit

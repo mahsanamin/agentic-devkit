@@ -1,6 +1,6 @@
 ---
 name: a_sk_l_review_pr
-description: Review a GitHub PR end-to-end from just its URL. Give it a PR link (or owner/repo#N); it finds the repo you ALREADY have cloned locally (via a cached lookup, then a scan of your cd_w workspace — never a duplicate clone), clones into cd_w only if you don't have it, spins up a git worktree checked out on the PR's real head branch updated to latest, then runs the project's own review skill (aa-review-pr) if it has one or the global aa-global-pr-reviewer otherwise, auto-posts the comments that clear a high bar as GitHub inline review comments, and tears the worktree + local branch down. This is a SKILL, not a routine (no _r); a routine may call it. Use when asked to "review this PR <url>", "review a PR from its link", "do a full review of <github pull url>", or given a bare GitHub PR URL to review. Parameterized: pr (URL / owner/repo#N / number), post (auto | draft), reviewer (auto | project | global).
+description: Review a GitHub PR end-to-end from just its URL. Give it a PR link (or owner/repo#N); it finds the repo you ALREADY have cloned locally (via a cached lookup, then a scan of your cd_w workspace — never a duplicate clone), clones into cd_w only if you don't have it, spins up a git worktree checked out on the PR's real head branch updated to latest, then runs the project's own review skill (review-pr) if it has one or the global global-pr-reviewer otherwise, auto-posts the comments that clear a high bar as GitHub inline review comments, and tears the worktree + local branch down. This is a SKILL, not a routine (no _r); a routine may call it. Use when asked to "review this PR <url>", "review a PR from its link", "do a full review of <github pull url>", or given a bare GitHub PR URL to review. Parameterized: pr (URL / owner/repo#N / number), post (auto | draft), reviewer (auto | project | global).
 ---
 
 # a_sk_l_review_pr — review a GitHub PR from its URL
@@ -12,7 +12,7 @@ One entry point: hand it a PR URL and it does the whole thing. It owns **getting
 ## What this reuses (do not duplicate)
 
 - **Repo resolution + cache:** the `a_s_resolve_repo` script (in `my_setup/scripts/`, on PATH). It turns a PR/repo reference into a local clone path via cache → `cd_w` workspace scan (match by git remote) → clone into `cd_w`. It is the single source of truth for "which local clone is this PR's repo" and for avoiding duplicate clones.
-- **The review engine:** the project's `aa-review-pr` skill, or the global `aa-global-pr-reviewer`. These produce the categorized review draft (diff, rules, reviewer agent, GitHub-style inline comments). This skill never re-implements the diff or the review.
+- **The review engine:** the project's `review-pr` skill, or the global `global-pr-reviewer`. These produce the categorized review draft (diff, rules, reviewer agent, GitHub-style inline comments). This skill never re-implements the diff or the review.
 - **Auto-post policy, self-verify guard, and teardown-safety rules:** identical to `a_r_l_pr_review` (`skills/a_r_l_pr_review/SKILL.md`). Read that skill's **Auto-post policy** and **Teardown safety** sections and apply them verbatim — they are restated compactly below, not forked.
 
 ## Inputs
@@ -21,7 +21,7 @@ One entry point: hand it a PR URL and it does the whole thing. It owns **getting
 |-------|---------|---------|
 | `pr` | The PR: a full URL (`https://github.com/<owner>/<repo>/pull/<N>`), an `<owner>/<repo>#<N>` slug, or a bare number **only if** you are already inside the repo. | required |
 | `post` | `auto` = post the comments that clear the bar (below) without asking. `draft` = review only, post nothing. | `auto` |
-| `reviewer` | `auto` = project `aa-review-pr` if the repo has it, else global `aa-global-pr-reviewer`. `project` / `global` force one. | `auto` |
+| `reviewer` | `auto` = project `review-pr` if the repo has it, else global `global-pr-reviewer`. `project` / `global` force one. | `auto` |
 
 ## Flow
 
@@ -48,7 +48,7 @@ gh pr view <N> --json headRefName,baseRefName,headRefOid,state,isCrossRepository
 Record: `headRefName` (the branch the PR is from — what you check out), `baseRefName` (merge target the review compares against), `headRefOid` (the live head SHA, for the done-check), and `isCrossRepository` (fork PR?).
 
 ### 4. Create a worktree on the PR's **head branch**, updated
-Worktrees live beside the main repo, matching the AI-Awareness layout used everywhere else:
+Worktrees live beside the main repo, matching the worktree layout used everywhere else:
 `WT="$(dirname "$REPO_PATH")/WorkTrees/$(basename "$REPO_PATH")/<dir>"`.
 
 - **Fetch latest first** so the branch is up to date: `git fetch origin`.
@@ -61,7 +61,7 @@ Worktrees live beside the main repo, matching the AI-Awareness layout used every
 - **Verify before reviewing:** print the worktree path, the checked-out branch, and confirm `git -C "$WT" rev-parse HEAD` equals `headRefOid`. If it doesn't, fetch again / fix before proceeding. `cd "$WT"`.
 
 ### 5. Pick the reviewer and run it (from inside the worktree)
-- `reviewer=auto`: if `"$REPO_PATH/.claude/skills/aa-review-pr/SKILL.md"` exists → use the **project** reviewer: `/aa-review-pr <N>`. Else → use the **global** reviewer: `aa-global-pr-reviewer <PR-URL>`. (`aa-global-pr-reviewer` is installed globally and is itself project-aware, so it is a safe fallback; it must never be re-created — per this repo's rules `aa-*` skills belong to the AI-Awareness framework, not here.)
+- `reviewer=auto`: if `"$REPO_PATH/.claude/skills/review-pr/SKILL.md"` exists → use the **project** reviewer: `/review-pr <N>`. Else → use the **global** reviewer: `global-pr-reviewer <PR-URL>`. (`global-pr-reviewer` is installed globally and is itself project-aware, so it is a safe fallback; it must never be re-created — per this repo's rules it is provided by a separate upstream framework, not here.)
 - If the project reviewer's skill is present on disk but not invocable in this session, fall back to the global reviewer rather than failing.
 - The reviewer reads the full source from **this worktree** (that's why the head-branch checkout matters) and runs `gh pr diff <N>` (head-vs-base) itself. It emits a categorized **draft** (path under the reviewer's reviews root). Do not compute the diff or pick a base yourself.
 
@@ -83,7 +83,7 @@ git worktree remove --force "$WT"
 git branch -D "$LOCAL_BR"             # LOCAL branch only
 ```
 
-- **NEVER delete the remote branch.** It is the PR's real source branch. Do NOT run `git push origin --delete …`, and do NOT use `aa_g_worktree_remove` here — that helper deletes the remote branch by default (only `--keep-remote` stops it), so plain `git` above is the safe path.
+- **NEVER delete the remote branch.** It is the PR's real source branch. Do NOT run `git push origin --delete …`, and do NOT use `a_g_worktree_remove` here — that helper deletes the remote branch by default (only `--keep-remote` stops it), so plain `git` above is the safe path.
 - Never delete a protected branch (`main`/`master`/`develop`/`staging`/`prod`). For a same-repo PR the local branch equals `headRefName`; deleting the *local* copy is safe (remote untouched). If that local branch had un-pushed commits of your own (ahead of origin), keep it and say so instead of deleting.
 - The main checkout is never touched.
 

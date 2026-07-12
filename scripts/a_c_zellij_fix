@@ -49,7 +49,7 @@
 # Examples:
 #   a_c_zellij_fix ideas          # detach, re-attach full-size, fix tab focus
 #   a_c_zellij_fix ideas -r       # ONLY fix Backspace-navigates-tabs, no re-attach
-#   a_c_zellij_fix pilgc -d       # just detach everyone from 'pilgc'
+#   a_c_zellij_fix work -d        # just detach everyone from 'work'
 #   a_c_zellij_fix -l             # see which sessions have clients stuck attached
 
 set -u

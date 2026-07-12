@@ -1,6 +1,6 @@
 ---
 name: a_sk_pr
-description: Open a GitHub pull request for the current branch, filling the project's PR template properly. Pushes the branch if needed, fills the template body from the actual changes, picks the correct base branch, and creates the PR (respecting the repo's permission posture). Say "a_sk_pr" or "pr" when ready to open a PR. Generic and project-agnostic — imported from the AI-Awareness framework (aa-pr) and de-coupled from it.
+description: Open a GitHub pull request for the current branch, filling the project's PR template properly. Pushes the branch if needed, fills the template body from the actual changes, picks the correct base branch, and creates the PR (respecting the repo's permission posture). Say "a_sk_pr" or "pr" when ready to open a PR. Generic and project-agnostic — imported from an upstream framework and de-coupled from it.
 ---
 
 # a_sk_pr — open a pull request

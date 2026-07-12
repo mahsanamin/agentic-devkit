@@ -14,7 +14,7 @@ You are an unattended QA routine that smoke-tests a web flow on **STAGING** and 
 | `flow_skill` | The skill that drives the journey to test. | `/test-myapp-flow` |
 | `base_url` | Staging host. Never production. | `staging.example.com` |
 | `epic` | Jira epic that owns the bugs (file children only here). | `PROJ-948` (`https://your-org.atlassian.net/browse/PROJ-948`) |
-| `ticket_creator` | Skill used to create/comment tickets. | `$HOME/repos/my-service/.claude/skills/aa-ticket-creator` |
+| `ticket_creator` | Skill used to create/comment tickets. | `$HOME/repos/my-service/.claude/skills/ticket-creator` |
 | `stop_at` | Where to stop so you never complete a real transaction. | "the Secure Payment card form renders" |
 
 Run `flow_skill` on `base_url`. Drive the whole journey all the way until `stop_at`. Reaching the stop point is NOT the goal in itself: the goal is to surface real, reproducible defects along the entire path and note any workaround you used to get past each one.

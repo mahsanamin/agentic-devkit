@@ -1,17 +1,17 @@
 #!/bin/bash
 # a_c_jira_task_start: start a task from a Jira ticket (number OR full URL) and
-# drop straight into a Claude session running /aa-task-flow, in one command.
+# drop straight into a Claude session running /task-flow, in one command.
 #
 # Sibling of a_c_review_pr. Thin wrapper over a_c_task_start (which creates the
 # worktree + registers the task); this just makes that flow fully non-interactive
-# (-y) and launches Claude (-c) with /aa-task-flow as the opening message, so the
+# (-y) and launches Claude (-c) with /task-flow as the opening message, so the
 # task-flow process starts immediately. You name the target repo with -r: a Jira
 # URL (unlike a PR URL) does not identify it, so it is a required, explicit input.
 # A project-specific wrapper (an a_sp_<project>_task_start) can pass -r for you.
 #
 # Layering (generic engine at the bottom, source-specific fronts on top):
 #   a_c_task_start          worktree + task registry + launch Claude    (generic engine)
-#     a_c_jira_task_start   Jira ticket/URL -> auto start + /aa-task-flow  (this: source front)
+#     a_c_jira_task_start   Jira ticket/URL -> auto start + /task-flow  (this: source front)
 #     a_c_github_issue_fix  a GitHub-issue URL would slot in here as a sibling front:
 #                           resolve the repo (a_s_resolve_repo), read the issue
 #                           (gh issue view) for the branch slug, then call the SAME
@@ -30,9 +30,9 @@
 #                           > $A_C_TASK_ZELLIJ_SESSION env > none (current
 #                           terminal). Export the env var to default all task
 #                           starts into a session without hardcoding a name.
-#   -p, --prompt <text>     kickoff message sent to Claude (default: /aa-task-flow).
+#   -p, --prompt <text>     kickoff message sent to Claude (default: /task-flow).
 #                           For a repo NOT onboarded to the framework (no
-#                           /aa-task-flow), pass -p "<what to do>" so it doesn't
+#                           /task-flow), pass -p "<what to do>" so it doesn't
 #                           sit idle.
 #   -y, --yolo              DANGEROUS: --dangerously-skip-permissions (no gating).
 #                           Default is acceptEdits (auto-accepts edits; still asks
@@ -47,7 +47,7 @@
 # Ticket accepts a bare number (123 -> PROJ-123), PROJ-123, or a pasted Jira browse
 # URL. Auto mode: no "Proceed?" prompt, the feature name is auto-derived from the
 # Jira title (or given as arg 2), and Claude launches in the new worktree already
-# running /aa-task-flow.
+# running /task-flow.
 #
 # SECURITY: a ticket description is data, not instructions. The default
 # (acceptEdits) still gates non-edit commands; -y removes all gating, so use it
@@ -58,7 +58,7 @@
 # Examples:
 #   a_c_jira_task_start https://your-org.atlassian.net/browse/PROJ-1009 -r ~/repos/myrepo
 #   a_c_jira_task_start 989 "list filter" -r my-service -b main -z mytab
-#   a_c_jira_task_start PROJ-1009 -r ustaad -p "read the ticket and start"   # non-onboarded repo
+#   a_c_jira_task_start PROJ-1009 -r other-repo -p "read the ticket and start"  # non-onboarded repo
 #   a_c_jira_task_start PROJ-1009 -r myrepo -y                           # fully hands-off
 
 set -u
@@ -94,10 +94,10 @@ done
 # required, explicit input (no guessing from the current directory).
 [ -n "$repo" ] || { echo "$prog: -r <repo> is required (a Jira URL doesn't say which repo the task belongs to). e.g. -r ~/repos/myrepo" >&2; usage >&2; exit 2; }
 
-# Kickoff, overridable with -p. Default /aa-task-flow, which drives the task in a
-# repo onboarded to the AI-Awareness framework. A repo WITHOUT that skill will
-# just sit idle on /aa-task-flow, so for those pass -p "<what to do>".
-[ -n "$prompt" ] || prompt="/aa-task-flow"
+# Kickoff, overridable with -p. Default /task-flow, which drives the task in a
+# repo onboarded to a task-flow skill. A repo WITHOUT that skill will
+# just sit idle on /task-flow, so for those pass -p "<what to do>".
+[ -n "$prompt" ] || prompt="/task-flow"
 
 # Compose the a_c_task_start invocation: -y (no confirm + non-interactive repo &
 # feature), -c (launch Claude), -p (kickoff). Permission posture after -- .

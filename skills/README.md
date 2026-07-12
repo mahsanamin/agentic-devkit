@@ -79,9 +79,9 @@ Full marker glossary (used across the whole repo, not just skills): `a_` = mine 
 |-------|--------------|
 | `a_sk_message_writer` | Draft / sharpen professional work messages (Slack, email, escalations) from a VP of Engineering standpoint. |
 | `a_sk_routine_instruction_writer` | Turn a rough task description into a clean, self-contained instruction prompt for an autonomous or scheduled routine. |
-| `a_sk_l_review_pr` | Review a GitHub PR end-to-end from just its URL: resolve the repo to your existing local clone (cache → `cd_w` scan, no duplicate clone — via `scripts/a_s_resolve_repo`), worktree the PR's real head branch updated to latest, run the project's `aa-review-pr` (or global `aa-global-pr-reviewer`), auto-post the bar-clearing comments, then tear the worktree + local branch down (remote never touched). Params: `pr` (URL / `owner/repo#N`), `post`, `reviewer`. Local. |
-| `a_sk_commit` | Turn the current changes into a clean, convention-matching git commit (delegates the message to `a_sag_commit_writer`). Imported + de-coupled from the framework's `aa-commit`. |
-| `a_sk_pr` | Open a GitHub PR for the current branch, filling the project's PR template (via `a_sag_pr_writer`), correct base, right permission posture. Imported + de-coupled from `aa-pr`. |
+| `a_sk_l_review_pr` | Review a GitHub PR end-to-end from just its URL: resolve the repo to your existing local clone (cache → `cd_w` scan, no duplicate clone — via `scripts/a_s_resolve_repo`), worktree the PR's real head branch updated to latest, run the project's `review-pr` (or global `global-pr-reviewer`), auto-post the bar-clearing comments, then tear the worktree + local branch down (remote never touched). Params: `pr` (URL / `owner/repo#N`), `post`, `reviewer`. Local. |
+| `a_sk_commit` | Turn the current changes into a clean, convention-matching git commit (delegates the message to `a_sag_commit_writer`). Imported + de-coupled from an upstream framework. |
+| `a_sk_pr` | Open a GitHub PR for the current branch, filling the project's PR template (via `a_sag_pr_writer`), correct base, right permission posture. Imported + de-coupled from an upstream framework. |
 | `a_sk_sonarqube_coverage` | Drive new-code test coverage up to the SonarQube / CI gate (find coverage cmd → test the uncovered changed lines in the project's testing style → re-run until green). Imported + de-coupled from `sonarqube-test-coverage`. |
 
 ### Personal-only skills live in a private overlay
@@ -98,4 +98,4 @@ Personal-life and personal-tool skills (OLX hunter, PSX advisor, the AI / Claude
 ## Not tracked here
 
 - `*-workspace/` directories and optimizer/eval outputs (`opt-results/`, `opt-report.html`, `opt-loop.log`) are runtime artifacts and are gitignored.
-- Skills managed by other systems are intentionally left out of this repo: AI Awareness framework skills (`aa-*`), marketplace skills symlinked from `.agents/skills` (e.g. `find-skills`, `sonarqube-fix`), and plugin-namespaced skills (`plugin:skill`).
+- Skills managed by other systems are intentionally left out of this repo: framework skills installed from a separate source, marketplace skills symlinked from `.agents/skills` (e.g. `find-skills`, `sonarqube-fix`), and plugin-namespaced skills (`plugin:skill`).

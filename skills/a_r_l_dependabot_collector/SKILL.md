@@ -37,7 +37,7 @@ Everything the old per-repo registry stored is either constant, auto-detectable 
 
 - `<BASE_BRANCH>` — the repo's default branch: `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` (run in `<REPO_PATH>`). Fallback: `git -C <REPO_PATH> symbolic-ref --short refs/remotes/origin/HEAD` and strip the `origin/` prefix.
 - `<DEPENDABOT_AUTHOR>` — default `app/dependabot`. Confirm it actually authored the open PRs in Phase 0; a few orgs use a different bot login.
-- `<WORKTREE_HELPER>` — always `aa_g_worktree` (invoke from Claude Code's Bash tool as `bash ~/.claude/scripts/aa-worktree/aa_g_worktree_<verb> <args>`).
+- `<WORKTREE_HELPER>` — always `a_g_worktree` (invoke the `a_g_worktree_<verb> <args>` command; it is on PATH once this repo's shell profile is loaded, or run it by path as `bash "$MY_WORKFLOW_DIR/scripts/a_g_worktree_<verb>" <args>`).
 - `<INFRA_NOISE>` — derive from the detected ecosystem: npm/Node -> `registry.npmjs.org`; Gradle/Maven -> `plugins.gradle.org`, Maven Central. Always also treat `github.com` as infra noise (git deps, actions, `@scope` git installs).
 - `<BUILD_TEST_CMD>` — the "green gate". This is the ONE field that cannot be safely guessed, so resolve it in this order and never skip the ambiguity guard:
   1. If `build_cmd=` was passed (interactively, or set in the routine's schedule config), use it verbatim.

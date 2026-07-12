@@ -11,14 +11,14 @@ Review GitHub PRs safely in an **isolated worktree** so the review never touches
 
 **`a_r_l_pr_review` (this skill) owns:** PR resolution (incl. `mine`), worktree **isolation**, getting the **PR's head code onto disk on the branch it will merge into**, branch hygiene, the per-PR loop, and **guarded teardown**.
 
-**`review_skill` (e.g. `/aa-review-pr`) owns the review itself — do NOT reinvent any of this:**
-- The diff. `/aa-review-pr` runs `gh pr diff <N>`, which is GitHub's **head-vs-base** diff, i.e. the change as it will land in the PR's **merge target**. The base-vs-head comparison is already correct via `gh`; this wrapper does not compute diffs or pick a base.
+**`review_skill` (e.g. `/review-pr`) owns the review itself — do NOT reinvent any of this:**
+- The diff. `/review-pr` runs `gh pr diff <N>`, which is GitHub's **head-vs-base** diff, i.e. the change as it will land in the PR's **merge target**. The base-vs-head comparison is already correct via `gh`; this wrapper does not compute diffs or pick a base.
 - Base/head detection (`gh pr view --json baseRefName,headRefName`), ticket/task-intent lookup, rule selection, the reviewer agent, self-review, draft, and posting.
 
-**Why the worktree still matters even though `gh pr diff` is checkout-independent:** `/aa-review-pr`'s agent reviews by **reading the full source files from the working tree** (not just the diff), and `/aa-review-pr` itself **does not check out anything**. Run it from your main checkout and it reads stale code from whatever branch you're on. Running it inside a worktree whose HEAD is the PR's head branch is what guarantees the agent reads the **actual PR code on its merge base**. That is the whole point of this wrapper.
+**Why the worktree still matters even though `gh pr diff` is checkout-independent:** `/review-pr`'s agent reviews by **reading the full source files from the working tree** (not just the diff), and `/review-pr` itself **does not check out anything**. Run it from your main checkout and it reads stale code from whatever branch you're on. Running it inside a worktree whose HEAD is the PR's head branch is what guarantees the agent reads the **actual PR code on its merge base**. That is the whole point of this wrapper.
 
-**Posting: `post=auto` is the default.** `/aa-review-pr` on its own stops at a draft and asks which comments to post. This wrapper does not, by design: auto-posting the comments that clear a high bar is the intended behavior for every repo. The mode:
-- `post=auto` (**default**) — skip the human-approval gate and **post the comments that clear the bar** (see Auto-post policy), without asking. The agent does not surface the draft for selection; it applies the bar itself, self-verifies each candidate, and posts via `/aa-review-pr`'s own batch path (`gh api repos/{owner}/{repo}/pulls/<N>/reviews`).
+**Posting: `post=auto` is the default.** `/review-pr` on its own stops at a draft and asks which comments to post. This wrapper does not, by design: auto-posting the comments that clear a high bar is the intended behavior for every repo. The mode:
+- `post=auto` (**default**) — skip the human-approval gate and **post the comments that clear the bar** (see Auto-post policy), without asking. The agent does not surface the draft for selection; it applies the bar itself, self-verifies each candidate, and posts via `/review-pr`'s own batch path (`gh api repos/{owner}/{repo}/pulls/<N>/reviews`).
 - `post=draft` — review only: generate the draft(s), report them, post nothing. Use for a dry run, or a PR you are not ready to comment on.
 
 **Running this skill IS the authorization to post.** The standing intention is encoded here, in the skill itself (not in a per-task instruction or a memory): a bar-clearing comment gets posted. Do NOT re-impose a "draft-only unless explicitly told to post" assumption — on an unattended run that would silently swallow real findings (exactly the failure this skill exists to prevent). To suppress posting, the caller passes `post=draft`.
@@ -29,39 +29,39 @@ Review GitHub PRs safely in an **isolated worktree** so the review never touches
 |-------|---------|---------|
 | `repo` | GitHub repo to review, as a URL (`https://github.com/<org>/<name>`) or `<org>/<name>` slug, or a local clone path. | the current repo (`gh repo view`) |
 | `pr` | What to review: a single PR number, a comma list of numbers, or `mine` = every open PR where I am the assignee (`you@example.com`). | `mine` |
-| `review_skill` | The project's PR-review skill to run inside the worktree. | `/aa-review-pr` |
+| `review_skill` | The project's PR-review skill to run inside the worktree. | `/review-pr` |
 | `parallelism` | Max review agents to run at once. | `4` |
 | `cleanup` | Remove each review worktree after its review completes. | `true` |
 | `post` | `auto` = post the comments that clear the bar (Auto-post policy) without asking (the standing intention for every repo). `draft` = review only, post nothing. | `auto` |
 
-**For an unattended local routine, pass `repo` as the full local clone path** (e.g. `$HOME/repos/my-service`) and **`cd` into it before any `gh` or worktree command.** The `aa_g_worktree_*` helpers act on the *current* repo, and a scheduled run does not start inside it, so a bare `<org>/<name>` slug or "current repo" is ambiguous. If `repo` is given as a slug/URL, resolve it to the local clone path (or, if not cloned, clone it first or stop and say so). Resolve `mine` with `gh pr list --search "assignee:@me" --state open` (or `assignee:you@example.com`), run from inside that clone.
+**For an unattended local routine, pass `repo` as the full local clone path** (e.g. `$HOME/repos/my-service`) and **`cd` into it before any `gh` or worktree command.** The `a_g_worktree_*` helpers act on the *current* repo, and a scheduled run does not start inside it, so a bare `<org>/<name>` slug or "current repo" is ambiguous. If `repo` is given as a slug/URL, resolve it to the local clone path (or, if not cloned, clone it first or stop and say so). Resolve `mine` with `gh pr list --search "assignee:@me" --state open` (or `assignee:you@example.com`), run from inside that clone.
 
 ## Worktree helpers (the real commands)
 
-This skill uses the AI Awareness worktree helpers. From Claude Code's non-interactive Bash, invoke the scripts directly (the shell-function auto-`cd` does not persist across separate Bash calls, so always `cd` into the printed worktree path yourself):
+This skill uses this repo's worktree helpers (`a_g_worktree_*`, on PATH once the shell profile is loaded, or run by path as `bash "$MY_WORKFLOW_DIR/scripts/a_g_worktree_<verb>"`). From Claude Code's non-interactive Bash, invoke the scripts directly (the shell-function auto-`cd` does not persist across separate Bash calls, so always `cd` into the printed worktree path yourself):
 
-- **Create (the right primitive for PRs):** `bash ~/.claude/scripts/aa-worktree/aa_g_worktree_review <N>` — looks the PR up via `gh`, fetches its head, and creates a worktree on a local branch **`review-pr-<N>`** at `…/WorkTrees/<project>/review-pr-<N>`. Use this, not `aa_g_worktree_init` (that one is for starting your own branch and prompts for a base).
-- **Already exists? Delete and recreate.** If `aa_g_worktree_review <N>` reports the `review-pr-<N>` worktree/branch already exists, remove it (`aa_g_worktree_remove review-pr-<N> --force`) and run `aa_g_worktree_review <N>` again. This is the easy, deterministic path: a fresh checkout always reflects the latest PR head. (It only ever deletes a `review-pr-<N>` worktree, never your working tree.)
-- **Tear down:** `bash ~/.claude/scripts/aa-worktree/aa_g_worktree_remove review-pr-<N> --force` — removes the worktree and deletes the **local** `review-pr-<N>` branch. `--force` is required so the unattended run is not blocked by the "branch never pushed, delete anyway?" prompt; in this mode it never deletes the remote, so the PR's real branch is untouched. Do **not** use `--verify` / `aa_g_worktree_conclude` here: a review branch is never merged, so verify would refuse it.
+- **Create (the right primitive for PRs):** `a_g_worktree_review <N>` — looks the PR up via `gh`, fetches its head, and creates a worktree on a local branch **`review-pr-<N>`** at `…/WorkTrees/<project>/review-pr-<N>`. Use this, not `a_g_worktree_init` (that one is for starting your own branch and prompts for a base).
+- **Already exists? Delete and recreate.** If `a_g_worktree_review <N>` reports the `review-pr-<N>` worktree/branch already exists, remove it (`a_g_worktree_remove review-pr-<N> --force`) and run `a_g_worktree_review <N>` again. This is the easy, deterministic path: a fresh checkout always reflects the latest PR head. (It only ever deletes a `review-pr-<N>` worktree, never your working tree.)
+- **Tear down:** `a_g_worktree_remove review-pr-<N> --force` — removes the worktree and deletes the **local** `review-pr-<N>` branch. `--force` is required so the unattended run is not blocked by the "branch never pushed, delete anyway?" prompt; in this mode it never deletes the remote, so the PR's real branch is untouched. Do **not** use `--verify` / `a_g_worktree_conclude` here: a review branch is never merged, so verify would refuse it.
 
 ## Execution model
 
 - Resolve PRs, set up worktrees, and run the review without asking. Posting follows the `post` mode (**default `auto`**): `auto` posts what clears the bar (see Auto-post policy); `draft` posts nothing (review only). If you hit any other genuinely blocking decision, stop and put it in the final report.
-- **One PR per worktree per `/aa-review-pr` invocation.** Do NOT hand a list of PRs to a single `/aa-review-pr` call: its multi-PR mode reads every PR's source from one working tree, defeating the point of checking out each PR's head. Run one `review-pr-<N>` worktree + one `/aa-review-pr <N>` per PR.
+- **One PR per worktree per `/review-pr` invocation.** Do NOT hand a list of PRs to a single `/review-pr` call: its multi-PR mode reads every PR's source from one working tree, defeating the point of checking out each PR's head. Run one `review-pr-<N>` worktree + one `/review-pr <N>` per PR.
 - Run up to `parallelism` of these per-PR pipelines concurrently. Per-PR worktrees are what make parallel review safe (no checkout collisions). Keep going until every requested PR is reviewed; do not stop early.
 
 ## Per-PR lifecycle
 
 For each PR number `N`:
 
-1. **Create (recreate if it exists).** Run `aa_g_worktree_review <N>`. If it reports the `review-pr-<N>` worktree/branch already exists, remove it with `aa_g_worktree_remove review-pr-<N> --force` and run `aa_g_worktree_review <N>` again so you start from a fresh checkout of the latest PR head.
+1. **Create (recreate if it exists).** Run `a_g_worktree_review <N>`. If it reports the `review-pr-<N>` worktree/branch already exists, remove it with `a_g_worktree_remove review-pr-<N> --force` and run `a_g_worktree_review <N>` again so you start from a fresh checkout of the latest PR head.
 2. **Recover on failure.** If the helper fails, diagnose and recover on your own (e.g. `cd` into `…/WorkTrees/<project>/review-pr-<N>` directly). Always confirm you are inside the right worktree and on the right branch before reviewing.
 3. **Verify before reviewing.** Pull the PR's branches with `gh pr view <N> --json headRefName,baseRefName` and print four things: current worktree path, current branch (`review-pr-<N>`), the PR **head** (`headRefName`, must equal what the worktree checked out), and the PR **base** (`baseRefName`, the branch it will merge into). The worktree HEAD must be the PR head; the base is the merge target the review compares against. If head doesn't match, fix it before proceeding.
-4. **Review — from inside the worktree.** `cd` into `…/WorkTrees/<project>/review-pr-<N>`, then run `review_skill` (default `/aa-review-pr <N>`). It will run `gh pr diff <N>` (head-vs-base) itself and read the full source files from this worktree, so the review reflects the PR code on its merge base. Do not compute the diff or pick a base yourself. It produces a draft (file path under the reviews root).
+4. **Review — from inside the worktree.** `cd` into `…/WorkTrees/<project>/review-pr-<N>`, then run `review_skill` (default `/review-pr <N>`). It will run `gh pr diff <N>` (head-vs-base) itself and read the full source files from this worktree, so the review reflects the PR code on its merge base. Do not compute the diff or pick a base yourself. It produces a draft (file path under the reviews root).
 5. **Post (mode-dependent).**
    - `post=draft`: post nothing. Record the draft path and what it contained.
-   - `post=auto`: from the draft, take the comments marked **Action: Post** whose type is Bug/Error, Security, Missing, or a correctness-affecting Question. Run the self-verify + dedup guard (Auto-post policy). Post the survivors as one batch review on PR `N` via `/aa-review-pr`'s own posting step (`gh api repos/{owner}/{repo}/pulls/<N>/reviews`). Then **verify** they landed (see Target). A clean PR with zero bar-clearing comments posts nothing — that is success, not failure.
-6. **Tear down (only if `cleanup` and only what this run created).** Once the review (and any posting) for `N` is complete and its output is captured, remove the review worktree: `aa_g_worktree_remove review-pr-<N> --force`. See Teardown safety.
+   - `post=auto`: from the draft, take the comments marked **Action: Post** whose type is Bug/Error, Security, Missing, or a correctness-affecting Question. Run the self-verify + dedup guard (Auto-post policy). Post the survivors as one batch review on PR `N` via `/review-pr`'s own posting step (`gh api repos/{owner}/{repo}/pulls/<N>/reviews`). Then **verify** they landed (see Target). A clean PR with zero bar-clearing comments posts nothing — that is success, not failure.
+6. **Tear down (only if `cleanup` and only what this run created).** Once the review (and any posting) for `N` is complete and its output is captured, remove the review worktree: `a_g_worktree_remove review-pr-<N> --force`. See Teardown safety.
 
 ## Auto-post policy (`post=auto`)
 
@@ -80,7 +80,7 @@ NEVER auto-post: praise, style nits, "consider X", trade-off / internal notes, o
 The only thing this skill ever deletes is a `review-pr-<N>` worktree (the throwaway review checkout). Deleting and recreating one that already exists is fine and expected — that is the easy path. But:
 
 - **Only `review-pr-*` names, ever.** Never remove a worktree or branch whose name does not match `review-pr-<N>`. Never the main worktree, never a feature/story branch, never anything you are actively working in. This is the non-negotiable guarantee.
-- `aa_g_worktree_remove`'s protected-branch guard (main/master/staging/develop/...) and its refusal to remove the main worktree are a backstop, not your primary check. Decide by exact `review-pr-<N>` name first, then let the guard catch mistakes.
+- `a_g_worktree_remove`'s protected-branch guard (main/master/staging/develop/...) and its refusal to remove the main worktree are a backstop, not your primary check. Decide by exact `review-pr-<N>` name first, then let the guard catch mistakes.
 
 ## Target (done-when) — self-check before concluding
 

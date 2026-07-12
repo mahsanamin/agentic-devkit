@@ -1,6 +1,6 @@
 ---
 name: a_sk_sonarqube_coverage
-description: Drive test coverage on the current change up to the project's SonarQube (or CI) coverage gate. Finds the coverage command, measures coverage on the changed/new code, writes tests following the project's testing conventions for the uncovered lines, and re-runs until the gate passes. Say "a_sk_sonarqube_coverage", "raise coverage to the gate", or "get coverage green". Generic and project-agnostic — imported from the AI-Awareness framework (sonarqube-test-coverage) and de-coupled from it.
+description: Drive test coverage on the current change up to the project's SonarQube (or CI) coverage gate. Finds the coverage command, measures coverage on the changed/new code, writes tests following the project's testing conventions for the uncovered lines, and re-runs until the gate passes. Say "a_sk_sonarqube_coverage", "raise coverage to the gate", or "get coverage green". Generic and project-agnostic — imported from an upstream framework and de-coupled from it.
 ---
 
 # a_sk_sonarqube_coverage — meet the coverage gate
