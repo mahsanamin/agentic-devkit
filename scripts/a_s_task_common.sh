@@ -39,7 +39,7 @@ fi
 A_TASK_WT_DIR="${A_TASK_WT_DIR:-${A_C_TASK_BASE:-${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}}/scripts}"
 
 # Default Jira project key, used when the user types a bare ticket number.
-A_TASK_DEFAULT_KEY="${A_TASK_DEFAULT_KEY:-PROJ}"
+A_TASK_DEFAULT_KEY="${A_TASK_DEFAULT_KEY:-WU}"
 
 # Matrix "digital rain" splash for a_c_task_start. Delegates to the standalone
 # bash script scripts/a_s_task_fx, run as its OWN process so the bash-only
@@ -115,7 +115,7 @@ a_task_slug() {
 }
 
 # Normalize a ticket id into "KEY-NUM". Accepts a bare number ("123" -> PROJ-123),
-# "PROJ-123" / "proj123" / "PROJ123", or a pasted Jira URL such as
+# "PROJ-123" / "wu123" / "WU123", or a pasted Jira URL such as
 # https://your-org.atlassian.net/browse/PROJ-1009 (and with ?query/#fragment).
 # Echoes "KEY-NUM" or fails (rc 1).
 a_task_norm_ticket() {
@@ -133,7 +133,7 @@ a_task_norm_ticket() {
     # Pull an embedded KEY-NUM token out (e.g. from a pasted Jira URL). The LAST
     # match wins, so a host like foo-2.example.com can't shadow .../browse/PROJ-9.
     # If there is no dashed token, treat the whole input as the candidate (so
-    # "PROJ123" without a dash still works via the optional-dash regex below).
+    # "WU123" without a dash still works via the optional-dash regex below).
     cand="$(printf '%s' "$raw" | grep -oE '[A-Za-z]{1,15}-[0-9]+' | tail -1)"
     [ -z "$cand" ] && cand="$raw"
 
@@ -144,6 +144,15 @@ a_task_norm_ticket() {
     if [ -n "$key" ] && [ -n "$num" ] && [ "$key" != "$cand" ] && [ "$num" != "$cand" ]; then
         printf '%s-%s' "$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')" "$num"
         return 0
+    fi
+    # Free-form task id for NON-Jira sources (mdnest notes, ad-hoc tasks). Off by
+    # default so the interactive Jira prompt still rejects typos and re-asks; a
+    # front that legitimately has no Jira key sets A_TASK_FREEFORM_TICKET=1 and we
+    # accept a clean slug as the branch id verbatim.
+    if [ "${A_TASK_FREEFORM_TICKET:-0}" = "1" ]; then
+        local ff
+        ff="$(printf '%s' "$raw" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+        [ -n "$ff" ] && { printf '%s' "$ff"; return 0; }
     fi
     return 1
 }

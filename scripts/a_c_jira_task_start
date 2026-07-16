@@ -7,7 +7,7 @@
 # (-y) and launches Claude (-c) with /task-flow as the opening message, so the
 # task-flow process starts immediately. You name the target repo with -r: a Jira
 # URL (unlike a PR URL) does not identify it, so it is a required, explicit input.
-# A project-specific wrapper (an a_sp_<project>_task_start) can pass -r for you.
+# Project wrappers like a_sp_myproject_task_start pass -r for you.
 #
 # Layering (generic engine at the bottom, source-specific fronts on top):
 #   a_c_task_start          worktree + task registry + launch Claude    (generic engine)
@@ -43,6 +43,9 @@
 #                           has unpushed commits, to avoid losing work.
 #   -n, --dry-run           print the a_c_task_start command that would run; no-op
 #   -h, --help              show this help
+#   -- <args>               forward everything after -- to the launched Claude
+#                           session (appended after the permission-mode flag),
+#                           e.g. -- --model opus
 #
 # Ticket accepts a bare number (123 -> PROJ-123), PROJ-123, or a pasted Jira browse
 # URL. Auto mode: no "Proceed?" prompt, the feature name is auto-derived from the
@@ -66,7 +69,7 @@ prog="${0##*/}"
 here="$(cd "$(dirname "$0")" && pwd)"
 TASK_START="$here/a_c_task_start"; [ -f "$TASK_START" ] || TASK_START="a_c_task_start"
 
-usage() { sed -n '2,61p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,65p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Session precedence: -z flag > $A_C_TASK_ZELLIJ_SESSION env > none (current terminal).
 ticket=""; feature=""; base=""; repo=""; zellij="${A_C_TASK_ZELLIJ_SESSION:-}"; prompt=""; yolo=0; fresh=0; dry=0; passthrough=(); ddash=0

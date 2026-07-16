@@ -161,6 +161,6 @@ case "${1:-help}" in
   meta)   shift; [ $# -ge 1 ] || die "meta needs a URL";   cat "$(cache_meta_path "$1")" 2>/dev/null || die "no meta cached for that URL";;
   robots) shift; cmd_robots "$@";;
   clear)  rm -rf "$(resp_dir)"; note "cleared $(resp_dir)";;
-  help|-h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//';;
+  help|-h|--help) sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//';;
   *)      die "unknown command: ${1:-}. Try: crawler help";;
 esac

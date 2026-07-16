@@ -9,12 +9,15 @@ You maintain a repository's open Dependabot PRs end to end. You are typically in
 
 This routine runs **weekly**, but the release it builds is **monthly**. "Monthly release" is the *batching target*, not how often you run. Each weekly run adds that week's freshly-green bumps onto the *current month's* release branch (`release/dependabot-<YYYY-MM>`) and its single open consolidation PR. So within a month the same release branch and the same consolidation PR accumulate across roughly four weekly runs; on the first run of a new month you start a fresh branch and PR for the new tag.
 
-Two consequences shape every run:
+**One PR per month is the goal, not a guarantee.** If the month's consolidation PR is merged mid-month (a human reviews and merges it early), that month is NOT "done" for the rest of the calendar month: Dependabot keeps opening PRs. You cannot reopen a merged PR, and you must never pile new bumps onto an already-merged branch. So when new bumps arrive after the month's batch merged, you open a fresh **sequenced batch** for the same month: `release/dependabot-<YYYY-MM>-2`, then `-3`, and so on. The batch this run touches is whichever one has the *open* consolidation PR (see Step 0's active-tag resolution). This is the fix for the failure mode where a mid-month merge stranded later bumps with no home.
 
-- **A weekly run with no new bumps is not a no-op.** You must still keep the open consolidation PR fresh (Phase 3's refresh step), because an org-wide automation (the CTO's stale-PR process) closes PRs that sit open too long, and our long-lived consolidation PR is exactly what it sweeps.
-- **Do not redo earlier weeks' work.** Bumps already merged onto the release branch, or already held out and flagged, are done. Each run only acts on Dependabot PRs not yet merged onto the current release branch.
+Consequences that shape every run:
 
-## Step 0 — Resolve the target repo to a local clone
+- **A weekly run with no new bumps is not a no-op** *if a batch is still open*. You must keep that open consolidation PR fresh (Phase 3's refresh step), because an org-wide automation (the CTO's stale-PR process) closes PRs that sit open too long, and our long-lived consolidation PR is exactly what it sweeps. (If the month's only batch has already merged and there are no new bumps, there is nothing open to refresh, so it is a genuine no-op.)
+- **A month can have more than one batch.** Only roll to the next sequenced batch when there are actually new bumps to place; never open an empty batch just to have one.
+- **Do not redo earlier weeks' work.** Bumps already merged onto a release branch (this batch or an earlier merged one), or already held out and flagged, are done. Each run only acts on Dependabot PRs not yet merged onto the active release branch.
+
+## Step 0 - Resolve the target repo to a local clone
 
 You need a local clone to build and test in. There is no repo registry to maintain: you take a path or a GitHub reference and resolve it. In order:
 
@@ -29,17 +32,26 @@ You need a local clone to build and test in. There is no repo registry to mainta
 
 `<REPO_PATH>` everywhere below is the resolved absolute path. `a_s_resolve_repo` needs `$a_dir_w_repos` set (it comes from the sourced profile); if it is unset, source the profile or pass a `path=` instead.
 
-Tag: use the current calendar month, so the consolidation branch is `release/dependabot-<YYYY-MM>`. Reuse it if it already exists, since the weekly runs within a month all share one monthly tag (see "Cadence and release scope").
+**Resolve the active tag** (`<tag>`), the batch this run works on. Enumerate every `release/dependabot-<YYYY-MM>*` branch for the current month and each one's consolidation PR (`gh pr list --state all --search 'head:release/dependabot-<YYYY-MM>'`, or `git ls-remote --heads origin 'release/dependabot-<YYYY-MM>*'`), and look at the LATEST batch (no suffix = 1, then `-2`, `-3`, ...).
 
-## Step 0.5 — Detect the repo's config
+**The governing invariant:** there is at most one OPEN consolidation PR at a time, and a batch is only ever left behind once its content is in `<BASE_BRANCH>` (i.e. its PR was MERGED). A batch whose bumps are NOT yet in base must never be abandoned or restarted from scratch, or those bumps are silently lost. "Merged" and "closed" are therefore NOT the same: merged = content is in base (safe to move on); closed-unmerged = content is only on the branch (must be recovered, not skipped). Resolve in order:
+
+1. **The latest batch's consolidation PR is OPEN** -> reuse it; that is the active tag. Normal within-month case (weekly runs keep adding to it).
+2. **The latest batch's PR is MERGED** (its bumps are already in `<BASE_BRANCH>`) -> that batch is done. If this run has new bumps, open the NEXT sequenced batch off latest `<BASE_BRANCH>`: `<YYYY-MM>` if none existed, else highest suffix + 1 (`-2`, `-3`, ...). New branch, new bumps only (the merged ones are in base already). If there are no new bumps, go to case 4.
+3. **The latest batch's branch exists but its PR is CLOSED and NOT merged** (bumps are on the branch, NOT in base). Our Phase 3 refresh is meant to prevent this, but a stale-PR sweep beating the refresh, or a manual close, can cause it. Do NOT start a fresh batch off base (that drops those bumps). Instead REOPEN a consolidation PR from that SAME branch: keep `<tag>` as-is, sync the branch with latest `<BASE_BRANCH>`, and treat it as the active batch, adding this run's new bumps to it. This is the recovery path that keeps already-batched bumps from being lost.
+4. **No open batch and no new bumps** -> nothing to keep fresh and nothing to batch: a genuine "nothing to do" (report and stop, per Phase 0/1).
+
+`release/dependabot-<tag>` everywhere below means this resolved active batch (`<tag>` = `<YYYY-MM>` or `<YYYY-MM>-N`; suffix `-N` starts at 2 for the second batch of a month). Roll to a NEW off-base batch (case 2) ONLY when the prior batch's content is safely in base; if it is not (case 3), reopen the existing branch instead.
+
+## Step 0.5 - Detect the repo's config
 
 Everything the old per-repo registry stored is either constant, auto-detectable from `<REPO_PATH>`, or (for the one field that isn't) resolved once and cached. Determine each placeholder used below:
 
-- `<BASE_BRANCH>` — the repo's default branch: `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` (run in `<REPO_PATH>`). Fallback: `git -C <REPO_PATH> symbolic-ref --short refs/remotes/origin/HEAD` and strip the `origin/` prefix.
-- `<DEPENDABOT_AUTHOR>` — default `app/dependabot`. Confirm it actually authored the open PRs in Phase 0; a few orgs use a different bot login.
-- `<WORKTREE_HELPER>` — always `a_g_worktree` (invoke the `a_g_worktree_<verb> <args>` command; it is on PATH once this repo's shell profile is loaded, or run it by path as `bash "$MY_WORKFLOW_DIR/scripts/a_g_worktree_<verb>" <args>`).
-- `<INFRA_NOISE>` — derive from the detected ecosystem: npm/Node -> `registry.npmjs.org`; Gradle/Maven -> `plugins.gradle.org`, Maven Central. Always also treat `github.com` as infra noise (git deps, actions, `@scope` git installs).
-- `<BUILD_TEST_CMD>` — the "green gate". This is the ONE field that cannot be safely guessed, so resolve it in this order and never skip the ambiguity guard:
+- `<BASE_BRANCH>` - the repo's default branch: `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` (run in `<REPO_PATH>`). Fallback: `git -C <REPO_PATH> symbolic-ref --short refs/remotes/origin/HEAD` and strip the `origin/` prefix.
+- `<DEPENDABOT_AUTHOR>` - default `app/dependabot`. Confirm it actually authored the open PRs in Phase 0; a few orgs use a different bot login.
+- `<WORKTREE_HELPER>` - always `a_g_worktree` (invoke the `a_g_worktree_<verb> <args>` command; it is on PATH once this repo's shell profile is loaded, or run it by path as `bash "$MY_WORKFLOW_DIR/scripts/a_g_worktree_<verb>" <args>`).
+- `<INFRA_NOISE>` - derive from the detected ecosystem: npm/Node -> `registry.npmjs.org`; Gradle/Maven -> `plugins.gradle.org`, Maven Central. Always also treat `github.com` as infra noise (git deps, actions, `@scope` git installs).
+- `<BUILD_TEST_CMD>` - the "green gate". This is the ONE field that cannot be safely guessed, so resolve it in this order and never skip the ambiguity guard:
   1. If `build_cmd=` was passed (interactively, or set in the routine's schedule config), use it verbatim.
   2. Else check the gate cache `~/.a_tasks/dependabot_gates.tsv` (TSV: `slug<TAB>command`), keyed by the repo slug. If a row exists, use it.
   3. Else auto-detect from the repo root: `gradlew`/`build.gradle` -> `./gradlew test`; a root `package.json` with a `build` script -> `npm ci && npm run build && npm test` (build is usually the real gate); a root `package.json` without a build script -> `npm ci && npm test`.
@@ -65,15 +77,15 @@ For known per-stack traps (Gradle JDK overshoot, Next-9/React-16 majors, `@myorg
 - Never force-push, and never delete-then-recreate the release branch to "redo" a botched merge order. A safety hook may block force-push, and deleting the branch closes the open consolidation PR. Get the order right the first time.
 - An org-wide automation (the CTO's stale-PR process) closes PRs that stay open too long, and the consolidation PR is exactly its target: one long-lived PR awaiting human review. Do not let it get swept. Keep it fresh by refreshing it on the weekly cadence (Phase 3): open a new consolidation PR from the same release branch and close the old one, which resets the staleness clock. Refreshing swaps only the PR object; it never touches the release branch (per the no-delete rule above).
 
-## Phase 0 — Discover & dedupe
+## Phase 0 - Discover & dedupe
 
 Run `gh pr list --state open --author "<DEPENDABOT_AUTHOR>" --json number,title,headRefName,baseRefName` (in `<REPO_PATH>`).
 
 If there ARE new bumps: close exact duplicates (e.g. the same bump opened twice), treat one PR spanning multiple directories as a single unit, produce the list of distinct bumps, and continue to Phase 1.
 
-If there are NO new Dependabot PRs, do not stop yet, because a weekly run still has to keep any open consolidation PR fresh. Skip Phases 1-2 and go straight to Phase 3's refresh step. Only when there are neither new bumps nor an open consolidation PR for the current tag is the run a genuine "nothing to do": report that and stop.
+If there are NO new Dependabot PRs, do not stop yet, because a weekly run still has to keep any open consolidation PR fresh. Skip Phases 1-2 and go straight to Phase 3's refresh step, operating on the month's currently-open batch (active tag from Step 0, case 1). Only when there are neither new bumps NOR any open consolidation PR for the current month (its latest batch, if one exists, was already merged/closed) is the run a genuine "nothing to do": report that and stop. Do NOT open a fresh batch with no bumps in it just to have something to refresh.
 
-## Phase 1 — Fix each PR green (work in parallel)
+## Phase 1 - Fix each PR green (work in parallel)
 
 Spin up as many agents as makes sense, one per distinct PR/worktree. A spawned agent does not inherit this skill's context, so give each one the resolved repo config it needs (`<REPO_PATH>`, `<BUILD_TEST_CMD>`, `<BASE_BRANCH>`, `<WORKTREE_HELPER>`, and the relevant `<GOTCHAS>`).
 
@@ -87,7 +99,7 @@ Spin up as many agents as makes sense, one per distinct PR/worktree. A spawned a
     - If a bump cannot go green without risky behavioral changes, hold it out of the batch and flag it. Do not let one bump block the others.
 6. If a PR needed code/config fixes to go green, commit them AND push them to that PR's own origin branch (`git push origin HEAD:<dependabot-branch>`), so the PR is green and self-contained on origin. Fixes must not live only in your local worktree, otherwise the later GitHub merge brings the un-fixed origin branch.
 
-## Phase 2 — Consolidate onto release/dependabot-<tag> (GitHub-first; never pre-merge locally)
+## Phase 2 - Consolidate onto release/dependabot-<tag> (GitHub-first; never pre-merge locally)
 
 The release branch is assembled through GitHub PR merges, one PR at a time. Do not `git merge` the PR branches into the release branch locally and push. Your local worktree is only for the final combined re-verify, never for assembling the merges.
 
@@ -100,7 +112,7 @@ The release branch is assembled through GitHub PR merges, one PR at a time. Do n
 
 Note on duplicates / un-retargetable PRs: if a PR cannot be re-targeted because its commits are already in the release branch ("no new commits between base and head"), the consolidation order was wrong, you local-merged it. Do not paper over it with a comment; the PR will dangle on `<BASE_BRANCH>`. Fix the order, not the symptom.
 
-## Phase 3 — Maintain and refresh the consolidated PR to base
+## Phase 3 - Maintain and refresh the consolidated PR to base
 
 1. **Ensure the consolidation PR exists and is current.** Maintain a single PR: `release/dependabot-<tag>` -> `<BASE_BRANCH>`. Prefix the title to signal review weight (e.g. `DANGER | Dependabot consolidation (<tag>)`). If new bumps landed this run, update the body. The body must list: every bump included, every Tier-2 bump with the manual check it needs, and any bump held out of the batch.
 
@@ -123,9 +135,11 @@ Note on duplicates / un-retargetable PRs: if a PR cannot be re-targeted because 
 
 4. **Critical escape hatch:** if a security/critical bump must reach `<BASE_BRANCH>` ahead of the batch, run it alone through Phases 1-3 on `release/dependabot-critical-<tag>`.
 
-5. **Stragglers from prior months:** if an earlier month's consolidation PR (`release/dependabot-<older-tag>`) is still open and unmerged, do not silently keep it alive forever, and do not let it rot either. This routine actively refreshes only the *current* tag's PR; surface any older open consolidation PR in the report as needing human action.
+5. **Stragglers and prior batches:** this routine actively refreshes only the active batch's PR (the current month's open one). A prior batch that is already MERGED (this month's `-1` before a mid-month merge, or any earlier month) is *done*, not a straggler. Two kinds of leftover need attention, both surfaced in the report:
+   - **Open, unmerged PR for a non-active tag** (an earlier month, or an earlier same-month batch that stayed open): a genuine straggler. Do not keep it alive forever and do not let it rot; flag it for human action. Two open PRs for the same month (e.g. `-1` still open while `-2` is open) means `-1` was never merged, so `-2` should not have been rolled: reconcile by treating the still-open `-1` as the active batch. **Roll to a new off-base batch ONLY after the prior one is MERGED** (case 2), never merely closed.
+   - **Closed-unmerged branch with bumps not in base** (bumps at risk): if a same-month batch's PR is closed but its commits never reached `<BASE_BRANCH>`, those bumps are stranded on the branch. The active-batch resolution recovers the LATEST such batch (Step 0 case 3, reopen); any OTHER same-month closed-unmerged branch whose commits are not in base must be flagged in the report as bumps-at-risk so they are not silently lost.
 
-End every run with a short report: repo, PRs found, fixed, merged into the release branch, held out, the consolidation PR link, whether it was refreshed this run (`<old> -> <new>` PR number, and why), and any prior-month consolidation PRs still open that need human attention.
+End every run with a short report: repo, PRs found, fixed, merged into the release branch, held out, the consolidation PR link, **which batch of the month this was (e.g. `2026-07-2`) and whether it was a fresh batch opened because the month's prior batch had already merged**, whether it was refreshed this run (`<old> -> <new>` PR number, and why), and any other open consolidation PRs (earlier months or earlier same-month batches) still open that need human attention.
 
 ## Ecosystem gotchas (reference)
 

@@ -1,0 +1,915 @@
+#!/usr/bin/env python3
+"""
+a_c_claude_sessions - dashboard + search for the Claude Code sessions on this machine.
+
+For every running `claude` CLI process it resolves the exact session it is on
+(session id, human title, and the last thing it was asked to do), orders them by
+most-recently-active first, and renders that as:
+
+  --print        Markdown to stdout (default) - LIVE sessions only
+  --json         raw JSON of the collected sessions
+  --write-mdnest write the Markdown dashboard to an mdnest note (safe write + verify)
+  --serve        run a tiny local web page (auto-refreshing) at http://127.0.0.1:PORT
+
+It also searches EVERY session transcript on disk, live or already closed, so a
+session you closed by mistake can be found again and resumed:
+
+  --find QUERY   rank all sessions by how well they match QUERY (repo name, task,
+                 title, branch, session id) and print the exact `claude --resume`
+                 command for each match. Newest activity breaks ties.
+  --all          list every session on disk (live + closed), newest first.
+  --limit N      cap the transcript scan to the N most-recently-active sessions
+                 (default 600; use 0 for no cap). Search is head+tail only, so
+                 even large transcripts are cheap to scan.
+
+--find / --all combine with --json for machine-readable output (used by the
+a_sag_claude_session_finder sub-agent).
+
+How it works
+------------
+1. Read the process table and keep the real `claude` CLI processes (not the desktop
+   GUI app, its renderer helpers, or the background pty host).
+2. For each process get its working directory (lsof) and pull any session id,
+   --remote-control name, or leading prompt straight out of its argv.
+3. Map the process to its session .jsonl under ~/.claude/projects. If argv named a
+   session id, use it; otherwise take the most recently written session in the
+   project directory that matches the cwd.
+4. Read each session .jsonl for its ai title, its last prompt (what it is doing),
+   its first prompt (why it exists), git branch, and last-activity time.
+5. Order by last-activity time, newest on top, and render.
+
+Read-only. Never writes to any repo. Only --write-mdnest touches mdnest.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+HOME = os.path.expanduser("~")
+PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
+UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I
+)
+DEFAULT_MDNEST_PATH = "@work/my_brain/Automations/Claude/RunningSessions.md"
+# A session whose transcript changed within this many seconds is "working now",
+# otherwise it is an open-but-idle session (process alive, waiting on input).
+ACTIVE_WINDOW_SECS = 180
+
+
+# --------------------------------------------------------------------------- #
+# Process collection
+# --------------------------------------------------------------------------- #
+def _is_real_claude(cmd):
+    """True for the claude CLI, false for the desktop GUI / helpers / pty host."""
+    if "--bg-pty-host" in cmd:
+        return False
+    # Desktop Electron app shell and its renderer processes.
+    if "/Applications/Claude.app/Contents/MacOS/Claude" in cmd:
+        return False
+    if "Claude Helper" in cmd:
+        return False
+    # The real CLI is invoked as `claude ...`, `.../bin/claude.exe ...`,
+    # or the headless desktop agent `.../claude.app/Contents/MacOS/claude --output-format ...`.
+    first = cmd.split(None, 1)[0] if cmd else ""
+    base = os.path.basename(first)
+    if base in ("claude", "claude.exe"):
+        return True
+    if base == "claude" or first.endswith("/MacOS/claude"):
+        return True
+    # bare `claude` / `claude -r` / `claude <prompt>`
+    if cmd == "claude" or cmd.startswith("claude "):
+        return True
+    return False
+
+
+def _cwd_of(pid):
+    try:
+        out = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True, text=True, timeout=8,
+        ).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        if line.startswith("n"):
+            return line[1:]
+    return None
+
+
+def _parse_argv(cmd):
+    """Pull the useful bits out of a claude command line."""
+    info = {
+        "session_id": None,
+        "remote_control": None,
+        "prompt": None,
+        "permission_mode": None,
+        "forked": "--fork-session" in cmd,
+        "resumed": False,
+    }
+    # --session-id <uuid>
+    m = re.search(r"--session-id[=\s]+([0-9a-fA-F-]{36})", cmd)
+    if m:
+        info["session_id"] = m.group(1).lower()
+    # --resume[=| ]<uuid> (also implies a resumed session) or --resume <path.jsonl>
+    m = re.search(r"--resume[=\s]+(\S+)", cmd)
+    if m:
+        info["resumed"] = True
+        val = m.group(1)
+        um = UUID_RE.search(val)
+        if um and not info["session_id"]:
+            info["session_id"] = um.group(0).lower()
+    if re.search(r"(^|\s)-r(\s|$)", cmd):
+        info["resumed"] = True
+    m = re.search(r"--remote-control[=\s]+(\S+)", cmd)
+    if m:
+        info["remote_control"] = m.group(1)
+    m = re.search(r"--permission-mode[=\s]+(\S+)", cmd)
+    if m:
+        info["permission_mode"] = m.group(1)
+    # Leading free-text prompt: the token(s) after `claude` before the first flag,
+    # only for the simple `claude <prompt> ...` invocation form.
+    m = re.match(r"claude\s+(?!-)(.+?)(?:\s--|\s-[a-zA-Z]|$)", cmd)
+    if m:
+        cand = m.group(1).strip()
+        if cand and not cand.startswith("-"):
+            info["prompt"] = cand
+    return info
+
+
+def collect_processes():
+    """Return a list of live claude CLI processes with argv-derived hints + cwd."""
+    try:
+        out = subprocess.run(
+            ["ps", "-Ao", "pid=,etime=,%cpu=,command="],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+    except Exception as e:
+        print(f"error: could not read process table: {e}", file=sys.stderr)
+        return []
+    procs = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, etime, cpu, cmd = parts
+        if not _is_real_claude(cmd):
+            continue
+        p = {"pid": int(pid), "etime": etime, "cpu": cpu, "cmd": cmd}
+        p.update(_parse_argv(cmd))
+        procs.append(p)
+    # Resolve cwd for each (this is the slow part; a handful of lsof calls).
+    for p in procs:
+        p["cwd"] = _cwd_of(p["pid"])
+    return procs
+
+
+# --------------------------------------------------------------------------- #
+# Session (transcript) resolution
+# --------------------------------------------------------------------------- #
+def _project_dir_for_cwd(cwd):
+    """Claude encodes a cwd into a project dir name by turning every
+    non-alphanumeric character (/, ., _, space, ...) into a dash."""
+    if not cwd:
+        return None
+    encoded = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    path = os.path.join(PROJECTS_DIR, encoded)
+    return path if os.path.isdir(path) else None
+
+
+# session id -> transcript path, built once (cheap: one listdir per project dir).
+_SESSION_INDEX = None
+
+
+def _session_index():
+    global _SESSION_INDEX
+    if _SESSION_INDEX is None:
+        _SESSION_INDEX = {}
+        try:
+            for proj in os.listdir(PROJECTS_DIR):
+                pdir = os.path.join(PROJECTS_DIR, proj)
+                if not os.path.isdir(pdir):
+                    continue
+                for fn in os.listdir(pdir):
+                    if fn.endswith(".jsonl"):
+                        _SESSION_INDEX[fn[:-6]] = os.path.join(pdir, fn)
+        except OSError:
+            pass
+    return _SESSION_INDEX
+
+
+def _find_session_file(session_id):
+    """Locate a session .jsonl anywhere under projects by its id."""
+    if not session_id:
+        return None
+    return _session_index().get(session_id.lower())
+
+
+def _newest_session_in(project_dir):
+    if not project_dir or not os.path.isdir(project_dir):
+        return None
+    best, best_mt = None, -1
+    for fn in os.listdir(project_dir):
+        if not fn.endswith(".jsonl"):
+            continue
+        fp = os.path.join(project_dir, fn)
+        try:
+            mt = os.path.getmtime(fp)
+        except OSError:
+            continue
+        if mt > best_mt:
+            best, best_mt = fp, mt
+    return best
+
+
+def _text_from_content(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                return part.get("text")
+    return None
+
+
+def read_session_meta(session_file):
+    """Extract the display metadata from a session transcript."""
+    meta = {
+        "session_id": os.path.basename(session_file)[:-6],
+        "file": session_file,
+        "ai_title": None,
+        "last_prompt": None,
+        "first_prompt": None,
+        "cwd": None,
+        "git_branch": None,
+        "model": None,
+        "mtime": None,
+    }
+    try:
+        meta["mtime"] = os.path.getmtime(session_file)
+    except OSError:
+        pass
+    try:
+        with open(session_file, "r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = d.get("type")
+                if t == "ai-title":
+                    meta["ai_title"] = d.get("aiTitle") or meta["ai_title"]
+                elif t == "last-prompt":
+                    meta["last_prompt"] = d.get("lastPrompt") or meta["last_prompt"]
+                if d.get("cwd"):
+                    meta["cwd"] = d["cwd"]
+                if d.get("gitBranch"):
+                    meta["git_branch"] = d["gitBranch"]
+                if t == "user" and not d.get("isMeta"):
+                    txt = _text_from_content(d.get("message", {}).get("content"))
+                    if txt and not txt.lstrip().startswith("<"):
+                        if not meta["first_prompt"]:
+                            meta["first_prompt"] = txt
+                        meta["last_prompt"] = meta["last_prompt"] or txt
+                if t == "assistant":
+                    m = d.get("message", {})
+                    if m.get("model"):
+                        meta["model"] = m["model"]
+    except OSError:
+        pass
+    return meta
+
+
+def build_sessions():
+    """Correlate live processes to sessions; return them newest-active first."""
+    procs = collect_processes()
+    sessions = {}  # session_id -> record
+
+    for p in procs:
+        sid = p.get("session_id")
+        sfile = None
+        if sid:
+            sfile = _find_session_file(sid)
+        if not sfile:
+            proj = _project_dir_for_cwd(p.get("cwd"))
+            sfile = _newest_session_in(proj)
+        if not sfile:
+            # A live process we cannot tie to a transcript yet (brand new / no cwd).
+            key = f"pid:{p['pid']}"
+            rec = sessions.setdefault(key, {
+                "meta": {
+                    "session_id": None, "file": None, "ai_title": None,
+                    "last_prompt": None, "first_prompt": None,
+                    "cwd": p.get("cwd"), "git_branch": None, "model": None,
+                    "mtime": None,
+                },
+                "procs": [],
+            })
+            rec["procs"].append(p)
+            continue
+
+        sid = os.path.basename(sfile)[:-6]
+        rec = sessions.get(sid)
+        if not rec:
+            rec = {"meta": read_session_meta(sfile), "procs": []}
+            sessions[sid] = rec
+        rec["procs"].append(p)
+
+    records = list(sessions.values())
+    for rec in records:
+        meta = rec["meta"]
+        mt = meta.get("mtime") or 0
+        rec["last_active"] = mt
+        rec["active_now"] = (time.time() - mt) <= ACTIVE_WINDOW_SECS if mt else False
+        # Best short name: ai title, else remote-control name, else prompt, else id.
+        rc = next((p["remote_control"] for p in rec["procs"] if p.get("remote_control")), None)
+        rec["remote_control"] = rc
+        prompt = next((p["prompt"] for p in rec["procs"] if p.get("prompt")), None)
+        rec["argv_prompt"] = prompt
+        # "What it is doing": last prompt, then argv prompt, then first prompt.
+        rec["doing"] = meta.get("last_prompt") or prompt or meta.get("first_prompt")
+        rec["name"] = (
+            meta.get("ai_title") or rc or _short(prompt) or _short(meta.get("first_prompt"))
+            or (meta.get("session_id") or "unknown")[:8]
+        )
+    records.sort(key=lambda r: r["last_active"], reverse=True)
+    return records
+
+
+# --------------------------------------------------------------------------- #
+# Search across ALL sessions on disk (live + closed) - for finding a session
+# you closed by mistake and resuming it.
+# --------------------------------------------------------------------------- #
+HEAD_LINES = 80          # title / first prompt / cwd / branch live near the top
+TAIL_BYTES = 96 * 1024   # last prompt / recent activity live at the very end
+
+
+def _apply_records(meta, records):
+    """Fold a list of decoded transcript records into a meta dict, in order."""
+    for d in records:
+        if not isinstance(d, dict):
+            continue
+        t = d.get("type")
+        if t == "ai-title":
+            meta["ai_title"] = d.get("aiTitle") or meta["ai_title"]
+        elif t == "last-prompt":
+            meta["last_prompt"] = d.get("lastPrompt") or meta["last_prompt"]
+        if d.get("cwd"):
+            meta["cwd"] = meta["cwd"] or d["cwd"]
+        if d.get("gitBranch"):
+            meta["git_branch"] = meta["git_branch"] or d["gitBranch"]
+        if t == "user" and not d.get("isMeta"):
+            txt = _text_from_content(d.get("message", {}).get("content"))
+            if txt and not txt.lstrip().startswith("<"):
+                if not meta["first_prompt"]:
+                    meta["first_prompt"] = txt
+                meta["recent_user"] = txt   # keep overwriting -> last one wins
+        if t == "assistant":
+            m = d.get("message", {})
+            if m.get("model"):
+                meta["model"] = m.get("model") or meta["model"]
+
+
+def read_session_meta_fast(session_file):
+    """Metadata from a transcript reading only its head + tail (cheap on big files)."""
+    meta = {
+        "session_id": os.path.basename(session_file)[:-6],
+        "file": session_file,
+        "ai_title": None, "last_prompt": None, "first_prompt": None,
+        "recent_user": None, "cwd": None, "git_branch": None,
+        "model": None, "mtime": None,
+    }
+    try:
+        meta["mtime"] = os.path.getmtime(session_file)
+    except OSError:
+        pass
+
+    def _decode(lines):
+        out = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    try:
+        with open(session_file, "rb") as f:
+            head = []
+            for _ in range(HEAD_LINES):
+                b = f.readline()
+                if not b:
+                    break
+                head.append(b.decode("utf-8", "replace"))
+            _apply_records(meta, _decode(head))
+            # Tail: seek near the end and read the last chunk of lines.
+            try:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                start = max(0, size - TAIL_BYTES)
+                f.seek(start)
+                tail_raw = f.read().decode("utf-8", "replace")
+                tail = tail_raw.splitlines()
+                if start > 0 and tail:
+                    tail = tail[1:]  # drop the partial first line
+                _apply_records(meta, _decode(tail))
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    if not meta["cwd"]:
+        # Fall back to decoding the cwd from the encoded project dir name.
+        proj = os.path.basename(os.path.dirname(session_file))
+        meta["cwd"] = proj.replace("-", "/") if proj.startswith("-") else None
+    meta["last_prompt"] = meta["last_prompt"] or meta["recent_user"] or meta["first_prompt"]
+    return meta
+
+
+def _live_session_map():
+    """session_id -> [pids] for sessions with a live claude process right now."""
+    live = {}
+    for rec in build_sessions():
+        sid = rec["meta"].get("session_id")
+        if sid and rec.get("procs"):
+            live[sid] = [p["pid"] for p in rec["procs"]]
+    return live
+
+
+def _score(meta, tokens):
+    """Relevance of a session's metadata to the query tokens. Higher = better."""
+    if not tokens:
+        return 0
+    title = (meta.get("ai_title") or "").lower()
+    proj = (_repo_label(meta.get("cwd")) or "").lower()
+    branch = (meta.get("git_branch") or "").lower()
+    cwd = (meta.get("cwd") or "").lower()
+    prompts = " ".join(filter(None, [
+        meta.get("first_prompt"), meta.get("last_prompt"), meta.get("recent_user"),
+    ])).lower()
+    sid = (meta.get("session_id") or "").lower()
+    score = 0
+    for tok in tokens:
+        if not tok:
+            continue
+        if tok in title:
+            score += 6
+        if tok in proj or tok in branch:
+            score += 5
+        if tok in cwd:
+            score += 3
+        if tok in prompts:
+            score += 2
+        if tok in sid:
+            score += 8   # a pasted id fragment is a strong signal
+    # Whole-query phrase bonus.
+    phrase = " ".join(tokens)
+    if phrase and (phrase in title or phrase in prompts):
+        score += 4
+    return score
+
+
+def _resume_cmd(meta):
+    sid = meta.get("session_id")
+    cwd = meta.get("cwd")
+    if not sid:
+        return None
+    if cwd:
+        return f'(cd "{cwd}" && claude --resume {sid})'
+    return f"claude --resume {sid}"
+
+
+def search_sessions(query, limit=600):
+    """Rank EVERY session on disk against query. Returns records newest/best first."""
+    idx = _session_index()
+    files = list(idx.values())
+    # Newest first, then cap the scan so huge histories stay cheap.
+    files.sort(key=lambda fp: os.path.getmtime(fp) if os.path.exists(fp) else 0,
+               reverse=True)
+    if limit and limit > 0:
+        files = files[:limit]
+    live = _live_session_map()
+    tokens = [t for t in re.split(r"\s+", (query or "").strip().lower()) if t]
+
+    out = []
+    for fp in files:
+        meta = read_session_meta_fast(fp)
+        sid = meta.get("session_id")
+        rec = {
+            "meta": meta,
+            "score": _score(meta, tokens),
+            "live": sid in live,
+            "pids": live.get(sid, []),
+            "last_active": meta.get("mtime") or 0,
+            "resume": _resume_cmd(meta),
+        }
+        rec["name"] = (meta.get("ai_title") or _short(meta.get("first_prompt"))
+                       or (sid or "unknown")[:8])
+        rec["doing"] = meta.get("last_prompt") or meta.get("first_prompt")
+        out.append(rec)
+
+    if tokens:
+        out = [r for r in out if r["score"] > 0]
+        out.sort(key=lambda r: (r["score"], r["last_active"]), reverse=True)
+    else:
+        out.sort(key=lambda r: r["last_active"], reverse=True)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Formatting helpers
+# --------------------------------------------------------------------------- #
+def _short(text, n=60):
+    if not text:
+        return None
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _clean_cell(text, n=90):
+    """One line, table-safe (no pipes / newlines)."""
+    if not text:
+        return ""
+    text = " ".join(str(text).split()).replace("|", "│")
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _repo_label(cwd):
+    if not cwd:
+        return "?"
+    base = os.path.basename(cwd.rstrip("/"))
+    parent = os.path.basename(os.path.dirname(cwd.rstrip("/")))
+    if parent in ("WorkTrees", "worktrees"):
+        return f"{os.path.basename(os.path.dirname(os.path.dirname(cwd.rstrip('/'))))} / {base}"
+    return base
+
+
+def _ago(mtime):
+    if not mtime:
+        return "unknown"
+    secs = int(time.time() - mtime)
+    if secs < 0:
+        secs = 0
+    if secs < 60:
+        return f"{secs}s ago"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h {(secs % 3600)//60}m ago"
+    return f"{secs // 86400}d ago"
+
+
+def _now_str():
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+# --------------------------------------------------------------------------- #
+# Renderers
+# --------------------------------------------------------------------------- #
+def render_markdown(records):
+    active = [r for r in records if r["active_now"]]
+    idle = [r for r in records if not r["active_now"]]
+    lines = []
+    lines.append("# Claude Code - Running Sessions")
+    lines.append("")
+    lines.append(f"_Updated {_now_str()}. {len(records)} live session(s): "
+                 f"{len(active)} working now, {len(idle)} open & idle. "
+                 "Newest activity on top._")
+    lines.append("")
+
+    top = records[0] if records else None
+    if top:
+        lines.append("## Running right now (top)")
+        lines.append("")
+        lines.append(f"- **Session:** {top['name']}")
+        lines.append(f"- **Session ID:** `{top['meta'].get('session_id') or 'n/a'}`")
+        lines.append(f"- **Where:** {_repo_label(top['meta'].get('cwd'))}"
+                     + (f"  (`{top['meta'].get('git_branch')}`)" if top['meta'].get('git_branch') else ""))
+        lines.append(f"- **State:** {'working now' if top['active_now'] else 'open & idle'}, "
+                     f"last active {_ago(top['last_active'])}")
+        lines.append(f"- **Doing:** {_clean_cell(top.get('doing'), 240) or '(no prompt captured)'}")
+        lines.append("")
+
+    lines.append("## All live sessions")
+    lines.append("")
+    lines.append("| # | Last active | State | Session | Project / branch | Doing | Session ID |")
+    lines.append("|---|-------------|-------|---------|------------------|-------|------------|")
+    for i, r in enumerate(records, 1):
+        m = r["meta"]
+        state = "\U0001F7E2 working" if r["active_now"] else "⚪ idle"
+        branch = m.get("git_branch")
+        proj = _repo_label(m.get("cwd"))
+        if branch and branch not in proj:
+            proj = f"{proj}<br/>`{branch}`"
+        sid = m.get("session_id") or "n/a"
+        lines.append(
+            f"| {i} | {_ago(r['last_active'])} | {state} | "
+            f"{_clean_cell(r['name'], 50)} | {_clean_cell(proj, 48)} | "
+            f"{_clean_cell(r.get('doing'), 90)} | `{sid}` |"
+        )
+    lines.append("")
+    lines.append("### How this is measured")
+    lines.append("")
+    lines.append("- One row per live `claude` CLI process on this machine (the desktop app, "
+                 "its helpers, and the pty host are excluded).")
+    lines.append("- **State:** \U0001F7E2 working = transcript changed in the last "
+                 f"{ACTIVE_WINDOW_SECS // 60} min; ⚪ idle = process alive but waiting on input.")
+    lines.append("- Session id is exact for remote-control, forked, and resumed sessions "
+                 "(it is in the command line). For a plain interactive session the id is "
+                 "inferred as the most recently active session in that working directory, "
+                 "so two plain sessions in the same folder can collapse into one row.")
+    lines.append(f"- {sum(len(r['procs']) for r in records)} process(es) mapped to "
+                 f"{len(records)} session(s). Generated by `a_c_claude_sessions` (my-workflow); "
+                 "run `a_c_claude_sessions --serve` for a live local web view.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_json(records):
+    out = []
+    for r in records:
+        m = r["meta"]
+        out.append({
+            "session_id": m.get("session_id"),
+            "name": r["name"],
+            "doing": r.get("doing"),
+            "cwd": m.get("cwd"),
+            "git_branch": m.get("git_branch"),
+            "project": _repo_label(m.get("cwd")),
+            "active_now": r["active_now"],
+            "last_active_epoch": r["last_active"],
+            "last_active_human": _ago(r["last_active"]),
+            "model": m.get("model"),
+            "pids": [p["pid"] for p in r["procs"]],
+            "remote_control": r.get("remote_control"),
+            "permission_mode": next((p.get("permission_mode") for p in r["procs"] if p.get("permission_mode")), None),
+        })
+    return json.dumps({"generated": _now_str(), "count": len(out), "sessions": out}, indent=2)
+
+
+def render_search_markdown(records, query, limit, shown=12):
+    lines = []
+    title = f'sessions matching "{query}"' if query else "all sessions (newest first)"
+    lines.append(f"# Claude Code - {title}")
+    lines.append("")
+    scanned = "no cap" if not limit else f"newest {limit}"
+    lines.append(f"_Updated {_now_str()}. {len(records)} match(es), showing top "
+                 f"{min(shown, len(records))}. Scanned {scanned} sessions on disk "
+                 "(live + closed)._")
+    lines.append("")
+    if not records:
+        lines.append("No session matched. Try fewer / different words, a repo name, "
+                     "or part of the session id. Widen the scan with `--limit 0`.")
+        lines.append("")
+        return "\n".join(lines)
+
+    for i, r in enumerate(records[:shown], 1):
+        m = r["meta"]
+        state = "\U0001F7E2 still running" if r["live"] else "⚪ closed"
+        lines.append(f"## {i}. {r['name']}")
+        lines.append("")
+        lines.append(f"- **State:** {state}, last active {_ago(r['last_active'])}"
+                     + (f" (pid {', '.join(map(str, r['pids']))})" if r["live"] else ""))
+        lines.append(f"- **Project:** {_repo_label(m.get('cwd'))}"
+                     + (f"  (`{m.get('git_branch')}`)" if m.get("git_branch") else ""))
+        lines.append(f"- **Session ID:** `{m.get('session_id') or 'n/a'}`")
+        if r.get("doing"):
+            lines.append(f"- **Doing:** {_clean_cell(r.get('doing'), 240)}")
+        if r.get("resume"):
+            verb = "reattach / resume" if not r["live"] else "resume (already open elsewhere)"
+            lines.append(f"- **To {verb}:**")
+            lines.append("")
+            lines.append("```bash")
+            lines.append(r["resume"])
+            lines.append("```")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_search_json(records, query, limit):
+    out = []
+    for r in records:
+        m = r["meta"]
+        out.append({
+            "session_id": m.get("session_id"),
+            "name": r["name"],
+            "score": r["score"],
+            "live": r["live"],
+            "pids": r["pids"],
+            "doing": r.get("doing"),
+            "cwd": m.get("cwd"),
+            "git_branch": m.get("git_branch"),
+            "project": _repo_label(m.get("cwd")),
+            "last_active_epoch": r["last_active"],
+            "last_active_human": _ago(r["last_active"]),
+            "model": m.get("model"),
+            "resume_command": r.get("resume"),
+        })
+    return json.dumps({
+        "generated": _now_str(), "query": query, "scan_limit": limit,
+        "count": len(out), "sessions": out,
+    }, indent=2)
+
+
+def _html_escape(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def render_html(records, refresh=10):
+    active = sum(1 for r in records if r["active_now"])
+    rows = []
+    for i, r in enumerate(records, 1):
+        m = r["meta"]
+        cls = "working" if r["active_now"] else "idle"
+        dot = "\U0001F7E2" if r["active_now"] else "⚪"
+        branch = f'<span class="branch">{_html_escape(m.get("git_branch"))}</span>' if m.get("git_branch") else ""
+        rows.append(f"""
+        <tr class="{cls}">
+          <td class="num">{i}</td>
+          <td class="dot">{dot}</td>
+          <td class="ago">{_html_escape(_ago(r['last_active']))}</td>
+          <td class="name">{_html_escape(r['name'])}</td>
+          <td class="proj">{_html_escape(_repo_label(m.get('cwd')))}{branch}</td>
+          <td class="doing">{_html_escape(_clean_cell(r.get('doing'), 200))}</td>
+          <td class="sid">{_html_escape(m.get('session_id') or 'n/a')}</td>
+        </tr>""")
+    return f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="{refresh}">
+<title>Claude Sessions</title>
+<style>
+:root{{color-scheme:dark}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
+header{{padding:18px 22px;background:#161b22;border-bottom:1px solid #30363d;position:sticky;top:0}}
+h1{{margin:0;font-size:18px}}
+.sub{{color:#8b949e;font-size:12px;margin-top:4px}}
+.wrap{{overflow-x:auto;padding:0 12px 40px}}
+table{{border-collapse:collapse;width:100%;min-width:900px}}
+th,td{{text-align:left;padding:9px 10px;border-bottom:1px solid #21262d;vertical-align:top}}
+th{{color:#8b949e;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:73px;background:#0d1117}}
+tr.working{{background:rgba(31,122,58,.10)}}
+tr:hover{{background:#161b22}}
+.num{{color:#6e7681;width:32px}}
+.dot{{width:26px}}
+.ago{{color:#8b949e;white-space:nowrap;width:96px}}
+.name{{font-weight:600;color:#58a6ff;max-width:220px}}
+.proj{{color:#d29922;font-size:12px;max-width:200px}}
+.branch{{display:block;color:#6e7681;font-family:ui-monospace,monospace;font-size:11px}}
+.doing{{color:#c9d1d9;max-width:520px}}
+.sid{{color:#6e7681;font-family:ui-monospace,monospace;font-size:11px;white-space:nowrap}}
+.pill{{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;margin-left:6px}}
+.pill.g{{background:#1f7a3a;color:#fff}} .pill.n{{background:#30363d;color:#c9d1d9}}
+</style></head><body>
+<header>
+  <h1>Claude Code - Running Sessions</h1>
+  <div class="sub">Updated {_html_escape(_now_str())}
+    <span class="pill g">{active} working</span>
+    <span class="pill n">{len(records)-active} idle</span>
+    <span class="pill n">{len(records)} total</span>
+    &nbsp;auto-refresh {refresh}s &middot; newest on top</div>
+</header>
+<div class="wrap"><table>
+<thead><tr><th>#</th><th></th><th>Last active</th><th>Session</th><th>Project / branch</th><th>Doing</th><th>Session ID</th></tr></thead>
+<tbody>{''.join(rows)}</tbody>
+</table></div>
+</body></html>"""
+
+
+# --------------------------------------------------------------------------- #
+# mdnest write (safe: literal temp file -> "$(cat)" -> verify)
+# --------------------------------------------------------------------------- #
+def write_mdnest(markdown, path):
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tf:
+        tf.write(markdown)
+        tmp = tf.name
+    try:
+        # Does it already exist? Choose write vs create.
+        exists = subprocess.run(
+            ["bash", "-lc", f'mdnest read {path} >/dev/null 2>&1 && echo yes || echo no'],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        verb = "write" if exists == "yes" else "create"
+        r = subprocess.run(
+            ["bash", "-lc", f'mdnest {verb} {path} "$(cat {tmp})"'],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print(f"mdnest {verb} failed:\n{r.stderr or r.stdout}", file=sys.stderr)
+            return False
+        # Verify: no escaped backticks survived, content is present.
+        chk = subprocess.run(
+            ["bash", "-lc", f'mdnest read {path}'],
+            capture_output=True, text=True,
+        ).stdout
+        if "\\`" in chk:
+            print("verify FAILED: escaped backticks found in stored note", file=sys.stderr)
+            return False
+        if "Running Sessions" not in chk:
+            print("verify FAILED: heading missing from stored note", file=sys.stderr)
+            return False
+        print(f"mdnest {verb} OK -> {path}  ({len(chk)} bytes verified)")
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+# Serve
+# --------------------------------------------------------------------------- #
+def serve(port, refresh):
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path.rstrip("/") in ("/json", "/api"):
+                body = render_json(build_sessions()).encode()
+                ctype = "application/json"
+            else:
+                body = render_html(build_sessions(), refresh).encode()
+                ctype = "text/html; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    httpd = HTTPServer(("127.0.0.1", port), Handler)
+    print(f"Claude sessions dashboard at http://127.0.0.1:{port}  (Ctrl-C to stop)")
+    print(f"  JSON feed at http://127.0.0.1:{port}/json")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+
+
+# --------------------------------------------------------------------------- #
+def main():
+    ap = argparse.ArgumentParser(
+        description="Live dashboard of Claude Code sessions running on this machine.")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--print", action="store_true", help="print Markdown (default)")
+    g.add_argument("--json", action="store_true", help="print JSON")
+    g.add_argument("--write-mdnest", nargs="?", const=DEFAULT_MDNEST_PATH,
+                   metavar="PATH", help=f"write Markdown to mdnest (default {DEFAULT_MDNEST_PATH})")
+    g.add_argument("--serve", nargs="?", const=8787, type=int, metavar="PORT",
+                   help="serve an auto-refreshing local web page (default port 8787)")
+    ap.add_argument("--find", metavar="QUERY",
+                    help="search ALL sessions on disk (live + closed) and print the "
+                         "resume command for each match, best/newest first")
+    ap.add_argument("--all", action="store_true",
+                    help="list every session on disk (live + closed), newest first")
+    ap.add_argument("--limit", type=int, default=600,
+                    help="cap the transcript scan to the N newest sessions (0 = no cap)")
+    ap.add_argument("--top", type=int, default=12,
+                    help="how many matches to show in --find/--all markdown (default 12)")
+    ap.add_argument("--refresh", type=int, default=10, help="web auto-refresh seconds (default 10)")
+    args = ap.parse_args()
+
+    if args.serve is not None:
+        serve(args.serve, args.refresh)
+        return
+    if args.find is not None or args.all:
+        query = "" if args.all else args.find
+        records = search_sessions(query, limit=args.limit)
+        if args.json:
+            print(render_search_json(records, query, args.limit))
+        else:
+            print(render_search_markdown(records, query, args.limit, shown=args.top))
+        return
+    if args.write_mdnest is not None:
+        records = build_sessions()
+        ok = write_mdnest(render_markdown(records), args.write_mdnest)
+        sys.exit(0 if ok else 1)
+
+    records = build_sessions()
+    if args.json:
+        print(render_json(records))
+    else:
+        print(render_markdown(records))
+
+
+if __name__ == "__main__":
+    main()

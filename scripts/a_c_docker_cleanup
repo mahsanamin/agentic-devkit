@@ -1,0 +1,153 @@
+#!/bin/bash
+#
+# a_c_docker_cleanup - reclaim Docker disk space SAFELY.
+#
+# Docker piles up three kinds of junk over time: stopped containers, unused
+# images, and build cache. On an active-dev machine the build cache alone can
+# grow to tens of GB. This script clears that junk WITHOUT ever risking a
+# running service or your data.
+#
+# The safety contract (this is the whole point):
+#   * Running containers are NEVER stopped or removed. Every command used here
+#     is a docker "prune", which by definition only ever touches objects that
+#     are NOT in use by a running container.
+#   * Named volumes (your Postgres / Redis data) are NEVER pruned. The one
+#     Docker flag that deletes data is `--volumes`, and this script never
+#     passes it. Volume space is only ever REPORTED, never reclaimed here.
+#   * Anonymous volumes attached to removed containers are kept too (no `-v`).
+#   * Stopped containers are only removed once they are older than a cutoff
+#     (default 24h), so a container you just stopped by hand is left alone.
+#   * Recent build cache is kept warm (default: only cache older than 168h/7d
+#     is pruned), so your active projects still rebuild fast.
+#
+# Two modes:
+#   safe (default)  - remove stopped containers > CONTAINER_AGE, dangling
+#                     images, unused networks, and build cache > CACHE_AGE.
+#                     This is what the scheduled run uses.
+#   aggressive      - ALSO remove every image not used by a running container
+#                     (`image prune -a`) and ALL build cache. Bigger reclaim,
+#                     but forces re-pull / re-build of stopped projects. Never
+#                     scheduled; run it by hand when you want a deep clean.
+#
+# Usage:
+#   a_c_docker_cleanup                 Safe cleanup (default)
+#   a_c_docker_cleanup --dry-run       Show what WOULD be removed, touch nothing
+#   a_c_docker_cleanup --aggressive    Deep clean (also unused tagged images + all cache)
+#   a_c_docker_cleanup --help          Show this help
+#
+# Tuning (env vars):
+#   CONTAINER_AGE   Age cutoff for stopped containers   (default 24h)
+#   CACHE_AGE       Age cutoff for build cache          (default 168h = 7 days)
+#   DOCKER_CLEANUP_LOG   Log file  (default ~/Library/Logs/a_c_docker_cleanup.log)
+#
+# Exit codes: 0 ok (incl. daemon not running - a scheduled run must not error).
+
+set -euo pipefail
+
+# ---- config -------------------------------------------------------------
+CONTAINER_AGE="${CONTAINER_AGE:-24h}"
+CACHE_AGE="${CACHE_AGE:-168h}"
+LOG_FILE="${DOCKER_CLEANUP_LOG:-$HOME/Library/Logs/a_c_docker_cleanup.log}"
+
+DRY_RUN=0
+AGGRESSIVE=0
+
+# ---- colors (off when not a TTY, e.g. under launchd) --------------------
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; DIM='\033[2m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; DIM=''; NC=''
+fi
+
+# ---- args ---------------------------------------------------------------
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--dry-run)    DRY_RUN=1 ;;
+        -a|--aggressive) AGGRESSIVE=1 ;;
+        -h|--help)
+            sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# ---- logging: everything to console AND the log file --------------------
+mkdir -p "$(dirname "$LOG_FILE")"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+log()  { printf "%b\n" "$*"; }
+rule() { log "${DIM}------------------------------------------------------------${NC}"; }
+
+# ---- run a docker command, or just print it in dry-run ------------------
+run() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "${DIM}[dry-run] would run:${NC} docker $*"
+    else
+        docker "$@" || log "${YELLOW}  (command reported a non-fatal error, continuing)${NC}"
+    fi
+}
+
+# ------------------------------------------------------------------------
+rule
+log "${BLUE}Docker cleanup${NC}  $(date '+%Y-%m-%d %H:%M:%S')  mode=$([ "$AGGRESSIVE" -eq 1 ] && echo aggressive || echo safe)$([ "$DRY_RUN" -eq 1 ] && echo ' (dry-run)')"
+rule
+
+# Daemon reachable? If not, exit clean - a scheduled run must not fail loudly.
+if ! docker info >/dev/null 2>&1; then
+    log "${YELLOW}Docker daemon not reachable. Nothing to do; exiting cleanly.${NC}"
+    exit 0
+fi
+
+# ---- pre-flight: show what is running and protected ---------------------
+RUNNING_COUNT=$(docker ps -q | wc -l | tr -d ' ')
+log "${GREEN}Protected: ${RUNNING_COUNT} running container(s) - never touched.${NC}"
+docker ps --format '  {{.Names}}  ({{.Status}})' || true
+log ""
+log "${BLUE}Before:${NC}"
+docker system df
+log ""
+
+# ---- the cleanup steps --------------------------------------------------
+log "${BLUE}1) Stopped containers older than ${CONTAINER_AGE}${NC}  ${DIM}(running ones are skipped by Docker)${NC}"
+run container prune -f --filter "until=${CONTAINER_AGE}"
+log ""
+
+if [ "$AGGRESSIVE" -eq 1 ]; then
+    log "${BLUE}2) Images not used by a running container (aggressive: -a)${NC}"
+    run image prune -a -f
+else
+    log "${BLUE}2) Dangling (untagged) images only${NC}  ${DIM}(safe: tagged images kept)${NC}"
+    run image prune -f
+fi
+log ""
+
+log "${BLUE}3) Unused networks${NC}"
+run network prune -f
+log ""
+
+if [ "$AGGRESSIVE" -eq 1 ]; then
+    log "${BLUE}4) ALL build cache (aggressive)${NC}"
+    run builder prune -a -f
+else
+    log "${BLUE}4) Build cache older than ${CACHE_AGE}${NC}  ${DIM}(recent cache kept warm)${NC}"
+    run builder prune -f --filter "until=${CACHE_AGE}"
+fi
+log ""
+
+# ---- volumes: report only, NEVER delete --------------------------------
+log "${YELLOW}Volumes are intentionally left alone (they hold your DB data).${NC}"
+DANGLING_VOLS=$(docker volume ls -qf dangling=true | wc -l | tr -d ' ')
+if [ "$DANGLING_VOLS" -gt 0 ]; then
+    log "${DIM}  ${DANGLING_VOLS} dangling volume(s) exist. Review by hand if you want the space:${NC}"
+    log "${DIM}    docker volume ls -f dangling=true${NC}"
+    log "${DIM}    docker volume rm <name>   # only after you confirm it holds nothing you need${NC}"
+fi
+log ""
+
+# ---- after --------------------------------------------------------------
+log "${BLUE}After:${NC}"
+docker system df
+rule
+log "${GREEN}Done.${NC}  Log: ${LOG_FILE}"
+rule

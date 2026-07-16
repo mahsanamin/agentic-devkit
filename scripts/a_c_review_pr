@@ -146,7 +146,11 @@ prompt="Review GitHub PR ${url:-#$N} (#$N: ${title:-untitled}). You are ALREADY 
 # (--allowedTools) under normal `default` mode, so injected arbitrary commands
 # are not auto-run. -y opts into full bypass. A permission/tool flag in `-- ...`
 # overrides everything.
-REVIEW_TOOLS='Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh api:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git rev-list:*)'
+# Read + the gh/git commands a static review needs, INCLUDING the comment-post
+# verbs (gh pr review/comment, and gh api which posts the batch review) so the
+# safe default posts without a prompt. This is why the default is hands-off end
+# to end and you rarely need -y: no arbitrary bash is pre-approved, only these.
+REVIEW_TOOLS='Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh api:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git rev-list:*)'
 has_perm=0
 for a in ${passthrough[@]+"${passthrough[@]}"}; do
     case "$a" in --permission-mode|--permission-mode=*|--dangerously-skip-permissions|--allowedTools|--allowed-tools|--tools|--bare) has_perm=1 ;; esac

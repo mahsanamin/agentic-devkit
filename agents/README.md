@@ -71,6 +71,12 @@ A personal, **project-agnostic** library of Claude Code sub-agents. Every agent 
 |-------|-------|------|
 | `a_sag_crawler` | haiku | Polite cache-first web research into structured data |
 
+### Search / recovery
+| Agent | Model | Role |
+|-------|-------|------|
+| `a_sag_claude_session_finder` | haiku | Find a Claude Code session on this machine (live or closed) from a rough description; return the exact `claude --resume` command. Read-only |
+| `a_sag_confluence_finder` | haiku | Search one project's Confluence space and return the matching pages with links. Read-only |
+
 ### Notes / external writing
 | Agent | Model | Role |
 |-------|-------|------|

@@ -33,6 +33,13 @@
 #                  session is not blocked on terminal approvals. Control returns
 #                  to the worktree shell when Claude exits.
 #   -p, --prompt   First message to send Claude (implies -c). Quote it.
+#      --task-file <path>  Local file with the task description. The engine copies
+#                  it to a stable path and, unless -p is given, kicks Claude off to
+#                  read it and work through it. This is the provider-agnostic input:
+#                  a front (mdnest / github / any) fetches its issue/note to a file
+#                  and passes it here, so the engine never knows the source.
+#      --task-text "<text>"  Same, but the description is given inline (for short
+#                  tasks); the engine writes it to that stable file for you.
 #   -z, --zellij   Open the worktree in this zellij SESSION instead of the
 #                  current terminal. Creates the session if it is not running,
 #                  then adds a tab named for the ticket + a short feature slug
@@ -42,10 +49,15 @@
 #                  attaches you to the session (detach to return here), and from
 #                  inside zellij it focuses the tab (same session) or tells you
 #                  how to switch (different session).
-#   -y, --yes      Auto-accept: skip the "Proceed?" confirmation (--auto is an
-#                  alias). Also implied when stdin is not a TTY (a Claude /
-#                  automation-driven run), so the task starts without waiting for
-#                  a human to accept.
+#   -y, --yes      Auto-accept THIS SCRIPT's "Proceed?" confirmation (--auto is an
+#                  alias). Also implied when stdin is not a TTY. NOTE: this is the
+#                  script's own gate, NOT the Claude session's approvals; for a
+#                  hands-off Claude session use --bypass (below) or acceptEdits.
+#      --bypass    Launch Claude fully hands-off (--dangerously-skip-permissions:
+#                  no approval prompts at all); --dangerous is an alias. Implies
+#                  -c. Default without it is --permission-mode acceptEdits (auto-
+#                  accepts edits, still asks before other commands). An explicit
+#                  permission flag after -- overrides both.
 #      --fresh     Recreate if the task's worktree already exists. Default is
 #                  IDEMPOTENT: a repeat call resumes the existing task (focuses
 #                  its zellij tab / cd's into the worktree) instead of starting a
@@ -59,17 +71,18 @@
 #
 # It asks you to confirm (Proceed? [Y/n]) before creating anything; -y/--yes
 # skips that, and a non-interactive run (no TTY, e.g. driven by Claude) skips it
-# automatically. With -r, -t, -f, -b (+ -y) set it runs with no prompts at all.
+# automatically. With -r, -t, -f, -b (+ -y) set, the SCRIPT runs with no prompts;
+# add --bypass for a Claude session that also needs no approval clicks.
 # Add -c (optionally -p "do X first") to drop straight into a remote session:
 #   a_c_task_start -r myrepo -t 942 -f "list filter" -b main -c -p "read the ticket"
 # Add -z to land in a dedicated zellij session/tab (here, the "work" session):
 #   a_c_task_start -r myrepo -t 942 -f "list filter" -b main -z work -c
 
 # Locate this repo's scripts. Prefer A_C_WORKFLOW_DIR (set when the work repo is
-# loaded alongside another my_setup checkout); fall back to MY_WORKFLOW_DIR.
+# loaded alongside another my-workflow checkout); fall back to MY_WORKFLOW_DIR.
 A_C_TASK_BASE="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
 if [ -z "$A_C_TASK_BASE" ]; then
-    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the my_setup repo."
+    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the my-workflow repo."
     return 1 2>/dev/null || exit 1
 fi
 . "$A_C_TASK_BASE/scripts/a_s_task_common.sh"
@@ -81,7 +94,8 @@ _a_c_task_start_help() {
 
 _a_c_task_start_main() {
     local repo_arg="" ticket_arg="" feat_arg="" base_arg="" prompt_arg="" claude_flag=0
-    local zellij_arg="" auto_flag=0 fresh_flag=0 start_pwd="$PWD"
+    local zellij_arg="" auto_flag=0 fresh_flag=0 bypass_flag=0 start_pwd="$PWD"
+    local task_file_arg="" task_text_arg=""
     local passthrough=() after_ddash=0
     while [ "$#" -gt 0 ]; do
         if [ "$after_ddash" -eq 1 ]; then
@@ -94,8 +108,11 @@ _a_c_task_start_main() {
             -b|--base)    base_arg="$2"; shift ;;
             -c|--claude)  claude_flag=1 ;;
             -p|--prompt)  prompt_arg="$2"; claude_flag=1; shift ;;
+            --task-file)  task_file_arg="$2"; claude_flag=1; shift ;;
+            --task-text)  task_text_arg="$2"; claude_flag=1; shift ;;
             -z|--zellij)  zellij_arg="$2"; shift ;;
             -y|--yes|--auto) auto_flag=1 ;;
+            --bypass|--dangerous) bypass_flag=1; claude_flag=1 ;;
             --fresh)      fresh_flag=1 ;;
             --)           after_ddash=1 ;;
             -h|--help)    _a_c_task_start_help; return 0 ;;
@@ -329,6 +346,28 @@ _a_c_task_start_main() {
     echo -e "  ${A_T_DIM}resume later:${A_T_NC} a_c_task_resume $ticket"
     echo -e "  ${A_T_DIM}finish:${A_T_NC}       a_c_task_finish $ticket"
 
+    # Provider-agnostic task content: a front (mdnest / github / plain file) can
+    # hand the actual task description via --task-file <path> or --task-text "...".
+    # We stash it in a STABLE local path (survives temp cleanup; no worktree
+    # pollution) and, when no explicit -p kickoff was given, point Claude at it.
+    # This is what lets the engine be driven by ANY source: the front just fetches
+    # the text/file, the engine does the rest.
+    if [ -n "$task_file_arg" ] || [ -n "$task_text_arg" ]; then
+        local desc_dir desc
+        desc_dir="$(a_task_home)/descriptions"; mkdir -p "$desc_dir" 2>/dev/null
+        desc="$desc_dir/${ticket}.md"
+        if [ -n "$task_file_arg" ]; then
+            if [ -r "$task_file_arg" ]; then cp "$task_file_arg" "$desc" 2>/dev/null
+            else echo -e "${A_T_YELLOW}task file not readable: $task_file_arg (continuing without it)${A_T_NC}" >&2; fi
+        else
+            printf '%s\n' "$task_text_arg" > "$desc" 2>/dev/null
+        fi
+        if [ -z "$prompt_arg" ] && [ -s "$desc" ]; then
+            prompt_arg="Your task is described in the file ${desc}. Read it first (it is the source of truth for scope and Done-when), then understand the relevant code, plan the change, confirm the plan with me, and implement it. If this repo has the /aa-task-flow skill, follow its phases."
+            claude_flag=1
+        fi
+    fi
+
     # 5/6. open in a zellij tab (-z) and/or launch a Claude session (-c) -------
     # Build the Claude argv up front so the exact same command can run either
     # inside a zellij tab or (the original behaviour) straight in this terminal.
@@ -346,7 +385,11 @@ _a_c_task_start_main() {
         cr_args=(-n "$ticket" "$expected_wt")
         [ -n "$prompt_arg" ] && cr_args+=("$prompt_arg")
         cr_args+=(--)
-        [ "$has_perm" -eq 0 ] && cr_args+=(--permission-mode acceptEdits)
+        # Posture: an explicit flag via -- wins; else --bypass = full hands-off
+        # (--dangerously-skip-permissions); else the safe default acceptEdits.
+        if [ "$has_perm" -eq 1 ]; then :
+        elif [ "$bypass_flag" -eq 1 ]; then cr_args+=(--dangerously-skip-permissions)
+        else cr_args+=(--permission-mode acceptEdits); fi
         [ "${#passthrough[@]}" -gt 0 ] && cr_args+=("${passthrough[@]}")
     fi
 

@@ -20,7 +20,7 @@
 #     2026-07-03
 #     2026-07-04
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 
 if [ "$#" -ne 2 ]; then

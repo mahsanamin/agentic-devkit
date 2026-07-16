@@ -18,6 +18,8 @@
 #   --cmd 'CMD'    run CMD in the tab, then drop to an interactive shell in DIR so
 #                  the tab stays usable after CMD exits. Without --cmd the tab is
 #                  just a shell sitting in DIR.
+#   --launcher F   (advanced) use ready-made executable F as the pane command
+#                  instead of building one from --cmd. Used by caller scripts.
 #   --no-focus     create the tab but do not switch the attached client to it.
 #   -n, --dry-run  print what would happen; touch nothing.
 #   -h, --help     show this help.
@@ -39,7 +41,7 @@
 set -u
 prog="${0##*/}"
 
-usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; }
 
 session=""; tab=""; cwd=""; cmd=""; launcher_in=""; focus=1; dry=0
 positional=0

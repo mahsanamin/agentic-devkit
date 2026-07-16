@@ -39,7 +39,7 @@ input=""
 _say() { [ "$quiet" -eq 1 ] || printf '%s\n' "$*" >&2; }
 _err() { printf '%s: %s\n' "$prog" "$*" >&2; }
 
-_usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
+_usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in

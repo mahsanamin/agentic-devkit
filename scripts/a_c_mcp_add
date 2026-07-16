@@ -1,4 +1,13 @@
 #!/bin/bash
+#
+# a_c_mcp_add - interactively add MCP servers to Claude at user scope.
+# Presents a menu of known HTTP MCP servers and runs `claude mcp add --scope
+# user --transport http` for the one you pick. See `a_c_mcp_add --help`.
+#
+# Usage:
+#   a_c_mcp_add            interactive picker
+#   a_c_mcp_add -l|--list  list the supported servers
+#   a_c_mcp_add -h|--help  show help
 
 # Colors for output
 GREEN='\033[0;32m'

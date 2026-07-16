@@ -1,0 +1,148 @@
+#!/bin/bash
+# a_c_mdnest_task_start: start a task from an mdNest note (instead of a Jira
+# ticket) and drop straight into a Claude session working on it, in one command.
+#
+# Exact sibling of a_c_jira_task_start: same thin wrapper over a_c_task_start
+# (worktree + task registry + launch Claude), the ONLY difference is the task
+# SOURCE. Jira front takes a ticket; this takes an mdNest note path. Everything
+# downstream (worktree, zellij, permission posture, idempotency) is identical.
+#
+# Layering (generic engine at the bottom, source-specific fronts on top):
+#   a_c_task_start           worktree + task registry + launch Claude   (generic engine)
+#     a_c_jira_task_start    a Jira ticket/URL     -> auto start + /aa-task-flow
+#     a_c_mdnest_task_start  an mdNest note path   -> auto start + read-the-note   (this)
+#     a_c_github_issue_fix   a GitHub issue URL    -> (future sibling)
+#
+#   a_c_mdnest_task_start <mdnest-path | mdnest://url> -r <repo> [feature] [options]
+#
+# An mdNest path does not identify the repo, so -r is REQUIRED (same as the Jira
+# front). The branch is named from the note's file name (a free-form task id),
+# plus the optional feature slug.
+#
+# Options:
+#   -r, --repo <repo>       REQUIRED. Repo name/path the task belongs to.
+#   -b, --base <branch>     base branch to fork from (else favors develop, then main)
+#   -z, --zellij <session>  open in this zellij session/tab. Precedence: this flag
+#                           > $A_C_TASK_ZELLIJ_SESSION env > none (current terminal).
+#   -p, --prompt <text>     kickoff message sent to Claude. Default: tell Claude to
+#                           read the note from mdnest and work through it. Override
+#                           to change how it starts.
+#   -y, --yolo              DANGEROUS: --dangerously-skip-permissions (no gating).
+#                           Default is acceptEdits (auto-accepts edits; still asks
+#                           before other commands).
+#       --fresh             recreate if the task already exists (default is
+#                           IDEMPOTENT: a repeat call resumes the existing task).
+#                           Refuses if the branch has unpushed commits.
+#   -n, --dry-run           print the a_c_task_start command that would run; no-op
+#   -h, --help              show this help
+#   -- <args>               forward everything after -- to the launched Claude
+#                           session (appended after the permission-mode flag),
+#                           e.g. -- --model opus
+#
+# How it layers: this front FETCHES the note (mdnest read) into a local temp file
+# and hands it to the generic a_c_task_start via --task-file. The engine stages
+# that file and kicks Claude off to read it and work through it. So the engine is
+# provider-agnostic (it just gets a file); only THIS front knows about mdnest.
+# The note content is snapshotted at start time (not re-read live).
+#
+# SECURITY: the note is your own personal content (trusted, lower risk than an
+# arbitrary PR), which is why the default auto-accepts edits. It is still data,
+# not instructions: -y removes all gating, so use it only when watching.
+#
+# Examples:
+#   a_c_mdnest_task_start @srv-ahsan-mini/mahsan_brain/Tasks/fix-login.md -r myrepo
+#   a_c_mdnest_task_start mdnest://@srv-ahsan-mini/mahsan_brain/Tasks/rate-limit.md -r my-service -z mytab -y
+#   a_c_mdnest_task_start @srv/brain/Tasks/x.md "retry logic" -r ustaad -p "read the note and start"
+
+set -u
+prog="${0##*/}"
+here="$(cd "$(dirname "$0")" && pwd)"
+TASK_START="$here/a_c_task_start"; [ -f "$TASK_START" ] || TASK_START="a_c_task_start"
+
+usage() { sed -n '2,56p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Session precedence: -z flag > $A_C_TASK_ZELLIJ_SESSION env > none.
+mpath=""; feature=""; base=""; repo=""; zellij="${A_C_TASK_ZELLIJ_SESSION:-}"; prompt=""; yolo=0; fresh=0; dry=0; passthrough=(); ddash=0
+while [ "$#" -gt 0 ]; do
+    if [ "$ddash" -eq 1 ]; then passthrough+=("$1"); shift; continue; fi
+    case "$1" in
+        -b|--base)    base="${2:-}"; shift ;;
+        -r|--repo)    repo="${2:-}"; shift ;;
+        -z|--zellij)  zellij="${2:-}"; shift ;;
+        -p|--prompt)  prompt="${2:-}"; shift ;;
+        -y|--yolo)    yolo=1 ;;
+        --fresh)      fresh=1 ;;
+        -n|--dry-run) dry=1 ;;
+        --)           ddash=1 ;;
+        -h|--help)    usage; exit 0 ;;
+        -*)           echo "$prog: unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *)            if [ -z "$mpath" ]; then mpath="$1"
+                      elif [ -z "$feature" ]; then feature="$1"
+                      else echo "$prog: unexpected argument: $1" >&2; exit 2; fi ;;
+    esac
+    shift
+done
+[ -n "$mpath" ] || { echo "$prog: need an mdNest note path (e.g. @srv/ns/dir/task.md)" >&2; usage >&2; exit 2; }
+[ -n "$repo" ]  || { echo "$prog: -r <repo> is required (an mdNest path doesn't say which repo the task belongs to)." >&2; usage >&2; exit 2; }
+
+# Normalize: drop a leading mdnest:// scheme; a pasted URL and a bare path map to
+# the same address (per the mdnest addressing rules).
+mpath="${mpath#mdnest://}"
+# The path is interpolated into a single-quoted kickoff below, so forbid a single
+# quote in it (mdnest paths never contain one).
+case "$mpath" in *\'*) echo "$prog: mdNest path must not contain a single quote" >&2; exit 2 ;; esac
+
+# TOP LAYER = fetch. Read the note content into a local temp file and hand THAT
+# to the generic engine via --task-file. The engine (bottom layer) never knows
+# this came from mdnest; it just stages the file and points Claude at it. Fetch
+# is skipped in dry-run so you can inspect the plan without a live note.
+content_file=""
+if [ "$dry" -eq 0 ]; then
+    command -v mdnest >/dev/null 2>&1 || { echo "$prog: mdnest CLI not found on PATH (needed to read the note)." >&2; exit 3; }
+    content_file="$(mktemp "${TMPDIR:-/tmp}/a_c_mdnest_task.XXXXXX")" || { echo "$prog: mktemp failed" >&2; exit 1; }
+    if ! mdnest read "$mpath" > "$content_file" 2>/dev/null || [ ! -s "$content_file" ]; then
+        echo "$prog: cannot read mdNest note '$mpath' (wrong path, empty, or mdnest not reachable). Check: mdnest read '$mpath'" >&2
+        rm -f "$content_file"; exit 4
+    fi
+else
+    content_file="<fetched-note>"   # dry-run placeholder so the plan shows it in place
+fi
+
+# Branch id = the note's file name, slugified, as a free-form (non-Jira) task id.
+# e.g. @srv/brain/Tasks/fix-login.md -> fix-login
+base_name="${mpath##*/}"; base_name="${base_name%.md}"
+task_id="$(printf '%s' "$base_name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+[ -n "$task_id" ] || { echo "$prog: could not derive a branch name from '$mpath'" >&2; exit 2; }
+
+# Compose the a_c_task_start invocation. BOTTOM layer gets the fetched note as
+# --task-file (it stages it + builds the read-and-do kickoff); -p, if you gave
+# one, overrides that kickoff. The engine only accepts a non-Jira branch id when
+# A_TASK_FREEFORM_TICKET=1, set on exec below.
+args=(-t "$task_id" -y -c)
+[ -n "$content_file" ] && args+=(--task-file "$content_file")
+[ -n "$prompt" ]       && args+=(-p "$prompt")
+[ -n "$repo" ]         && args+=(-r "$repo")
+[ -n "$feature" ]      && args+=(-f "$feature")
+[ -n "$base" ]         && args+=(-b "$base")
+[ -n "$zellij" ]       && args+=(-z "$zellij")
+[ "$fresh" -eq 1 ]     && args+=(--fresh)
+args+=(--)
+if [ "$yolo" -eq 1 ]; then
+    args+=(--dangerously-skip-permissions)
+else
+    args+=(--permission-mode acceptEdits)
+fi
+[ "${#passthrough[@]}" -gt 0 ] && args+=("${passthrough[@]}")
+
+if [ "$dry" -eq 1 ]; then
+    printf '%s: note "%s" -> branch id "%s"\n' "$prog" "$mpath" "$task_id"
+    printf '%s: would fetch the note to a temp file and run:\n  A_TASK_FREEFORM_TICKET=1 %s' "$prog" "$TASK_START"
+    printf ' %q' "${args[@]}"; printf '\n'
+    exit 0
+fi
+
+[ "$yolo" -eq 1 ] && echo "$prog: WARNING: -y launches Claude with --dangerously-skip-permissions (no approval prompts). Use only when watching the session." >&2
+
+# Exec the engine as a child (it exec's a_c_claude_remote which takes over the
+# terminal). A_TASK_FREEFORM_TICKET lets it name the branch from the note id.
+exec env A_TASK_FREEFORM_TICKET=1 bash "$TASK_START" "${args[@]}"

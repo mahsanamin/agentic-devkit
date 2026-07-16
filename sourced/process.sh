@@ -1,4 +1,8 @@
 #!/bin/bash
+#
+# process.sh - process utilities, sourced into the shell via generic.profile.
+# Defines: a_c_process_list, a_c_process_kill, a_c_process_kill_on_port, and
+# the a_c_restart_login alias.
 function a_c_process_list() {
     if [[ $1 != "" ]]; then
             processName="$1"
@@ -7,7 +11,6 @@ function a_c_process_list() {
             return 1
     fi
     ps aux | grep $processName
-    processName
 }
 
 function a_c_process_kill() {
@@ -31,7 +34,7 @@ function a_c_process_kill_on_port() {
   local port=$1
 
   if [[ -z $port ]]; then
-    echo "Usage: kill_process_on_port <port>"
+    echo "Usage: a_c_process_kill_on_port <port>"
     return 1
   fi
 
