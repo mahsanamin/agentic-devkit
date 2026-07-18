@@ -190,6 +190,58 @@ a_task_jira_summary() {
     printf '%s' "$summary"
 }
 
+# Fetch a Jira issue's type name (e.g. "Bug", "Story", "Task") for <key>, used to
+# choose the branch prefix. Same creds and behavior as a_task_jira_summary:
+# returns non-zero SILENTLY when unconfigured, offline, or not found, so the
+# caller falls back to the default prefix. Echoes the raw type name on success.
+a_task_jira_issuetype() {
+    local key="$1" base json itype
+    [ -n "$key" ] || return 1
+    [ -n "${A_JIRA_EMAIL:-}" ] && [ -n "${A_JIRA_TOKEN:-}" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+    base="${A_JIRA_BASE:-https://your-org.atlassian.net}"
+
+    json="$(printf 'user = "%s:%s"\n' "$A_JIRA_EMAIL" "$A_JIRA_TOKEN" \
+        | curl -fsS --max-time 8 -K - -H 'Accept: application/json' \
+            "$base/rest/api/3/issue/$key?fields=issuetype" 2>/dev/null)" || return 1
+    [ -n "$json" ] || return 1
+
+    itype=""
+    if command -v jq >/dev/null 2>&1; then
+        itype="$(printf '%s' "$json" | jq -r '.fields.issuetype.name // empty' 2>/dev/null)"
+    fi
+    if [ -z "$itype" ] && command -v python3 >/dev/null 2>&1; then
+        itype="$(printf '%s' "$json" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("fields",{}).get("issuetype",{}).get("name",""))' 2>/dev/null)"
+    fi
+    if [ -z "$itype" ]; then
+        itype="$(printf '%s' "$json" | sed -n 's/.*"issuetype"[^}]*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    fi
+    [ -n "$itype" ] || return 1
+    printf '%s' "$itype"
+}
+
+# Map a Jira issue-type name to a branch prefix. Bugs/defects/incidents get
+# "hotfix"; everything else (story, task, improvement, ...) gets "feature".
+# Empty or unknown input -> "feature". Case-insensitive.
+a_task_branch_type() {
+    local t; t="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$t" in
+        *bug*|*defect*|*incident*|*hotfix*|*fault*) printf 'hotfix' ;;
+        *)                                          printf 'feature' ;;
+    esac
+}
+
+# Compose a task branch name from a ticket id, a (possibly empty) feature slug,
+# and a branch type/prefix. Format: <prefix>/<lowercased-ticket>[-<slug>].
+#   a_task_branch_name US-1078 some-name feature -> feature/us-1078-some-name
+#   a_task_branch_name US-1078 ""        hotfix  -> hotfix/us-1078
+a_task_branch_name() {
+    local ticket="$1" slug="$2" prefix="${3:-feature}" lt
+    lt="$(printf '%s' "$ticket" | tr '[:upper:]' '[:lower:]')"
+    if [ -n "$slug" ]; then printf '%s/%s-%s' "$prefix" "$lt" "$slug"
+    else printf '%s/%s' "$prefix" "$lt"; fi
+}
+
 # ------------------------------------------------------ repo discovery ---
 
 # Echo up to <count> git-repo dirs directly under <base>, most-recently-ACTIVE

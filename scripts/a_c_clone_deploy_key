@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+#
+# a_c_clone_deploy_key
+# Set up a per-repo GitHub deploy key + SSH alias, then clone & configure a repo.
+# Works without `gh` installed. Each repo gets its own key (GitHub deploy keys
+# are one-repo-only), auto-selected via an SSH host alias.
+#
+# Usage:
+#   a_c_clone_deploy_key <repo-url> [git-user-name] [git-user-email]
+#
+# Examples:
+#   a_c_clone_deploy_key git@github.com:OWNER/private-repo.git
+#   a_c_clone_deploy_key git@github.com:org/repo.git "Ahsan Amin" "you@example.com"
+#   a_c_clone_deploy_key https://github.com/org/repo        # https form also accepted
+#   a_c_clone_deploy_key org/repo                           # bare owner/repo also accepted
+#
+# Identity: args 2 and 3 override. Otherwise falls back to your git global
+# user.name / user.email, then to the built-in defaults below.
+
+set -euo pipefail
+
+# ---- defaults (used only if not passed and not set in git global) ----------
+DEFAULT_NAME="Ahsan Amin"
+DEFAULT_EMAIL="you@example.com"
+
+# ---- colors ----------------------------------------------------------------
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; CYAN=$'\033[36m'; RESET=$'\033[0m'
+else
+  BOLD=""; GREEN=""; YELLOW=""; CYAN=""; RESET=""
+fi
+step() { printf '%s\n' "${BOLD}${CYAN}==> $*${RESET}"; }
+ok()   { printf '%s\n' "${GREEN}✓ $*${RESET}"; }
+warn() { printf '%s\n' "${YELLOW}! $*${RESET}"; }
+die()  { printf '%s\n' "${YELLOW}✗ $*${RESET}" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+${BOLD}a_c_clone_deploy_key${RESET} - clone a GitHub repo set up with its own deploy key.
+
+Creates a per-repo SSH deploy key, adds an SSH host alias so the key is
+auto-selected, guides you to register the key on GitHub (with write access),
+verifies auth, then clones and sets the local git identity. No 'gh' needed.
+
+${BOLD}Usage:${RESET}
+  a_c_clone_deploy_key <repo-url> [git-user-name] [git-user-email]
+
+${BOLD}Arguments:${RESET}
+  repo-url         git@github.com:ORG/REPO.git, https://github.com/ORG/REPO,
+                   or bare ORG/REPO
+  git-user-name    local git user.name  (default: git global, else "$DEFAULT_NAME")
+  git-user-email   local git user.email (default: git global, else "$DEFAULT_EMAIL")
+
+${BOLD}Examples:${RESET}
+  a_c_clone_deploy_key git@github.com:org/repo.git
+  a_c_clone_deploy_key https://github.com/org/repo "Ada Lovelace" "ada@example.com"
+  a_c_clone_deploy_key org/repo
+EOF
+}
+
+# ---- args ------------------------------------------------------------------
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") usage >&2; die "Missing <repo-url>." ;;
+esac
+RAW_URL="$1"
+
+# Identity: explicit arg -> git global -> built-in default.
+GIT_NAME="${2:-$(git config --global user.name  2>/dev/null || true)}"
+GIT_EMAIL="${3:-$(git config --global user.email 2>/dev/null || true)}"
+GIT_NAME="${GIT_NAME:-$DEFAULT_NAME}"
+GIT_EMAIL="${GIT_EMAIL:-$DEFAULT_EMAIL}"
+
+# ---- parse ORG/REPO from either SSH or HTTPS form --------------------------
+# Strip protocol, host, trailing slash, trailing .git  ->  ORG/REPO
+path="$RAW_URL"
+path="${path#git@*:}"                 # git@github.com:ORG/REPO.git -> ORG/REPO.git
+path="${path#ssh://git@github.com/}"  # ssh://git@github.com/ORG/REPO.git
+path="${path#https://github.com/}"    # https form
+path="${path#http://github.com/}"
+path="${path%/}"                      # drop a trailing slash
+path="${path%.git}"
+ORG="${path%%/*}"
+REPO="${path##*/}"
+[ -n "$ORG" ] && [ -n "$REPO" ] && [ "$ORG" != "$REPO" ] \
+  || die "Could not parse ORG/REPO from '$RAW_URL' (expected git@github.com:ORG/REPO.git or ORG/REPO)"
+
+# GitHub-only: the SSH alias below hardcodes HostName github.com, so a URL for
+# any other host would be silently misconfigured. Refuse it up front.
+case "$RAW_URL" in
+  *github.com*) ;;
+  http*://*|*@*:*|*://*)
+    die "Only github.com is supported (deploy keys + hardcoded HostName). Got: '$RAW_URL'" ;;
+  *) ;;  # bare ORG/REPO -> assumed github.com
+esac
+
+KEY="$HOME/.ssh/${REPO}_ed25519"
+ALIAS="${REPO}.github.com"
+SSH_CONFIG="$HOME/.ssh/config"
+CLONE_URL="git@${ALIAS}:${ORG}/${REPO}.git"
+
+printf '\n%s\n' "${BOLD}Deploy-key setup for ${ORG}/${REPO}${RESET}"
+printf '  key:   %s\n  alias: %s\n  clone: %s\n\n' "$KEY" "$ALIAS" "$CLONE_URL"
+
+# ---- 1. SSH key ------------------------------------------------------------
+step "Step 1/5  Create SSH key"
+mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+if [ -f "$KEY" ]; then
+  warn "Key already exists, reusing: $KEY"
+else
+  ssh-keygen -t ed25519 -f "$KEY" -N "" -C "deploy-key:${ORG}/${REPO}"
+  ok "Created $KEY"
+fi
+chmod 600 "$KEY"; chmod 644 "$KEY.pub"
+
+# ---- 2. SSH host alias -----------------------------------------------------
+step "Step 2/5  Configure SSH host alias"
+touch "$SSH_CONFIG"; chmod 600 "$SSH_CONFIG"
+if grep -q "^Host ${ALIAS}\$" "$SSH_CONFIG" 2>/dev/null; then
+  warn "Alias '${ALIAS}' already present in $SSH_CONFIG"
+else
+  # guarantee a newline before appending
+  [ -n "$(tail -c1 "$SSH_CONFIG" 2>/dev/null)" ] && printf '\n' >> "$SSH_CONFIG"
+  cat >> "$SSH_CONFIG" <<EOF
+
+# Deploy key: ${ORG}/${REPO}
+Host ${ALIAS}
+    HostName github.com
+    User git
+    IdentityFile ${KEY}
+    IdentitiesOnly yes
+EOF
+  ok "Added alias '${ALIAS}'"
+fi
+
+# ---- 3. Instruct user to add the key to GitHub -----------------------------
+step "Step 3/5  Add the deploy key to GitHub"
+cat <<EOF
+  1. Open: ${BOLD}https://github.com/${ORG}/${REPO}/settings/keys${RESET}
+  2. Click ${BOLD}Add deploy key${RESET}
+  3. Title: anything (e.g. "$(hostname -s 2>/dev/null || echo mac)")
+  4. Key:   paste the line below
+  5. ${BOLD}Check "Allow write access"${RESET}  (needed to push)
+
+$(cat "$KEY.pub")
+
+EOF
+printf '%s' "${BOLD}Press Enter once the key has been added on GitHub... ${RESET}"
+read -r _
+
+# ---- 4. Verify auth --------------------------------------------------------
+step "Step 4/5  Verify SSH authentication"
+attempt=1
+until ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -T "git@${ALIAS}" 2>&1 | grep -q "successfully authenticated"; do
+  warn "Not authenticated yet (attempt ${attempt})."
+  printf '%s' "Retry? [Y/n] "
+  read -r ans
+  case "$ans" in [Nn]*) die "Aborted before authentication succeeded.";; esac
+  attempt=$((attempt+1))
+done
+ok "Authenticated to GitHub as deploy key for ${ORG}/${REPO}"
+
+# ---- 5. Clone + configure --------------------------------------------------
+step "Step 5/5  Clone and configure"
+if [ -d "$REPO/.git" ]; then
+  warn "Directory '$REPO' already a git repo; skipping clone."
+else
+  git clone "$CLONE_URL"
+  ok "Cloned into ./$REPO"
+fi
+
+cd "$REPO"
+git config user.name  "$GIT_NAME"
+git config user.email "$GIT_EMAIL"
+ok "Set local identity: $(git config user.name) <$(git config user.email)>"
+
+printf '\n%s\n' "${GREEN}${BOLD}Done.${RESET} You can now commit and push frictionlessly from ./$REPO"
+printf '%s\n' "  Remote: $(git remote get-url origin)"

@@ -24,6 +24,11 @@ skills/**/opt-loop.log
 # Skill runtime state (watermarks, regenerated each run)
 skills/**/state/
 
+# Local-only maintenance skill: mirrors this public devkit from the private
+# source repo and records the sync watermark. Never published (it names the
+# private source paths/patterns by necessity, and the watermark is local state).
+skills/a_r_l_devkit_sync/
+
 # Tool runtime state + secrets
 tools/**/state/
 tools/**/config.env

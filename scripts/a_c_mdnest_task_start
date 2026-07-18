@@ -9,7 +9,7 @@
 #
 # Layering (generic engine at the bottom, source-specific fronts on top):
 #   a_c_task_start           worktree + task registry + launch Claude   (generic engine)
-#     a_c_jira_task_start    a Jira ticket/URL     -> auto start + /aa-task-flow
+#     a_c_jira_task_start    a Jira ticket/URL     -> auto start + /task-flow
 #     a_c_mdnest_task_start  an mdNest note path   -> auto start + read-the-note   (this)
 #     a_c_github_issue_fix   a GitHub issue URL    -> (future sibling)
 #

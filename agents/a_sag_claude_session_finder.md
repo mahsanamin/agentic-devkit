@@ -9,7 +9,7 @@ You find a Claude Code session on the local machine from a rough, human descript
 
 ## The one tool you use
 
-The heavy lifting is done by a local script, `a_c_claude_sessions` (from the my-workflow repo, on PATH). It scans every session transcript on disk (live and closed), reads only each file's head and tail so even large histories are cheap, ranks them against a query, marks which are still running, and prints the ready-to-run resume command for each. Do not grep the `.jsonl` files yourself; drive the script.
+The heavy lifting is done by a local script, `a_c_claude_sessions` (from the my_setup repo, on PATH). It scans every session transcript on disk (live and closed), reads only each file's head and tail so even large histories are cheap, ranks them against a query, marks which are still running, and prints the ready-to-run resume command for each. Do not grep the `.jsonl` files yourself; drive the script.
 
 Search:
 ```bash
@@ -24,7 +24,7 @@ Widen the scan past the newest 600 sessions when a match is not found:
 a_c_claude_sessions --find "<query>" --json --limit 0
 ```
 
-If the command is not found, fall back to running the script by its repo path: `python3 ~/.claude/scripts/a_c_claude_sessions ...` (it is a symlink into the my-workflow repo). If that also fails, say so plainly and stop; do not invent results.
+If the command is not found, fall back to running the script by its repo path: `python3 ~/.claude/scripts/a_c_claude_sessions ...` (it is a symlink into the my_setup repo). If that also fails, say so plainly and stop; do not invent results.
 
 ## How you work
 
@@ -50,11 +50,11 @@ Keep it short and immediately actionable. For each session you present:
 Example:
 
 ```
-Best match: "Create Docker cleanup script" in my-workflow (main), last active 24m ago, closed.
+Best match: "Create Docker cleanup script" in my_setup (main), last active 24m ago, closed.
 
 Resume it with:
 ```bash
-(cd "$HOME/repos/my-workflow" && claude --resume 521169cc-1de1-45a3-b8b9-f2fd35d582c0)
+(cd "$HOME/repos/my_setup" && claude --resume 521169cc-1de1-45a3-b8b9-f2fd35d582c0)
 ```
 ```
 

@@ -5,9 +5,13 @@
 #    then the most-recently-worked-in repos under $a_dir_w_repos (cd_w) ranked
 #    by last commit; or type a name / full path.
 # 2. Give a Jira ticket (PROJ-123, 123 -> PROJ-123, or paste a Jira browse URL) and
-#    a short feature name; the branch becomes  <TICKET>-<feature-slug>  e.g.
-#    PROJ-123-add-login-page. When A_JIRA_EMAIL/A_JIRA_TOKEN are set (see
-#    docs/task.md) the ticket title is fetched to pre-fill the feature name.
+#    optionally a short feature name; the branch becomes
+#    <prefix>/<lowercased-ticket>-<feature-slug>  e.g. feature/proj-123-add-login-page,
+#    or hotfix/proj-123-... for a bug ticket. The prefix is "hotfix" for
+#    bug/defect/incident issue types and "feature" otherwise (override with
+#    A_TASK_BRANCH_TYPE=feature|hotfix). When A_JIRA_EMAIL/A_JIRA_TOKEN are set
+#    (see docs/task.md) the ticket title pre-fills the feature slug and the issue
+#    type picks the prefix; offline it falls back to feature/ and a ticket-only slug.
 # 3. Create a git worktree for that branch via this repo's helper
 #    a_g_worktree_init (forked off --base when given), then cd into it.
 # 4. Register the task so a_c_task_resume / list / finish can find it.
@@ -79,10 +83,10 @@
 #   a_c_task_start -r myrepo -t 942 -f "list filter" -b main -z work -c
 
 # Locate this repo's scripts. Prefer A_C_WORKFLOW_DIR (set when the work repo is
-# loaded alongside another my-workflow checkout); fall back to MY_WORKFLOW_DIR.
+# loaded alongside another my_setup checkout); fall back to MY_WORKFLOW_DIR.
 A_C_TASK_BASE="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
 if [ -z "$A_C_TASK_BASE" ]; then
-    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the my-workflow repo."
+    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the my_setup repo."
     return 1 2>/dev/null || exit 1
 fi
 . "$A_C_TASK_BASE/scripts/a_s_task_common.sh"
@@ -185,11 +189,21 @@ _a_c_task_start_main() {
         fi
     fi
     slug="$(a_task_slug "$feat")"
-    if [ -z "$slug" ]; then
-        echo -e "${A_T_YELLOW}No feature name given; using the ticket alone as the branch.${A_T_NC}"
-        branch="$ticket"
+    # Branch naming: <prefix>/<lowercased-ticket>[-<slug>], where the prefix is
+    # "hotfix" for bug/defect tickets and "feature" for everything else. The type
+    # comes from the Jira issue type when creds are available and falls back to
+    # "feature" when it can't be fetched (offline / no creds / freeform id).
+    # Override explicitly with A_TASK_BRANCH_TYPE=feature|hotfix.
+    local itype btype
+    if [ -n "${A_TASK_BRANCH_TYPE:-}" ]; then
+        btype="$A_TASK_BRANCH_TYPE"
     else
-        branch="${ticket}-${slug}"
+        itype="$(a_task_jira_issuetype "$ticket" 2>/dev/null)"
+        btype="$(a_task_branch_type "$itype")"
+    fi
+    branch="$(a_task_branch_name "$ticket" "$slug" "$btype")"
+    if [ -z "$slug" ]; then
+        echo -e "${A_T_YELLOW}No feature name given; branch is ticket-only:${A_T_NC} $branch"
     fi
 
     # 4. create the worktree via a_g_worktree_init ---------------------------
@@ -363,7 +377,7 @@ _a_c_task_start_main() {
             printf '%s\n' "$task_text_arg" > "$desc" 2>/dev/null
         fi
         if [ -z "$prompt_arg" ] && [ -s "$desc" ]; then
-            prompt_arg="Your task is described in the file ${desc}. Read it first (it is the source of truth for scope and Done-when), then understand the relevant code, plan the change, confirm the plan with me, and implement it. If this repo has the /aa-task-flow skill, follow its phases."
+            prompt_arg="Your task is described in the file ${desc}. Read it first (it is the source of truth for scope and Done-when), then understand the relevant code, plan the change, confirm the plan with me, and implement it. If this repo has the /task-flow skill, follow its phases."
             claude_flag=1
         fi
     fi
