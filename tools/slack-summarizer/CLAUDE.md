@@ -102,11 +102,13 @@ Tell the user to run `crontab -e` and paste these 5 lines. Replace the path with
 
 ```
 */10 8-20 * * * /absolute/path/to/slack-summarizer/cron_runner.sh >> ~/.slack_summaries_data/cron.log 2>&1
-0 9 * * * /absolute/path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
-0 13 * * * /absolute/path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
-0 18 * * * /absolute/path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
+0 9 * * * /absolute/path/to/slack-summarizer/summarizer createReport >> ~/.slack_summaries_data/cron.log 2>&1
+0 13 * * * /absolute/path/to/slack-summarizer/summarizer createReport >> ~/.slack_summaries_data/cron.log 2>&1
+0 18 * * * /absolute/path/to/slack-summarizer/summarizer createReport >> ~/.slack_summaries_data/cron.log 2>&1
 0 23 * * * /absolute/path/to/slack-summarizer/summarizer consolidate --delete-old >> ~/.slack_summaries_data/cron.log 2>&1
 ```
+
+The three `createReport` lines post a fresh briefing DM at 9am, 1pm, and 6pm (three real pings a day at natural checkpoints). The every-10-min poller keeps a single rolling DM updated in place between those. Add `--no-send` to a report line if you want it to write the report file without DMing.
 
 After they save, verify with `crontab -l`.
 

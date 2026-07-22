@@ -38,7 +38,7 @@ Review GitHub PRs safely in an **isolated worktree** so the review never touches
 
 ## Worktree helpers (the real commands)
 
-This skill uses this repo's worktree helpers (`a_g_worktree_*`, on PATH once the shell profile is loaded, or run by path as `bash "$MY_WORKFLOW_DIR/scripts/a_g_worktree_<verb>"`). From Claude Code's non-interactive Bash, invoke the scripts directly (the shell-function auto-`cd` does not persist across separate Bash calls, so always `cd` into the printed worktree path yourself):
+This skill uses the worktree helpers. From Claude Code's non-interactive Bash, invoke the scripts directly (the shell-function auto-`cd` does not persist across separate Bash calls, so always `cd` into the printed worktree path yourself):
 
 - **Create (the right primitive for PRs):** `a_g_worktree_review <N>` — looks the PR up via `gh`, fetches its head, and creates a worktree on a local branch **`review-pr-<N>`** at `…/WorkTrees/<project>/review-pr-<N>`. Use this, not `a_g_worktree_init` (that one is for starting your own branch and prompts for a base).
 - **Already exists? Delete and recreate.** If `a_g_worktree_review <N>` reports the `review-pr-<N>` worktree/branch already exists, remove it (`a_g_worktree_remove review-pr-<N> --force`) and run `a_g_worktree_review <N>` again. This is the easy, deterministic path: a fresh checkout always reflects the latest PR head. (It only ever deletes a `review-pr-<N>` worktree, never your working tree.)
@@ -61,7 +61,8 @@ For each PR number `N`:
 5. **Post (mode-dependent).**
    - `post=draft`: post nothing. Record the draft path and what it contained.
    - `post=auto`: from the draft, take the comments marked **Action: Post** whose type is Bug/Error, Security, Missing, or a correctness-affecting Question. Run the self-verify + dedup guard (Auto-post policy). Post the survivors as one batch review on PR `N` via `/review-pr`'s own posting step (`gh api repos/{owner}/{repo}/pulls/<N>/reviews`). Then **verify** they landed (see Target). A clean PR with zero bar-clearing comments posts nothing — that is success, not failure.
-6. **Tear down (only if `cleanup` and only what this run created).** Once the review (and any posting) for `N` is complete and its output is captured, remove the review worktree: `a_g_worktree_remove review-pr-<N> --force`. See Teardown safety.
+6. **Approve when clean (`post=auto` only).** Apply the **Auto-approve policy**: if nothing cleared the bar, there is no open question, all automated reviews (CodeRabbit, SonarQube) and required checks are finished and green, and confidence is high — `gh pr review <N> --approve` and verify it landed. If any of those fail, do not approve; stop and report why. `post=draft` never approves.
+7. **Tear down (only if `cleanup` and only what this run created).** Once the review (and any posting) for `N` is complete and its output is captured, remove the review worktree: `a_g_worktree_remove review-pr-<N> --force`. See Teardown safety.
 
 ## Auto-post policy (`post=auto`)
 
@@ -74,6 +75,18 @@ Post a drafted comment ONLY if it is marked **Action: Post** by the review and i
 NEVER auto-post: praise, style nits, "consider X", trade-off / internal notes, or anything the author doesn't need to act on. Those stay in the draft file.
 
 **Self-verify guard before each post (cheap, keeps false positives off the PR):** confirm the concrete code path the comment claims, confirm it's NEW code (not pre-existing/unchanged), and dedup against the PR's existing comments (`gh api repos/{owner}/{repo}/pulls/<N>/comments` + `.../issues/<N>/comments`) so you never repost something already there. Drop any candidate that fails the guard; note it in the report rather than posting a shaky comment.
+
+## Auto-approve policy (`post=auto`)
+
+After the post step, decide whether to **approve** the PR. Approve **only when ALL** of the following hold; if any one fails, do **not** approve — post any bar-clearing comments as usual and **stop**, leaving the call to a human and saying why in the report.
+
+1. **Nothing to raise.** This review posted **zero** bar-clearing comments (no Bug/Error, Security, or Missing), you have **no open correctness-affecting Question**, and there is **no unresolved question or blocking thread from another reviewer** on the PR. A prior review whose only point was a nit that a later commit already fixed does **not** block (verify the fix is actually in the current head).
+2. **No automated review pending or unhappy.** Check `gh pr checks <N>`: CodeRabbit has **finished** (not "review in progress") and is not requesting changes; SonarQube's quality gate (if the repo runs one) has **completed and passed**; and required CI checks are **green** (none pending or red). If any required check is still running or failing, do **not** approve — stop and report it.
+3. **Confidence is high.** The change is small/clear enough that you verified it end to end and have no material doubt.
+
+When all three hold, approve via `gh pr review <N> --approve --body "<one short paragraph: what you statically verified + that checks are green>"`, then **verify it landed** (`gh pr view <N> --json reviews`). Approving is fine even when the PR still shows `reviewDecision: REVIEW_REQUIRED` — that means a specific CODEOWNERS/required approver is separate from you; your approval is still recorded. Note the approval (or why you held off) in the report.
+
+**Never** auto-`REQUEST_CHANGES` and **never** auto-merge. `post=draft` never approves (it is a dry run). This approval authority rides on the same standing intent as `post=auto`: the caller opted into acting on the PR without a per-task gate.
 
 ## Teardown safety (the one hard rule)
 
@@ -91,6 +104,7 @@ For each PR `N`:
 2. **Posting matches the mode:**
    - `post=draft`: nothing posted; the draft path is reported. ✓
    - `post=auto`: **every** comment that cleared the bar was actually posted. **Verify, do not assume:** after posting, re-fetch `gh api repos/{owner}/{repo}/pulls/<N>/comments` and confirm each intended comment is present. Report the posted count. If a qualifying comment failed to post (API error, etc.), retry once; if it still fails, the target is **NOT met** for that PR — say so explicitly with the unposted comment(s). Never silently drop a bar-clearing comment.
+   - **Approval (`post=auto`):** if the Auto-approve policy's conditions were all met, the PR was approved and the approval was verified present (`gh pr view <N> --json reviews`); if any condition failed, no approval was made and the report says which condition held it back. State which path was taken.
 3. **No collateral:** the worktree was torn down (if `cleanup`), and the **main checkout is untouched** (same branch/HEAD it started on). Confirm and state this.
 
 If any PR's target is not met, the run is not done: surface exactly which PR and which sub-check failed. A PR with zero bar-clearing comments meets the target with zero posts — that is success.

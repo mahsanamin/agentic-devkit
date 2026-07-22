@@ -6,6 +6,7 @@ Exit code 0 regardless (no new messages is not an error).
 """
 import json, os, sys
 from lib import load_config, proxy_get, log, ensure_dirs, today, now_ts
+from proxy_alert import notify_down, notify_recovered
 
 def main():
     cfg = load_config()
@@ -44,7 +45,17 @@ def main():
     if not any(r.get("success") for r in (mentions_resp, threads_resp, my_threads_resp)):
         err = mentions_resp.get("error", "unknown error")
         log(f"ERROR: proxy unreachable at {cfg['proxy_url']} ({err})", "poll")
+        try:
+            notify_down(err, cfg)
+        except Exception as e:
+            log(f"WARNING: could not send proxy-down alert: {e}", "poll")
         sys.exit(1)
+
+    # Proxy answered — if a prior outage alert is standing, clear it.
+    try:
+        notify_recovered(cfg)
+    except Exception as e:
+        log(f"WARNING: could not clear proxy-down alert: {e}", "poll")
 
     # Merge my-threads, dedup
     seen = {(t.get("thread_ts", ""), t.get("channel_id", "")) for t in threads}

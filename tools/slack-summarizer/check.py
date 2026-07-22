@@ -102,16 +102,24 @@ def main():
     if claude_path:
         ok(f"claude found at {claude_path}")
         token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+        creds_file = os.path.expanduser("~/.claude/.credentials.json")
         if token:
             ok("Auth token available")
+        elif os.path.isfile(creds_file) and os.path.getsize(creds_file) > 0:
+            # Claude Code stores its login here (mode 600). This is the primary
+            # store on current versions; the Keychain entries below are a fallback.
+            ok("Auth credentials found (~/.claude/.credentials.json)")
         else:
+            # Keychain service names are now per-profile suffixed
+            # (e.g. "Claude Code-credentials-9f3692cc"), so match by prefix
+            # rather than the old bare "Claude Code-credentials".
             try:
-                result = subprocess.run(
-                    ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-                    capture_output=True, text=True, timeout=5
+                dump = subprocess.run(
+                    ["security", "dump-keychain"],
+                    capture_output=True, text=True, timeout=10
                 )
-                if result.returncode == 0 and result.stdout.strip():
-                    ok("Auth token extractable from Keychain")
+                if dump.returncode == 0 and "Claude Code-credentials" in dump.stdout:
+                    ok("Auth token found in Keychain")
                 else:
                     fail("No auth token — run: claude /login")
             except Exception:

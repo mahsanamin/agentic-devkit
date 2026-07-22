@@ -55,10 +55,13 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
@@ -98,17 +101,36 @@ def _is_real_claude(cmd):
 
 
 def _cwd_of(pid):
+    return _cwds_of([pid]).get(int(pid))
+
+
+def _cwds_of(pids):
+    """Working directory of many pids in ONE lsof call (per-pid calls were the
+    slow part that wedged the single request)."""
+    res = {}
+    pids = [str(p) for p in pids]
+    if not pids:
+        return res
     try:
         out = subprocess.run(
-            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
-            capture_output=True, text=True, timeout=8,
+            ["lsof", "-a", "-d", "cwd", "-Fpn", "-p", ",".join(pids)],
+            capture_output=True, text=True, timeout=20,
         ).stdout
     except Exception:
-        return None
+        return res
+    cur = None
     for line in out.splitlines():
-        if line.startswith("n"):
-            return line[1:]
-    return None
+        if not line:
+            continue
+        tag, val = line[0], line[1:]
+        if tag == "p":
+            try:
+                cur = int(val)
+            except ValueError:
+                cur = None
+        elif tag == "n" and cur is not None:
+            res.setdefault(cur, val)
+    return res
 
 
 def _parse_argv(cmd):
@@ -175,9 +197,10 @@ def collect_processes():
         p = {"pid": int(pid), "etime": etime, "cpu": cpu, "cmd": cmd}
         p.update(_parse_argv(cmd))
         procs.append(p)
-    # Resolve cwd for each (this is the slow part; a handful of lsof calls).
+    # Resolve every cwd in ONE lsof call (per-pid calls were the slow part).
+    cwds = _cwds_of([p["pid"] for p in procs])
     for p in procs:
-        p["cwd"] = _cwd_of(p["pid"])
+        p["cwd"] = cwds.get(p["pid"])
     return procs
 
 
@@ -675,7 +698,8 @@ def render_json(records):
             "transcript": m.get("file"),
             "resume_command": _resume_cmd(m),
         })
-    return json.dumps({"generated": _now_str(), "count": len(out), "sessions": out}, indent=2)
+    return json.dumps({"generated": _now_str(), "count": len(out),
+                       "kill_enabled": _ALLOW_KILL, "sessions": out}, indent=2)
 
 
 def render_search_markdown(records, query, limit, shown=12):
@@ -757,6 +781,8 @@ _WEB_PAGE = r"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Claude Sessions</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3QgeD0iMSIgeT0iMSIgd2lkdGg9IjMwIiBoZWlnaHQ9IjMwIiByeD0iNyIgZmlsbD0iIzBkMTExNyIgc3Ryb2tlPSIjMzAzNjNkIiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOSAxMCBMMTUgMTYgTDkgMjIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzU4YTZmZiIgc3Ryb2tlLXdpZHRoPSIyLjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxyZWN0IHg9IjE3IiB5PSIyMCIgd2lkdGg9IjgiIGhlaWdodD0iMi42IiByeD0iMS4zIiBmaWxsPSIjN2VlNzg3Ii8+PGNpcmNsZSBjeD0iMjQuNSIgY3k9IjguNSIgcj0iMyIgZmlsbD0iIzFmN2EzYSIgc3Ryb2tlPSIjN2VlNzg3IiBzdHJva2Utd2lkdGg9IjEiLz48L3N2Zz4=">
+<link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3QgeD0iMSIgeT0iMSIgd2lkdGg9IjMwIiBoZWlnaHQ9IjMwIiByeD0iNyIgZmlsbD0iIzBkMTExNyIgc3Ryb2tlPSIjMzAzNjNkIiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOSAxMCBMMTUgMTYgTDkgMjIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzU4YTZmZiIgc3Ryb2tlLXdpZHRoPSIyLjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxyZWN0IHg9IjE3IiB5PSIyMCIgd2lkdGg9IjgiIGhlaWdodD0iMi42IiByeD0iMS4zIiBmaWxsPSIjN2VlNzg3Ii8+PGNpcmNsZSBjeD0iMjQuNSIgY3k9IjguNSIgcj0iMyIgZmlsbD0iIzFmN2EzYSIgc3Ryb2tlPSIjN2VlNzg3IiBzdHJva2Utd2lkdGg9IjEiLz48L3N2Zz4=">
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
@@ -801,6 +827,13 @@ tr.detail>td{background:#0b1017;border-bottom:2px solid #30363d;padding:0}
 button.copy{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
    padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap}
 button.copy:hover{background:#30363d}
+button.kill{background:#21262d;color:#f0883e;border:1px solid #6b3410;border-radius:6px;
+   padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;margin-right:8px}
+button.kill:hover{background:#5a2d0c;color:#ffd7b5}
+button.kill.force{color:#ff7b72;border-color:#8b1a12}
+button.kill.force:hover{background:#7f1414;color:#fff}
+button.kill:disabled{opacity:.5;cursor:default}
+.killnote{color:#6e7681;font-size:11px;align-self:center}
 .empty{color:#6e7681;padding:30px 14px}
 </style></head><body>
 <header>
@@ -820,6 +853,7 @@ button.copy:hover{background:#30363d}
 var REFRESH = __REFRESH_SECS__ * 1000;
 var DATA = [];
 var OPEN = {};   // session ids (or pid keys) currently expanded
+var KILL_ENABLED = false;
 function esc(s){ s = (s==null?'':String(s));
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function key(s){ return s.session_id || ('pids:'+(s.pids||[]).join(',')); }
@@ -850,7 +884,16 @@ function detailHTML(s){
       +'<code id="cmd_'+esc(key(s))+'">'+esc(cmd)+'</code>'
       +'<button class="copy" data-copy="'+esc(cmd)+'">Copy</button></div></div></div>'
     : '<div class="drow"><div class="dk">Restore</div><div class="dv">no session id captured yet</div></div>';
-  return '<div class="dgrid">'+rows.join('')+cmdHTML+'</div>';
+  var killHTML = '';
+  if(KILL_ENABLED){
+    var nm = esc(s.name)+' ('+esc(s.session_id||('pids '+(s.pids||[]).join(','))) + ')';
+    killHTML = '<div class="drow"><div class="dk">Danger</div><div class="dv"><div class="cmd">'
+      +'<button class="kill" data-kill="'+esc(key(s))+'" data-name="'+nm+'">End session (SIGTERM)</button>'
+      +'<button class="kill force" data-kill="'+esc(key(s))+'" data-force="1" data-name="'+nm+'">Force kill (SIGKILL)</button>'
+      +'<span class="killnote">signals PID(s) '+esc((s.pids||[]).join(', '))+'</span>'
+      +'</div></div></div>';
+  }
+  return '<div class="dgrid">'+rows.join('')+cmdHTML+killHTML+'</div>';
 }
 function render(){
   var q = document.getElementById('q').value.trim();
@@ -877,6 +920,7 @@ function render(){
 function refresh(){
   fetch('/json',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
     DATA = d.sessions||[];
+    KILL_ENABLED = !!d.kill_enabled;
     var a = DATA.filter(function(s){return s.active_now;}).length;
     document.getElementById('sub').innerHTML = 'Updated '+esc(d.generated)
       + ' <span class="pill g">'+a+' working</span>'
@@ -885,8 +929,31 @@ function refresh(){
     render();
   }).catch(function(){ document.getElementById('sub').textContent='(refresh failed, retrying…)'; });
 }
+function killSession(btn){
+  var k = btn.getAttribute('data-kill');
+  var force = btn.getAttribute('data-force')==='1';
+  var nm = btn.getAttribute('data-name')||'this session';
+  var msg = (force?'FORCE KILL (SIGKILL)':'End (SIGTERM)')+' '+nm+'?\n\n'
+    +'This signals the running claude process. Unsaved work in that session may be lost.';
+  if(!window.confirm(msg)) return;
+  btn.disabled = true; var old = btn.textContent; btn.textContent = 'Killing…';
+  fetch('/kill',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key:k,force:force})})
+    .then(function(r){return r.json();})
+    .then(function(res){
+      if(!res.ok){ alert('Kill failed: '+(res.error||'unknown')); btn.disabled=false; btn.textContent=old; return; }
+      var killed = (res.killed||[]).length, skip = (res.skipped||[]).length;
+      OPEN[k] = false;
+      setTimeout(refresh, 400);
+      if(!killed){ alert('Nothing killed ('+res.signal+'). '+
+        ((res.skipped||[]).map(function(x){return x.pid+': '+x.reason;}).join('; ')||'')); }
+    })
+    .catch(function(){ alert('Kill request failed to reach the server.'); btn.disabled=false; btn.textContent=old; });
+}
 document.getElementById('q').addEventListener('input', render);
 document.getElementById('rows').addEventListener('click', function(e){
+  var kb = e.target.closest('button.kill');
+  if(kb){ e.stopPropagation(); killSession(kb); return; }
   var btn = e.target.closest('button.copy');
   if(btn){ e.stopPropagation();
     navigator.clipboard.writeText(btn.getAttribute('data-copy')).then(function(){
@@ -968,28 +1035,171 @@ def _tailscale_ip():
     return None
 
 
-def serve(host, port, refresh):
-    from http.server import BaseHTTPRequestHandler, HTTPServer
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect x="1" y="1" width="30" height="30" rx="7" fill="#0d1117" stroke="#30363d" stroke-width="2"/>'
+    '<path d="M9 10 L15 16 L9 22" fill="none" stroke="#58a6ff" stroke-width="2.6" '
+    'stroke-linecap="round" stroke-linejoin="round"/>'
+    '<rect x="17" y="20" width="8" height="2.6" rx="1.3" fill="#7ee787"/>'
+    '<circle cx="24.5" cy="8.5" r="3" fill="#1f7a3a" stroke="#7ee787" stroke-width="1"/>'
+    '</svg>'
+).encode()
+
+_JSON_CACHE = {"t": 0.0, "body": None}
+_JSON_LOCK = threading.Lock()
+_ALLOW_KILL = False
+
+
+def _cmd_of_pid(pid):
+    try:
+        return subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return None
+
+
+def _kill_session(key, force=False):
+    """Signal the claude process(es) for a session. Safe: re-validates each pid is
+    a live claude CLI process RIGHT NOW before signaling, and never touches this
+    server's own process. `key` is a session id or a 'pids:1,2,3' key."""
+    records = build_sessions()
+    target = None
+    for r in records:
+        sid = r["meta"].get("session_id")
+        rkey = sid or ("pids:" + ",".join(str(p["pid"]) for p in r["procs"]))
+        if key == sid or key == rkey:
+            target = r
+            break
+    if target is None:
+        return {"ok": False, "error": "session not found (it may have already exited)"}
+
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    me = os.getpid()
+    killed, skipped = [], []
+    for p in target["procs"]:
+        pid = p["pid"]
+        if pid == me:
+            skipped.append({"pid": pid, "reason": "this is the dashboard server"})
+            continue
+        cmd = _cmd_of_pid(pid)
+        if not cmd:
+            skipped.append({"pid": pid, "reason": "already exited"})
+            continue
+        if not _is_real_claude(cmd):
+            skipped.append({"pid": pid, "reason": "not a claude process (pid reused) - refused"})
+            continue
+        try:
+            os.kill(pid, sig)
+            killed.append(pid)
+        except ProcessLookupError:
+            skipped.append({"pid": pid, "reason": "already exited"})
+        except PermissionError:
+            skipped.append({"pid": pid, "reason": "permission denied"})
+    # Make the next /json reflect the kill immediately.
+    with _JSON_LOCK:
+        _JSON_CACHE["body"] = None
+    return {"ok": True, "signal": "SIGKILL" if force else "SIGTERM",
+            "killed": killed, "skipped": skipped}
+
+
+def _json_feed(ttl=4):
+    """Cached JSON so rapid auto-refresh hits don't each trigger a full scan."""
+    now = time.monotonic()
+    with _JSON_LOCK:
+        if _JSON_CACHE["body"] is not None and (now - _JSON_CACHE["t"]) < ttl:
+            return _JSON_CACHE["body"]
+        body = render_json(build_sessions()).encode()
+        _JSON_CACHE.update(t=now, body=body)
+        return body
+
+
+def serve(host, port, refresh, allow_kill=False):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
         def log_message(self, *a):
             pass
 
         def do_GET(self):
-            if self.path.rstrip("/") in ("/json", "/api"):
-                body = render_json(build_sessions()).encode()
-                ctype = "application/json"
-            else:
-                body = render_html(refresh).encode()
-                ctype = "text/html; charset=utf-8"
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
+            try:
+                path = self.path.split("?", 1)[0].rstrip("/")
+                if path in ("/json", "/api"):
+                    body = _json_feed()
+                    ctype = "application/json"
+                elif path in ("/favicon.ico", "/favicon.svg", "/favicon"):
+                    body = _FAVICON_SVG
+                    ctype = "image/svg+xml"
+                else:
+                    body = render_html(refresh).encode()
+                    ctype = "text/html; charset=utf-8"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def _reply(self, code, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
+        def do_POST(self):
+            try:
+                path = self.path.split("?", 1)[0].rstrip("/")
+                if path != "/kill":
+                    self._reply(404, {"ok": False, "error": "not found"})
+                    return
+                if not _ALLOW_KILL:
+                    self._reply(403, {"ok": False,
+                        "error": "kill is disabled; start the server with --allow-kill"})
+                    return
+                # CSRF defenses. (1) Require application/json: a cross-origin fetch
+                # with this content-type triggers a CORS preflight the attacker's
+                # page can't satisfy, and a form/"simple request" POST can't set it.
+                ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                if ctype != "application/json":
+                    self._reply(415, {"ok": False,
+                        "error": "Content-Type must be application/json"})
+                    return
+                # (2) If an Origin/Referer is present, it must match our own host.
+                origin = self.headers.get("Origin") or self.headers.get("Referer", "")
+                if origin:
+                    host = self.headers.get("Host", "")
+                    if urlparse(origin).netloc != host:
+                        self._reply(403, {"ok": False,
+                            "error": "cross-origin request refused"})
+                        return
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b"{}"
+                try:
+                    data = json.loads(raw or b"{}")
+                except ValueError:
+                    data = {}
+                key = data.get("key")
+                if not key:
+                    self._reply(400, {"ok": False, "error": "missing 'key'"})
+                    return
+                self._reply(200, _kill_session(key, force=bool(data.get("force"))))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as e:  # never crash the server on a bad request
+                try:
+                    self._reply(500, {"ok": False, "error": str(e)})
+                except Exception:
+                    pass
+
+    global _ALLOW_KILL
+    _ALLOW_KILL = bool(allow_kill)
     try:
-        httpd = HTTPServer((host, port), Handler)
+        httpd = ThreadingHTTPServer((host, port), Handler)
+        httpd.daemon_threads = True
     except OSError as e:
         print(f"error: cannot bind {host}:{port} -> {e}", file=sys.stderr)
         if host not in ("127.0.0.1", "0.0.0.0", "localhost"):
@@ -1003,6 +1213,7 @@ def serve(host, port, refresh):
     print(f"Claude sessions dashboard at http://{shown}:{port}  (Ctrl-C to stop)", flush=True)
     print(f"  JSON feed at http://{shown}:{port}/json", flush=True)
     print(f"  bound to {host}:{port} - reachable from {scope}", flush=True)
+    print(f"  kill endpoint: {'ENABLED (POST /kill)' if _ALLOW_KILL else 'disabled'}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -1015,7 +1226,7 @@ def serve(host, port, refresh):
 LAUNCH_AGENTS_DIR = os.path.join(HOME, "Library", "LaunchAgents")
 
 
-def _agent_spec(kind, port):
+def _agent_spec(kind, port, allow_kill=False):
     """(label, ProgramArguments, keepalive, start_interval, logfile) for a kind."""
     script = os.path.realpath(__file__)
     logs = os.path.join(HOME, "Library", "Logs")
@@ -1023,9 +1234,12 @@ def _agent_spec(kind, port):
     # set below resolve python), so a later python upgrade does not strand a
     # pinned interpreter path.
     if kind == "web":
+        args = [script, "--serve", str(port), "--tailscale"]
+        if allow_kill:
+            args.append("--allow-kill")
         return (
             "com.ahsan.claude-sessions-web",
-            [script, "--serve", str(port), "--tailscale"],
+            args,
             True, None,
             os.path.join(logs, "a_c_claude_sessions_web.launchd.log"),
         )
@@ -1091,8 +1305,8 @@ def _plist_xml(label, args, keepalive, start_interval, logfile):
 """
 
 
-def install_agent(kind, port=8787):
-    label, args, keepalive, interval, logfile = _agent_spec(kind, port)
+def install_agent(kind, port=8787, allow_kill=False):
+    label, args, keepalive, interval, logfile = _agent_spec(kind, port, allow_kill)
     if kind == "web" and not _tailscale_ip():
         print("warning: no Tailscale IP detected on this machine yet. The agent will "
               "keep retrying until Tailscale is up. Start Tailscale, or use "
@@ -1115,6 +1329,7 @@ def install_agent(kind, port=8787):
         ip = _tailscale_ip()
         where = f"http://{ip}:{port}" if ip else f"(tailnet IP):{port}"
         print(f"  serving on {where}  (tailnet only; JSON at /json)")
+        print(f"  kill endpoint: {'ENABLED' if allow_kill else 'disabled'}")
     else:
         print(f"  refreshing {DEFAULT_MDNEST_PATH} every {interval//60} min")
     return True
@@ -1158,6 +1373,9 @@ def main():
                          "give a tailnet IP to expose on Tailscale, or 0.0.0.0 for all)")
     ap.add_argument("--tailscale", action="store_true",
                     help="bind --serve to this machine's Tailscale IP (auto-detected)")
+    ap.add_argument("--allow-kill", action="store_true",
+                    help="enable the POST /kill endpoint + the web Kill buttons "
+                         "(off by default; anyone who can reach the page can then end sessions)")
     ap.add_argument("--find", metavar="QUERY",
                     help="search ALL sessions on disk (live + closed) and print the "
                          "resume command for each match, best/newest first")
@@ -1171,7 +1389,7 @@ def main():
     args = ap.parse_args()
 
     if args.install_web_agent is not None:
-        sys.exit(0 if install_agent("web", args.install_web_agent) else 1)
+        sys.exit(0 if install_agent("web", args.install_web_agent, allow_kill=args.allow_kill) else 1)
     if args.install_mdnest_agent:
         sys.exit(0 if install_agent("mdnest") else 1)
     if args.uninstall_web_agent:
@@ -1187,7 +1405,7 @@ def main():
                 print("error: could not detect a Tailscale IP on this machine "
                       "(is Tailscale up? try `tailscale ip -4`)", file=sys.stderr)
                 sys.exit(1)
-        serve(host, args.serve, args.refresh)
+        serve(host, args.serve, args.refresh, allow_kill=args.allow_kill)
         return
     if args.find is not None or args.all:
         query = "" if args.all else args.find

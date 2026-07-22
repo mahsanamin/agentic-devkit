@@ -76,6 +76,7 @@ A personal, **project-agnostic** library of Claude Code sub-agents. Every agent 
 |-------|-------|------|
 | `a_sag_claude_session_finder` | haiku | Find a Claude Code session on this machine (live or closed) from a rough description; return the exact `claude --resume` command. Read-only |
 | `a_sag_confluence_finder` | haiku | Search one project's Confluence space and return the matching pages with links. Read-only |
+| `a_sag_jira` | haiku | Do Jira work in a cheap, disposable context: fetch issues, run JQL, and (only when asked) create/comment/transition/assign/link. Keeps noisy Atlassian MCP calls off the main context. Read by default |
 
 ### Notes / external writing
 | Agent | Model | Role |

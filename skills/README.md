@@ -72,6 +72,7 @@ Full marker glossary (used across the whole repo, not just skills): `a_` = mine 
 | `a_r_l_pr_review` | local | Review GitHub PRs in an isolated worktree with parallel agents, on a `review/pr-<N>` branch that tracks the PR source. Params: `repo`, `pr` (number / `mine`). |
 | `a_r_l_staging_qa_sweep` | local | Unattended staging smoke-test that files only confirmed, reproducible bugs to a Jira epic (settle-and-reproduce gate, dedup-first). Params: `flow_skill`, `base_url`, `epic`. |
 | `a_r_l_weekly_status_report` | local | Reconcile a task-flow workspace against real merge state, then generate the weekly report off the corrected state. Params: `workspace_dir`, `audience`, `report_dest`. |
+| `a_r_l_worktree_cleaner` | local | Clean up one repo's git worktrees safely: remove only the provably-done ones (branch merged, PR merged, or remote branch gone with nothing unpushed), prune stale registrations, never touch the main checkout or anything with real work. Params: `dir`, `dry_run`, `force`. |
 
 ### Interactive (run on demand)
 

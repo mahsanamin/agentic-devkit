@@ -48,7 +48,7 @@ gh pr view <N> --json headRefName,baseRefName,headRefOid,state,isCrossRepository
 Record: `headRefName` (the branch the PR is from — what you check out), `baseRefName` (merge target the review compares against), `headRefOid` (the live head SHA, for the done-check), and `isCrossRepository` (fork PR?).
 
 ### 4. Create a worktree on the PR's **head branch**, updated
-Worktrees live beside the main repo, matching the worktree layout used everywhere else:
+Worktrees live beside the main repo, matching the layout used everywhere else:
 `WT="$(dirname "$REPO_PATH")/WorkTrees/$(basename "$REPO_PATH")/<dir>"`.
 
 - **Fetch latest first** so the branch is up to date: `git fetch origin`.
@@ -61,7 +61,7 @@ Worktrees live beside the main repo, matching the worktree layout used everywher
 - **Verify before reviewing:** print the worktree path, the checked-out branch, and confirm `git -C "$WT" rev-parse HEAD` equals `headRefOid`. If it doesn't, fetch again / fix before proceeding. `cd "$WT"`.
 
 ### 5. Pick the reviewer and run it (from inside the worktree)
-- `reviewer=auto`: if `"$REPO_PATH/.claude/skills/review-pr/SKILL.md"` exists → use the **project** reviewer: `/review-pr <N>`. Else → use the **global** reviewer: `global-pr-reviewer <PR-URL>`. (`global-pr-reviewer` is installed globally and is itself project-aware, so it is a safe fallback; it must never be re-created — per this repo's rules it is provided by a separate upstream framework, not here.)
+- `reviewer=auto`: if `"$REPO_PATH/.claude/skills/review-pr/SKILL.md"` exists → use the **project** reviewer: `/review-pr <N>`. Else → use the **global** reviewer: `global-pr-reviewer <PR-URL>`. (`global-pr-reviewer` is installed globally and is itself project-aware, so it is a safe fallback; it must never be re-created — per this repo's rules `aa-*` skills belong to the upstream framework, not here.)
 - If the project reviewer's skill is present on disk but not invocable in this session, fall back to the global reviewer rather than failing.
 - The reviewer reads the full source from **this worktree** (that's why the head-branch checkout matters) and runs `gh pr diff <N>` (head-vs-base) itself. It emits a categorized **draft** (path under the reviewer's reviews root). Do not compute the diff or pick a base yourself.
 
@@ -73,6 +73,9 @@ Apply `a_r_l_pr_review`'s **Auto-post policy** verbatim. Compactly:
 - `post=draft`: post nothing; report the draft path and what it contained.
 
 Running this skill with `post=auto` **is** the authorization to post (same standing intent as `a_r_l_pr_review`); do not re-impose a draft-only default.
+
+### 6b. Approve when clean — `post=auto` only
+Apply `a_r_l_pr_review`'s **Auto-approve policy** verbatim. Compactly: after posting, **approve the PR only when ALL hold** — (1) nothing cleared the bar (zero Bug/Error/Security/Missing posted, no open correctness-affecting Question, no unresolved blocking thread from another reviewer; a nit a later commit already fixed doesn't count), (2) no automated review is pending or unhappy — `gh pr checks <N>` shows CodeRabbit finished and not requesting changes, SonarQube's gate (if any) passed, and required CI is green (nothing pending/red), and (3) confidence is high. Then `gh pr review <N> --approve --body "<one short paragraph of what you statically verified + checks green>"` and verify it landed (`gh pr view <N> --json reviews`); approving is fine even if the PR still shows `REVIEW_REQUIRED` (a required CODEOWNERS approver is separate). If **any** condition fails — a question exists, a bot is mid-run, a check is red, or confidence isn't high — do **not** approve: post any bar-clearing comments and **stop**, leaving the call to a human and saying why. Never auto-`REQUEST_CHANGES`, never auto-merge; `post=draft` never approves.
 
 ### 7. Tear down — the ONE hard safety rule
 After the review (and any posting) is captured, remove **only** what this run created, and **only locally**:
@@ -91,7 +94,8 @@ git branch -D "$LOCAL_BR"             # LOCAL branch only
 1. **Right code:** `REPO_PATH` is your existing clone (no duplicate was made — or a clone was made only because you truly lacked one), and the worktree HEAD matched `headRefOid`.
 2. **Reviewed:** the chosen reviewer ran against the worktree and produced a draft.
 3. **Posting matches the mode:** `auto` → every bar-clearing comment was posted **and verified present** (retry once on failure; if it still fails, say which comment didn't post — never silently drop it). `draft` → nothing posted, draft path reported.
-4. **Cleaned up:** worktree removed, local review branch deleted, **remote branch untouched**, main checkout unchanged. State this explicitly.
+4. **Approval decided (`post=auto`):** either the PR was approved (Auto-approve policy's conditions all met) and the approval was verified present, or it was intentionally held (state which condition — a question, a pending/red check, or low confidence — held it back). `draft` never approves.
+5. **Cleaned up:** worktree removed, local review branch deleted, **remote branch untouched**, main checkout unchanged. State this explicitly.
 
 ## Report
-End with: PR number + title + URL; resolved repo path and whether it came from cache / workspace / a fresh clone; head branch and base (merge target); worktree path + local branch; which reviewer ran (project vs global); comments posted (count + which) or "draft only" with the draft path; and the **target status (met / not met + why)**. Confirm the remote branch and main checkout are untouched.
+End with: PR number + title + URL; resolved repo path and whether it came from cache / workspace / a fresh clone; head branch and base (merge target); worktree path + local branch; which reviewer ran (project vs global); comments posted (count + which) or "draft only" with the draft path; **whether the PR was approved or held (and why held)**; and the **target status (met / not met + why)**. Confirm the remote branch and main checkout are untouched.

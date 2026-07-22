@@ -195,15 +195,15 @@ Paste these 5 lines (replace `/path/to/slack-summarizer` with your actual path, 
 
 ```
 */10 8-20 * * * /path/to/slack-summarizer/cron_runner.sh >> ~/.slack_summaries_data/cron.log 2>&1
-0 9 * * * /path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
-0 13 * * * /path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
-0 18 * * * /path/to/slack-summarizer/summarizer createReport --no-send >> ~/.slack_summaries_data/cron.log 2>&1
+0 9 * * * /path/to/slack-summarizer/summarizer createReport >> ~/.slack_summaries_data/cron.log 2>&1
+0 13 * * * /path/to/slack-summarizer/summarizer createReport >> ~/.slack_summaries_data/cron.log 2>&1
+0 18 * * * /path/to/slack-summarizer/summarizer createReport >> ~/.slack_summaries_data/cron.log 2>&1
 0 23 * * * /path/to/slack-summarizer/summarizer consolidate --delete-old >> ~/.slack_summaries_data/cron.log 2>&1
 ```
 
 Save and exit the editor. What each line does:
 - **Line 1:** Poll Slack every 10 min between 8am-8pm (every day including weekends)
-- **Lines 2-4:** Generate daily report at 9am, 1pm, 6pm
+- **Lines 2-4:** Generate the daily report and post it as a fresh briefing DM at 9am, 1pm, 6pm (add `--no-send` to write the file without DMing). The poller (line 1) keeps one rolling DM updated in place between these.
 - **Line 5:** Nightly consolidation + cleanup at 11pm
 
 Verify it's installed:
