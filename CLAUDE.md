@@ -117,7 +117,7 @@ So: skill `a_sk_<name>`; routine `a_r_<name>` (cloud-capable) or `a_r_l_<name>` 
 ## Shell architecture
 
 - `MY_WORKFLOW_DIR` is the single root variable, set in the user's `~/my_settings/configs.profile`. Everything derives from it.
-- The load chain: `~/.zshrc` -> `~/my_settings/configs.profile` -> `shell/generic.profile`, which sources `sourced/*.sh`, adds `scripts/` to PATH, sets `cd_p` / `cd_w` / `cd_wf` aliases, and loads the org profile `shell/<org>.<machine>.profile` if configured.
+- The load chain: `~/.zshrc` -> `~/my_settings/configs.profile` -> `shell/generic.profile`, which sources `sourced/*.sh`, adds `scripts/` to PATH, sets `cd_p` / `cd_w` / `cd_g` / `cd_wf` aliases, and loads the org profile `shell/<org>.<machine>.profile` if configured.
 - `sourced/` files run **in the current shell** (can `cd`, `export`). `scripts/` run as **subprocesses** and are auto-added to PATH.
 
 ### Layout

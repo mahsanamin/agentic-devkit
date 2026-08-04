@@ -18,13 +18,16 @@ if [ -n "$a_company_name" ] && [ -n "$a_machine_type" ]; then
 fi
 
 ########################### Directory Aliases ####
-# cd_p = personal repos, cd_w = work repos
+# cd_p = personal repos, cd_w = work repos, cd_g = global/shared repos
 # Define more in your org profile (e.g., cd_be, cd_api, etc.)
 if [ -n "$a_dir_p_repos" ]; then
     alias cd_p="cd ${a_dir_p_repos}"
 fi
 if [ -n "$a_dir_w_repos" ]; then
     alias cd_w="cd ${a_dir_w_repos}"
+fi
+if [ -n "$a_dir_g_repos" ]; then
+    alias cd_g="cd ${a_dir_g_repos}"
 fi
 alias cd_wf="cd ${MY_WORKFLOW_DIR}"
 
