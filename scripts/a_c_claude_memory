@@ -96,15 +96,15 @@ render_region() {
 
   if [ -n "$MACHINE_FILE" ]; then
     echo ""
-    strip_frontmatter "$MACHINE_FILE"
+    emit_source "$MACHINE_FILE"
   fi
   if [ -n "$RULES_FILE" ]; then
     echo ""
-    strip_frontmatter "$RULES_FILE"
+    emit_source "$RULES_FILE"
   fi
   if [ -n "$GLOSSARY_FILE" ]; then
     echo ""
-    strip_frontmatter "$GLOSSARY_FILE"
+    emit_source "$GLOSSARY_FILE"
   fi
 
   echo ""
@@ -144,6 +144,28 @@ render_region() {
 # A source file may carry YAML frontmatter for its own tooling; it is metadata, not content.
 strip_frontmatter() {
   awk 'NR==1 && $0=="---" {fm=1; next} fm && $0=="---" {fm=0; next} !fm {print}' "$1"
+}
+
+# Overlay sources are SHARED between machines, but repo paths are not: the devkit sits
+# at a different absolute path on each box. A hardcoded path in rules.md or glossary.md
+# is therefore wrong on every machine but one - and an `@/abs/path` import that does not
+# resolve is a silently dead rule. So sources write tokens and we expand them here, per
+# machine, at build time.
+#
+#   {{DEVKIT}}   -> $MY_WORKFLOW_DIR        the public core repo
+#   {{OVERLAY}}  -> $A_CLAUDE_OVERLAY_DIR   the private overlay repo
+#   {{BRAIN}}    -> $A_CLAUDE_BRAIN_DIR     the private brain repo
+#
+# `|` is the sed delimiter because every value is a path. An unset token expands to
+# nothing, which is visible in the built file rather than pretending to be a real path.
+expand_tokens() {
+  sed -e "s|{{DEVKIT}}|$MY_WORKFLOW_DIR|g" \
+      -e "s|{{OVERLAY}}|$OVERLAY|g" \
+      -e "s|{{BRAIN}}|$BRAIN|g"
+}
+
+emit_source() {
+  strip_frontmatter "$1" | expand_tokens
 }
 
 # --- safety: never silently shrink ----------------------------------------------
