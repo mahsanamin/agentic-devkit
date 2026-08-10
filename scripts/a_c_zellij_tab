@@ -9,7 +9,9 @@
 #   a_c_zellij_tab <session> <tab> [--cwd DIR] [--cmd 'COMMAND'] [--no-focus] [-n]
 #
 # Arguments:
-#   <session>   zellij session name; created detached if it is not running.
+#   <session>   zellij session name; created detached if it is not running. A
+#               session that has EXITED is deleted and recreated fresh, not
+#               resurrected (see _zt_ensure_session for why).
 #   <tab>       tab name; idempotent (re-running focuses the existing tab, never
 #               duplicates it).
 #
@@ -37,11 +39,17 @@
 # client and clamps the whole session's size - the other old bug); focusing is
 # done with a guarded, non-attaching `go-to-tab-name` that can never hang when no
 # client is attached.
+#
+# Exit status (callers MUST check it - see the note on verification below):
+#   0  the tab exists and, when asked for, runs the command
+#   2  bad arguments        3  zellij not installed
+#   4  could not bring the session up
+#   5  the tab was not created
 
 set -u
 prog="${0##*/}"
 
-usage() { sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; }
 
 session=""; tab=""; cwd=""; cmd=""; launcher_in=""; focus=1; dry=0
 positional=0
@@ -67,15 +75,58 @@ command -v zellij >/dev/null 2>&1 || { echo "$prog: zellij not found on PATH" >&
 
 # --- helpers (self-contained so any caller can use this without sourcing) -----
 
-# Is session $1 currently listed? Match the first field so an "(EXITED)" suffix
-# cannot hide the name.
+# Echo the state of session $1: running | exited | absent.
+#
+# Use `-n` (no formatting), NOT `-ns`: the short form strips the
+# "(EXITED - attach to resurrect)" suffix, so a DEAD session looks alive. That
+# was a real bug: we skipped creating the session, and every later
+# `zellij --session <dead> action ...` failed while still EXITING 0 (zellij
+# prints "Session not found" and returns success), so the caller happily reported
+# "✓ Tab ready" with no tab and no Claude running in it.
+_zt_session_state() {
+    local line name
+    while IFS= read -r line; do
+        name="${line%% *}"
+        [ "$name" = "$1" ] || continue
+        case "$line" in
+            *EXITED*) printf 'exited';  return 0 ;;
+            *)        printf 'running'; return 0 ;;
+        esac
+    done < <(zellij list-sessions -n 2>/dev/null)
+    printf 'absent'
+}
+
+# Is session $1 alive right now (not merely resurrectable)?
 _zt_have_session() {
-    local s
-    while IFS= read -r s; do
-        s="${s%% *}"
-        [ "$s" = "$1" ] && return 0
-    done < <(zellij list-sessions -ns 2>/dev/null)
-    return 1
+    [ "$(_zt_session_state "$1")" = "running" ]
+}
+
+# Make sure session $1 is LIVE, creating it when needed. Echoes nothing; returns
+# non-zero if it could not be brought up.
+#
+# A session that has EXITED is deleted and recreated rather than resurrected.
+# Resurrecting is the wrong move for a working tab: zellij restores tab names and
+# layout but brings every command pane back SUSPENDED ("Waiting to run: claude
+# ..."), and a stale tab carrying our target name would simply get focused, so
+# the tab would never launch its command. Scrollback is not restored either
+# (serialize_pane_viewport is off by default), so the dead state is worth nothing
+# here. Start clean instead.
+_zt_ensure_session() {
+    local session="$1" state i
+    state="$(_zt_session_state "$session")"
+    if [ "$state" = "exited" ]; then
+        echo "$prog: session '$session' had exited - recreating it fresh" >&2
+        zellij delete-session "$session" >/dev/null 2>&1
+        state="$(_zt_session_state "$session")"
+        [ "$state" = "exited" ] && \
+            echo "$prog: could not drop the dead '$session'; resurrecting it instead" >&2
+    fi
+    if [ "$state" != "running" ]; then
+        zellij attach --create-background "$session" >/dev/null 2>&1
+        i=0
+        while [ "$i" -lt 50 ] && ! _zt_have_session "$session"; do sleep 0.1; i=$((i + 1)); done
+    fi
+    _zt_have_session "$session"
 }
 
 # Does session $1 already have a tab named exactly $2?
@@ -108,11 +159,13 @@ if [ "$dry" -eq 1 ]; then
     exit 0
 fi
 
-# --- 1. ensure the session exists (detached) ---------------------------------
-if ! _zt_have_session "$session"; then
-    zellij attach --create-background "$session" >/dev/null 2>&1
-    i=0
-    while [ "$i" -lt 30 ] && ! _zt_have_session "$session"; do sleep 0.1; i=$((i + 1)); done
+# --- 1. ensure the session is LIVE (detached) --------------------------------
+# Hard failure, not a warning: every step below talks to a running session, and
+# zellij's `action` subcommands exit 0 even when the session is gone, so carrying
+# on would silently produce nothing.
+if ! _zt_ensure_session "$session"; then
+    echo "$prog: could not start zellij session '$session'" >&2
+    exit 4
 fi
 
 # --- 2. idempotent: existing tab is just focused -----------------------------
@@ -174,6 +227,17 @@ else
     zellij --session "$session" action new-tab --layout "$layout" >/dev/null 2>&1
 fi
 
-# --- 4. best-effort focus (never attaches, never hangs) ----------------------
+# --- 4. verify the tab is really there ---------------------------------------
+# `zellij ... action new-tab` exits 0 even when it did nothing, so its status
+# proves nothing; ask the session what tabs it has. Without this check a failed
+# create looks identical to a successful one and callers report success.
+i=0
+while [ "$i" -lt 30 ] && ! _zt_tab_exists "$session" "$tab"; do sleep 0.1; i=$((i + 1)); done
+if ! _zt_tab_exists "$session" "$tab"; then
+    echo "$prog: created no tab '$tab' in session '$session'" >&2
+    exit 5
+fi
+
+# --- 5. best-effort focus (never attaches, never hangs) ----------------------
 [ "$focus" -eq 1 ] && _zt_focus "$session" "$tab"
 exit 0
