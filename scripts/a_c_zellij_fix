@@ -118,10 +118,15 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$list" -eq 1 ]; then
-    zellij list-sessions -ns 2>/dev/null | awk '{print $1}' | while IFS= read -r s; do
+    # Read with -n, not -ns: the short form drops the "(EXITED - attach to
+    # resurrect)" suffix, and a dead session listed as though it were live is
+    # exactly what makes zellij trouble hard to see.
+    zellij list-sessions -n 2>/dev/null | while IFS= read -r line; do
+        s="${line%% *}"
         [ -n "$s" ] || continue
+        case "$line" in *EXITED*) state="dead" ;; *) state="live" ;; esac
         pids="$(_clients_of "$s" | tr '\n' ' ')"
-        printf '  %-16s clients: %s\n' "$s" "${pids:-<none>}"
+        printf '  %-16s %-4s clients: %s\n' "$s" "$state" "${pids:-<none>}"
     done
     exit 0
 fi

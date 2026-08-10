@@ -409,15 +409,30 @@ a_task_zellij_tab_name() {
     printf '%s' "$ticket"
 }
 
-# Return 0 if a zellij session named $1 is currently listed. Matches the first
-# whitespace-delimited field so an "(EXITED ...)" suffix can't hide a name.
+# Echo the state of zellij session $1: running | exited | absent.
+#
+# Read the listing with `-n` (no formatting), NOT `-ns`: the short form strips the
+# "(EXITED - attach to resurrect)" suffix, which made a DEAD session look alive.
+# That mattered because `zellij --session <dead> action ...` prints "Session not
+# found" and STILL EXITS 0, so callers reported success having created nothing.
+a_task_zellij_state() {
+    local line name
+    while IFS= read -r line; do
+        name="${line%% *}"
+        [ "$name" = "$1" ] || continue
+        case "$line" in
+            *EXITED*) printf 'exited';  return 0 ;;
+            *)        printf 'running'; return 0 ;;
+        esac
+    done < <(zellij list-sessions -n 2>/dev/null)
+    printf 'absent'
+}
+
+# Return 0 if a zellij session named $1 is ALIVE right now. A session that has
+# exited (resurrectable but dead) is deliberately NOT "have": nothing can be
+# driven in it until a_c_zellij_tab brings it back.
 a_task_zellij_have() {
-    local s
-    while IFS= read -r s; do
-        s="${s%% *}"
-        [ "$s" = "$1" ] && return 0
-    done < <(zellij list-sessions -ns 2>/dev/null)
-    return 1
+    [ "$(a_task_zellij_state "$1")" = "running" ]
 }
 
 # Return 0 if session $1 already has a tab whose name is exactly $2. Used to keep
@@ -461,8 +476,14 @@ a_task_zellij_make_launcher() {
 # for free. We deliberately do NOT call `go-to-tab-name` here: that action blocks
 # indefinitely on a session with no attached client (the common case when we are
 # about to attach, or when the target session is detached) - the caller focuses
-# an existing tab only when it is the current, attached session. Returns 2 if
-# zellij is not installed.
+# an existing tab only when it is the current, attached session.
+#
+# RETURN STATUS IS MEANINGFUL and callers must branch on it: 0 = the tab exists
+# (and runs the launcher when one was given), 2 = zellij or the opener is missing,
+# anything else = a_c_zellij_tab's own failure code (4 = the session would not
+# start, 5 = the tab was not created). This used to `return 0` unconditionally,
+# which is how a dead target session turned into a cheerful "✓ Tab ready" with no
+# tab and no Claude running anywhere.
 a_task_zellij_setup() {
     local session="$1" tab="$2" cwd="$3" launcher="${4:-}"
     command -v zellij >/dev/null 2>&1 || return 2
@@ -480,7 +501,7 @@ a_task_zellij_setup() {
     else
         bash "$zt" "$session" "$tab" --cwd "$cwd" --no-focus
     fi
-    return 0
+    return $?                    # pass the opener's verdict up; never fake success
 }
 
 # Best-effort: switch the attached client of session $1 to tab $2, WITHOUT
