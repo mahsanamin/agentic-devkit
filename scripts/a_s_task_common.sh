@@ -504,6 +504,41 @@ a_task_zellij_setup() {
     return $?                    # pass the opener's verdict up; never fake success
 }
 
+# Return 0 only when a REAL terminal a human is looking at is on this process, so
+# it is safe to hand that terminal to a full-screen program (`zellij attach`).
+#
+# `[ -t 0 ] && [ -t 1 ]` IS NOT ENOUGH, and assuming it was cost us a whole round
+# of "the button still does nothing". A routine that runs commands through a pty
+# (tether does, so shell functions and colors work) passes the isatty test with no
+# human anywhere. Attaching there does three bad things at once: it paints the
+# entire zellij UI into the routine's captured output as escape-code soup, it
+# blocks the launcher script forever so the run never returns, and - worst - zellij
+# sizes a session to its smallest client, so the fresh session gets clamped to that
+# pty and is unusable when you later attach for real.
+#
+# The reliable tell is the WINDOW SIZE. os.openpty() and friends leave it unset, so
+# `stty size` reports "0 0", while every real terminal reports a usable size.
+#
+# Do NOT use `tput lines` / `tput cols` here: tput falls back to the terminfo
+# default and cheerfully reports 24x80 for a 0x0 pty, which is exactly the wrong
+# answer. Measured on this machine: under tether, isatty says yes on both stdin and
+# stdout, tput says 24x80, and `stty size` says "0 0".
+#
+# A_C_NO_ATTACH=1 forces "no" for any caller that already knows it is headless
+# (cron, launchd, a routine), so it never has to depend on the heuristic.
+a_task_can_attach() {
+    [ "${A_C_NO_ATTACH:-0}" = "1" ] && return 1
+    [ -t 0 ] && [ -t 1 ] || return 1
+    local size rows cols
+    size="$(stty size 2>/dev/null)" || return 1
+    rows="${size%% *}"; cols="${size##* }"
+    case "$rows" in ''|*[!0-9]*) return 1 ;; esac
+    case "$cols" in ''|*[!0-9]*) return 1 ;; esac
+    # A window too small to show anything is not a human terminal either, and
+    # attaching to it would clamp the session just as badly as a 0x0 pty.
+    [ "$rows" -ge 5 ] && [ "$cols" -ge 20 ]
+}
+
 # Best-effort: switch the attached client of session $1 to tab $2, WITHOUT
 # attaching ourselves (so we never add a second client and never resize the
 # session - that resize was the old bug from calling `zellij attach` here).

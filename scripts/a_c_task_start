@@ -432,7 +432,7 @@ _a_c_task_start_main() {
                 echo -e "  ${A_T_DIM}falling back to launching here in this terminal.${A_T_NC}"
             else
                 echo ""
-                if [ -z "${ZELLIJ:-}" ] && [ -t 0 ] && [ -t 1 ]; then
+                if [ -z "${ZELLIJ:-}" ] && a_task_can_attach; then
                     echo -e "${A_T_BLUE}Opening in zellij${A_T_NC} ${A_T_DIM}session: $zellij_arg · tab: $zj_tab${A_T_NC}"
                     # Child process (NOT sourced/exec'd): when you detach, control
                     # returns to this worktree shell, like the -c terminal path.
@@ -441,11 +441,12 @@ _a_c_task_start_main() {
                     echo -e "${A_T_GREEN}✓ Opened tab${A_T_NC} ${A_T_DIM}$zj_tab (this session)${A_T_NC}"
                     zellij action go-to-tab-name "$zj_tab" >/dev/null 2>&1
                 else
-                    # Either we are inside a DIFFERENT zellij session, or there is
-                    # no terminal at all (a routine, a cron job, tether pressing a
-                    # button). Both cases must NOT attach: attaching without a real
-                    # terminal dumps the raw zellij UI into the caller's output and
-                    # then sits there holding the process open. If you happen to be
+                    # Either we are inside a DIFFERENT zellij session, or nobody is
+                    # watching a terminal (a routine, a cron job, tether pressing a
+                    # button - note a pty passes isatty, so a_task_can_attach checks
+                    # the window size). Neither may attach: that dumps the raw zellij
+                    # UI into the caller's output, holds the process open, and clamps
+                    # the session to the caller's tiny pty. If you happen to be
                     # attached to $zellij_arg in another terminal, move you to the
                     # new tab; new-tab alone only marks it active in state, it does
                     # not move an already-attached client. Guarded so it can never
