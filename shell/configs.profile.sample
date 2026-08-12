@@ -41,6 +41,17 @@ export A_CLAUDE_BRAIN_DIR=''
 # Optional: Google Drive path (uncomment and set if needed)
 # export a_dir_gd='/Users/YOUR_USER/Library/CloudStorage/GoogleDrive-YOU@EMAIL/My\ Drive'
 
+########################### Task Suite ####
+# Default zellij SESSION for every task start (a_c_task_start and the source
+# fronts: a_c_jira_task_start / a_c_github_issue_fix / a_c_mdnest_task_start).
+# Set it and each task opens as a tab in that session instead of taking over the
+# current terminal; the -z flag still overrides per-call. Leave it unset to stay
+# in the current terminal.
+# export A_C_TASK_ZELLIJ_SESSION='work'
+
+# Default Jira project key, so a bare ticket number resolves (123 -> PROJ-123).
+# export A_TASK_DEFAULT_KEY='PROJ'
+
 ########################### Load Generic Profile ####
 # This loads all shared aliases, exports, and utility commands
 source "${MY_WORKFLOW_DIR}/shell/generic.profile"

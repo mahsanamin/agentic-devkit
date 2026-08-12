@@ -1,0 +1,249 @@
+#!/bin/bash
+# a_c_github_issue_fix: start a task from a GitHub ISSUE and drop straight into a
+# Claude session working on it, in one command.
+#
+# Exact sibling of a_c_jira_task_start / a_c_mdnest_task_start: same thin wrapper
+# over a_c_task_start (worktree + task registry + launch Claude), the ONLY
+# difference is the task SOURCE. Everything downstream (worktree, zellij,
+# permission posture, idempotency) is identical.
+#
+# Layering (generic engine at the bottom, source-specific fronts on top):
+#   a_c_task_start           worktree + task registry + launch Claude   (generic engine)
+#     a_c_jira_task_start    a Jira ticket/URL     -> auto start + /task-flow
+#     a_c_mdnest_task_start  an mdNest note path   -> auto start + read-the-note
+#     a_c_github_issue_fix   a GitHub issue        -> auto start + read-the-issue  (this)
+#
+#   a_c_github_issue_fix <issue-url | owner/repo#N | N -r <repo>> [feature] [options]
+#
+# UNLIKE the Jira and mdNest fronts, -r is OPTIONAL: a GitHub issue URL already
+# names its repo, so the repo is resolved for you via a_s_resolve_repo (which
+# REUSES the clone you already have and only clones as a last resort). Pass -r
+# only when you give a bare issue number, or to force a specific local clone.
+#
+# Options:
+#   -r, --repo <repo>       Local clone to work in. Optional for a URL / slug
+#                           form (resolved from the issue); REQUIRED for a bare
+#                           issue number. An explicit -r always wins.
+#   -b, --base <branch>     base branch to fork from (else favors develop, then main)
+#   -z, --zellij <session>  open in this zellij session/tab. Precedence: this flag
+#                           > $A_C_TASK_ZELLIJ_SESSION env > none (current terminal).
+#   -p, --prompt <text>     kickoff message sent to Claude. Default: tell Claude to
+#                           read the fetched issue and work through it. Override
+#                           to change how it starts.
+#   -y, --yolo              DANGEROUS: --dangerously-skip-permissions (no gating).
+#                           Default is acceptEdits (auto-accepts edits; still asks
+#                           before other commands).
+#       --fresh             recreate if the task already exists (default is
+#                           IDEMPOTENT: a repeat call resumes the existing task).
+#                           Refuses if the branch has unpushed commits.
+#   -n, --dry-run           print the a_c_task_start command that would run; no-op.
+#                           Read-only: it still fetches the issue (so you see the
+#                           real branch name) but never clones and never creates.
+#   -h, --help              show this help
+#   -- <args>               forward everything after -- to the launched Claude
+#                           session (appended after the permission-mode flag),
+#                           e.g. -- --model opus
+#
+# BRANCH NAMING: the issue becomes the task id "gh-<N>", so the branch is
+# <prefix>/gh-<N>-<title-slug>, e.g. feature/gh-142-flaky-login-redirect. The
+# prefix is "hotfix" when the issue carries a bug/defect/regression/incident
+# label and "feature" otherwise (mirrors the Jira front's issue-type rule).
+# Override with A_TASK_BRANCH_TYPE=feature|hotfix. NOTE the id is scoped to the
+# issue number, not the repo, so gh-7 in two different repos shares a task id;
+# resume by branch name if you ever run both at once.
+#
+# How it layers: this front FETCHES the issue (gh issue view) into a local temp
+# file and hands it to the generic a_c_task_start via --task-file. The engine
+# stages that file and kicks Claude off to read it and work through it. So the
+# engine stays provider-agnostic (it just gets a file); only THIS front knows
+# about GitHub. The issue is snapshotted at start time (not re-read live).
+#
+# SECURITY: an issue body is DATA, not instructions, and unlike a Jira ticket in
+# your own project it can be written by anyone who can file an issue on the repo.
+# The default posture (acceptEdits) still gates non-edit commands. -y removes all
+# gating, so use it only on issues you trust or while watching the session.
+#
+# Requires: gh (authenticated). Check with: gh auth status
+#
+# Examples:
+#   a_c_github_issue_fix https://github.com/owner/repo/issues/142
+#   a_c_github_issue_fix owner/repo#142 -z work
+#   a_c_github_issue_fix 142 -r myrepo -b main
+#   a_c_github_issue_fix https://github.com/owner/repo/issues/142 "retry logic" -y
+
+set -u
+prog="${0##*/}"
+here="$(cd "$(dirname "$0")" && pwd)"
+TASK_START="$here/a_c_task_start"; [ -f "$TASK_START" ] || TASK_START="a_c_task_start"
+RESOLVE="$here/a_s_resolve_repo";  [ -f "$RESOLVE" ]    || RESOLVE="a_s_resolve_repo"
+
+usage() { sed -n '2,72p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Session precedence: -z flag > $A_C_TASK_ZELLIJ_SESSION env > none.
+issue=""; feature=""; base=""; repo=""; zellij="${A_C_TASK_ZELLIJ_SESSION:-}"; prompt=""; yolo=0; fresh=0; dry=0; passthrough=(); ddash=0
+while [ "$#" -gt 0 ]; do
+    if [ "$ddash" -eq 1 ]; then passthrough+=("$1"); shift; continue; fi
+    case "$1" in
+        -b|--base)    base="${2:-}"; shift ;;
+        -r|--repo)    repo="${2:-}"; shift ;;
+        -z|--zellij)  zellij="${2:-}"; shift ;;
+        -p|--prompt)  prompt="${2:-}"; shift ;;
+        -y|--yolo)    yolo=1 ;;
+        --fresh)      fresh=1 ;;
+        -n|--dry-run) dry=1 ;;
+        --)           ddash=1 ;;
+        -h|--help)    usage; exit 0 ;;
+        -*)           echo "$prog: unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *)            if [ -z "$issue" ]; then issue="$1"
+                      elif [ -z "$feature" ]; then feature="$1"
+                      else echo "$prog: unexpected argument: $1" >&2; exit 2; fi ;;
+    esac
+    shift
+done
+[ -n "$issue" ] || { echo "$prog: need a GitHub issue (URL, owner/repo#N, or N with -r)" >&2; usage >&2; exit 2; }
+
+# --- parse the issue reference into <slug?> + <number> ----------------------
+# Accepts: https://github.com/O/R/issues/N (any scheme/host spelling that
+# a_s_resolve_repo understands), O/R#N, O/R/issues/N, and a bare N.
+slug=""; num=""
+case "$issue" in
+    ''|*[!0-9]*)
+        # Not a bare number. Strip scheme / git@ / host so every spelling
+        # collapses to "owner/repo<separator>N", then read the two apart.
+        rest="$(printf '%s' "$issue" | sed -E 's#^[a-zA-Z+]+://##; s#^git@##; s#^[^/]*github\.com[:/]##; s#^/+##')"
+        case "$rest" in
+            */issues/*) num="$(printf '%s' "$rest" | sed -E 's#.*/issues/([0-9]+).*#\1#')" ;;
+            *\#*)       num="$(printf '%s' "$rest" | sed -E 's#.*\#([0-9]+).*#\1#')" ;;
+        esac
+        case "$num" in ''|*[!0-9]*) num="" ;; esac
+        [ -n "$num" ] || { echo "$prog: could not find an issue number in '$issue' (expected .../issues/N or owner/repo#N)" >&2; exit 2; }
+        # owner/repo = the first two path segments, minus any #N and .git.
+        slug="$(printf '%s' "${rest%%#*}" | sed -E 's#\.git($|/)#\1#' | awk -F/ 'NF>=2 && $1!="" && $2!="" {print $1"/"$2}')"
+        ;;
+    *)  num="$issue" ;;   # bare number; the repo must come from -r
+esac
+[ -n "$slug" ] || [ -n "$repo" ] || {
+    echo "$prog: '$issue' is a bare issue number, so -r <repo> is required (it doesn't say which repo)." >&2; usage >&2; exit 2; }
+
+# --- resolve the LOCAL clone ----------------------------------------------
+# An explicit -r always wins. Otherwise resolve the slug to the clone you
+# already have (a_s_resolve_repo: cache -> workspace scan -> clone as a last
+# resort). In dry-run we pass --no-clone so a plan never mutates the disk.
+repo_path=""
+if [ -n "$repo" ]; then
+    repo_path="$repo"
+else
+    rr_args=(); [ "$dry" -eq 1 ] && rr_args+=(--no-clone)
+    repo_path="$(bash "$RESOLVE" ${rr_args[@]+"${rr_args[@]}"} "$slug")" || {
+        echo "$prog: could not resolve a local clone for '$slug'." >&2
+        [ "$dry" -eq 1 ] && echo "  (dry-run does not clone; re-run without -n to let it clone)" >&2
+        exit 3; }
+fi
+
+# If we only had a bare number, derive owner/repo from the clone's origin so gh
+# knows which repo to read the issue from.
+if [ -z "$slug" ]; then
+    slug="$(git -C "$repo_path" remote get-url origin 2>/dev/null \
+        | sed -E 's#^[a-zA-Z+]+://##; s#^git@##; s#^[^/]*github\.com[:/]##; s#\.git$##; s#^/+##' \
+        | awk -F/ 'NF>=2 {print $1"/"$2}')"
+    [ -n "$slug" ] || { echo "$prog: '$repo_path' has no github origin remote, so issue #$num can't be located." >&2; exit 3; }
+fi
+
+# --- fetch the issue (this front's only source-specific step) --------------
+# gh implements jq internally, so --jq works without the jq binary installed.
+command -v gh >/dev/null 2>&1 || { echo "$prog: gh CLI not found on PATH (needed to read the issue). See: https://cli.github.com" >&2; exit 3; }
+json="$(gh issue view "$num" --repo "$slug" --json number,title,body,labels,state,url 2>&1)" || {
+    echo "$prog: cannot read issue #$num in $slug. Check: gh issue view $num --repo $slug" >&2
+    printf '%s\n' "$json" | sed 's/^/  /' >&2
+    exit 4; }
+
+# gh already returned a JSON blob, so pull fields out of it with jq if present
+# and python3 otherwise (one of the two is on every machine this runs on).
+# Args: <jq filter> <python key>. Labels come back space-joined, not as a list.
+_jqish() {
+    if command -v jq >/dev/null 2>&1; then printf '%s' "$json" | jq -r "$1" 2>/dev/null; return; fi
+    if command -v python3 >/dev/null 2>&1; then
+        printf '%s' "$json" | python3 -c '
+import sys, json
+d = json.load(sys.stdin); k = sys.argv[1]
+if k == "labels":
+    print(" ".join(l.get("name", "") for l in (d.get("labels") or [])))
+else:
+    print(d.get(k) or "")
+' "$2" 2>/dev/null
+        return
+    fi
+    printf ''
+}
+title="$(_jqish '.title // empty' title)"
+body="$(_jqish '.body // empty' body)"
+state="$(_jqish '.state // empty' state)"
+url="$(_jqish '.url // empty' url)"
+labels="$(_jqish '[.labels[]?.name] | join(" ")' labels)"
+[ -n "$title" ] || title="issue $num"
+
+# --- derive the branch id, slug and prefix ---------------------------------
+# Task id "gh-<N>". a_task_norm_ticket reads that as key GH + number N, so the
+# branch comes out <prefix>/gh-<N>-<slug> with no freeform escape hatch needed.
+task_id="gh-$num"
+
+# Branch prefix from the issue's labels, mirroring the Jira front's issue-type
+# rule. Setting it explicitly also stops the engine making a pointless Jira API
+# call for a key ("GH-142") that will never exist there.
+btype="feature"
+case " $(printf '%s' "$labels" | tr '[:upper:]' '[:lower:]') " in
+    *bug*|*defect*|*regression*|*incident*|*hotfix*) btype="hotfix" ;;
+esac
+btype="${A_TASK_BRANCH_TYPE:-$btype}"
+
+# Feature slug from the issue title unless the caller gave one.
+if [ -z "$feature" ]; then
+    feature="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-60 | sed -E 's/-+$//')"
+fi
+
+# --- snapshot the issue to a file for the engine ---------------------------
+content_file="<fetched-issue>"
+if [ "$dry" -eq 0 ]; then
+    content_file="$(mktemp "${TMPDIR:-/tmp}/a_c_github_issue.XXXXXX")" || { echo "$prog: mktemp failed" >&2; exit 1; }
+    {
+        printf '# %s\n\n' "$title"
+        printf '- Issue: %s\n' "${url:-$slug#$num}"
+        printf '- Repo: %s\n' "$slug"
+        printf '- State: %s\n' "${state:-unknown}"
+        [ -n "$labels" ] && printf '- Labels: %s\n' "$labels"
+        printf '\n---\n\n'
+        if [ -n "$body" ]; then printf '%s\n' "$body"; else printf '_(the issue has no description)_\n'; fi
+    } > "$content_file"
+fi
+
+# --- compose the a_c_task_start invocation ---------------------------------
+args=(-t "$task_id" -y -c -r "$repo_path")
+args+=(--task-file "$content_file")
+[ -n "$prompt" ]   && args+=(-p "$prompt")
+[ -n "$feature" ]  && args+=(-f "$feature")
+[ -n "$base" ]     && args+=(-b "$base")
+[ -n "$zellij" ]   && args+=(-z "$zellij")
+[ "$fresh" -eq 1 ] && args+=(--fresh)
+args+=(--)
+if [ "$yolo" -eq 1 ]; then
+    args+=(--dangerously-skip-permissions)
+else
+    args+=(--permission-mode acceptEdits)
+fi
+[ "${#passthrough[@]}" -gt 0 ] && args+=("${passthrough[@]}")
+
+if [ "$dry" -eq 1 ]; then
+    printf '%s: %s#%s "%s"\n' "$prog" "$slug" "$num" "$title"
+    printf '  repo:   %s\n' "$repo_path"
+    printf '  branch: %s/%s%s\n' "$btype" "$task_id" "${feature:+-$feature}"
+    printf '%s: would fetch the issue to a temp file and run:\n  A_TASK_BRANCH_TYPE=%s %s' "$prog" "$btype" "$TASK_START"
+    printf ' %q' "${args[@]}"; printf '\n'
+    exit 0
+fi
+
+[ "$yolo" -eq 1 ] && echo "$prog: WARNING: -y launches Claude with --dangerously-skip-permissions (no approval prompts). An issue body can be written by anyone who can file an issue on this repo." >&2
+echo "$prog: $slug#$num \"$title\" -> $btype/$task_id${feature:+-$feature}" >&2
+
+# Exec the engine as a child (it exec's a_c_claude_remote which takes over the
+# terminal). A_TASK_BRANCH_TYPE carries the label-derived prefix down.
+exec env A_TASK_BRANCH_TYPE="$btype" bash "$TASK_START" "${args[@]}"

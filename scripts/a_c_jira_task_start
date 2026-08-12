@@ -12,11 +12,10 @@
 # Layering (generic engine at the bottom, source-specific fronts on top):
 #   a_c_task_start          worktree + task registry + launch Claude    (generic engine)
 #     a_c_jira_task_start   Jira ticket/URL -> auto start + /task-flow  (this: source front)
-#     a_c_github_issue_fix  a GitHub-issue URL would slot in here as a sibling front:
-#                           resolve the repo (a_s_resolve_repo), read the issue
-#                           (gh issue view) for the branch slug, then call the SAME
-#                           a_c_task_start engine below. The task-start internals
-#                           stay shared; only the source parsing differs.
+#     a_c_mdnest_task_start an mdNest note path -> auto start + read-the-note
+#     a_c_github_issue_fix  a GitHub issue      -> auto start + read-the-issue.
+#                           Unlike this front it needs no -r: an issue URL names
+#                           its own repo, so it resolves the clone itself.
 #
 #   a_c_jira_task_start <ticket-url | PROJ-123 | 123> -r <repo> [feature] [options]
 #
