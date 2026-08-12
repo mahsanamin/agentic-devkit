@@ -445,6 +445,43 @@ a_task_zellij_tab_exists() {
     return 1
 }
 
+# Print the environment-hygiene preamble every generated launcher needs, on stdout,
+# for the caller to write into the launcher script.
+#
+# WHY THIS EXISTS. A launcher is executed by the zellij SERVER, and that server
+# inherits the environment of whatever first created the session. When a routine
+# creates it, the routine's environment is then handed to every pane in that
+# session, for as long as it lives. Measured on a real session created by tether
+# (which runs under `uv run` from launchd):
+#
+#   TERM         not set at all   (a normal session had xterm-256color)
+#   VIRTUAL_ENV  /…/ustaad/.venv  (tether's Python virtualenv, still active)
+#   UV, UV_RUN_RECURSION_DEPTH    also inherited
+#
+# So a Claude session started from a button ran with no terminal type and inside
+# tether's virtualenv. A TUI program with no TERM is in a degraded state before it
+# starts, and a coding session has no business inheriting the transport's Python
+# environment. Fix it at the launcher, which covers every caller (tether, cron,
+# launchd) rather than one routine.
+#
+# a_c_zellij_tab carries a copy of this block for the launcher it builds from
+# --cmd; it is standalone by design and does not source this library. Keep the two
+# in step.
+a_task_emit_env_hygiene() {
+    printf '# --- environment hygiene (see a_task_emit_env_hygiene for why) ---\n'
+    # Drop a leaked virtualenv from PATH before unsetting the marker.
+    printf 'if [ -n "${VIRTUAL_ENV:-}" ]; then\n'
+    printf '    PATH="$(printf %%s "$PATH" | tr : "\\n" | grep -vxF "$VIRTUAL_ENV/bin" | paste -sd: -)"\n'
+    printf '    export PATH\n'
+    printf 'fi\n'
+    printf 'unset VIRTUAL_ENV UV UV_RUN_RECURSION_DEPTH PYTHONHOME PYTHONPATH\n'
+    # Not `${TERM:-...}`: TERM is often SET to a value a full-screen program cannot
+    # use. Observed both "unset" (server started from launchd) and "dumb" (inherited
+    # from a non-interactive caller), and dumb is as useless to a TUI as no TERM.
+    printf 'case "${TERM:-}" in ""|dumb|unknown) export TERM=xterm-256color ;; esac\n'
+    printf 'export LANG="${LANG:-en_US.UTF-8}"\n'
+}
+
 # Write a throwaway launcher script that runs a command (the a_c_claude_remote
 # invocation, passed as $2..) and then drops to an interactive shell sitting in
 # the worktree $1, so the tab is still usable after Claude exits. Echoes the
@@ -461,6 +498,7 @@ a_task_zellij_make_launcher() {
         # Keep the trailing interactive shell from hanging on oh-my-zsh's
         # "Would you like to update? [Y/n]" prompt in an unattended tab.
         printf 'export DISABLE_AUTO_UPDATE=true DISABLE_UPDATE_PROMPT=true\n'
+        a_task_emit_env_hygiene
         printf 'bash %s\n' "$(printf '%q ' "$@")"
         printf 'cd %q 2>/dev/null\n' "$wt"
         printf 'exec "${SHELL:-/bin/zsh}" -i\n'

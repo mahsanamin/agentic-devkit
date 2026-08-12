@@ -196,6 +196,26 @@ else
             # Keep the trailing interactive shell from hanging on oh-my-zsh's
             # "Would you like to update? [Y/n]" prompt in an unattended tab.
             printf 'export DISABLE_AUTO_UPDATE=true DISABLE_UPDATE_PROMPT=true\n'
+            # Environment hygiene. The zellij SERVER runs this launcher, and that
+            # server keeps the environment of whoever first created the session,
+            # handing it to every pane for the session's whole life. Measured on a
+            # session created by tether (which runs under `uv run` from launchd):
+            # TERM was not set at all and VIRTUAL_ENV pointed at tether's own
+            # virtualenv, so a Claude session started from a button ran with no
+            # terminal type, inside the transport's Python environment. This is a
+            # copy of a_task_emit_env_hygiene in a_s_task_common.sh; this script is
+            # standalone by design and does not source that library, so keep the
+            # two in step.
+            printf 'if [ -n "${VIRTUAL_ENV:-}" ]; then\n'
+            printf '    PATH="$(printf %%s "$PATH" | tr : "\\n" | grep -vxF "$VIRTUAL_ENV/bin" | paste -sd: -)"\n'
+            printf '    export PATH\n'
+            printf 'fi\n'
+            printf 'unset VIRTUAL_ENV UV UV_RUN_RECURSION_DEPTH PYTHONHOME PYTHONPATH\n'
+            # Not `${TERM:-...}`: TERM is often SET to something a full-screen
+            # program cannot use. Seen both unset (server from launchd) and "dumb"
+            # (inherited from a non-interactive caller); dumb is as useless as none.
+            printf 'case "${TERM:-}" in ""|dumb|unknown) export TERM=xterm-256color ;; esac\n'
+            printf 'export LANG="${LANG:-en_US.UTF-8}"\n'
             printf 'cd %q 2>/dev/null\n' "$cwd"
             printf '%s\n' "$cmd"
             printf 'exec "${SHELL:-/bin/zsh}" -i\n'
