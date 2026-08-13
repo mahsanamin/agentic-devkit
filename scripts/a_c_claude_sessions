@@ -24,9 +24,10 @@ so it works the same on any Mac that has the my_setup repo set up):
 It also searches EVERY session transcript on disk, live or already closed, so a
 session you closed by mistake can be found again and resumed:
 
-  --find QUERY   rank all sessions by how well they match QUERY (repo name, task,
-                 title, branch, session id) and print the exact `claude --resume`
-                 command for each match. Newest activity breaks ties.
+  --find QUERY   rank all sessions by how well they match QUERY (ticket key, PR
+                 number, repo name, task, title, branch, session id) and print the
+                 exact `claude --resume` command for each match. Newest activity
+                 breaks ties.
   --all          list every session on disk (live + closed), newest first.
   --limit N      cap the transcript scan to the N most-recently-active sessions
                  (default 600; use 0 for no cap). Search is head+tail only, so
@@ -46,7 +47,12 @@ How it works
    project directory that matches the cwd.
 4. Read each session .jsonl for its ai title, its last prompt (what it is doing),
    its first prompt (why it exists), git branch, and last-activity time.
-5. Order by last-activity time, newest on top, and render.
+5. Name the session after the work it belongs to: a ticket key from the branch or
+   worktree dir, else a PR (a review-pr-N branch or a PR URL in the first prompt),
+   else a ticket named in the first prompt. The label is "<key> · <repo> · <what>",
+   and the key is weighted like a session id when searching, so `--find PROJ-142`
+   or `--find 1452` lands exactly. Derived from disk, so it works on old sessions.
+6. Order by last-activity time, newest on top, and render.
 
 Read-only. Never writes to any repo. Only --write-mdnest touches mdnest.
 """
@@ -323,6 +329,172 @@ def read_session_meta(session_file):
     return meta
 
 
+# --------------------------------------------------------------------------- #
+# Session key + label: name a session after the work it belongs to.
+#
+# A session is far easier to find again (especially after a crash, when every
+# window is gone and only transcripts survive) if its row says "PROJ-142" or
+# "PR #1452" instead of the first half-sentence you happened to type. The key is
+# DERIVED from what is already on disk, so it works retroactively on every old
+# transcript and needs nothing from the session itself.
+#
+# Priority: ticket in the branch / worktree dir, then a PR (review-pr-N branch or
+# a PR URL in the FIRST prompt), then a ticket named in the first prompt, then
+# nothing. Branch and directory are trusted; free prompt text is not, because a
+# transcript is full of ticket-shaped strings that are not this session's ticket
+# (rule examples in CLAUDE.md, keys quoted inside a reviewed diff), so a ticket
+# from a prompt counts only when it appears in a deliberate reference.
+# --------------------------------------------------------------------------- #
+_TICKET_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{2,10})-(\d{1,6})(?![A-Za-z0-9])")
+# Prefixes that look like a ticket key but never are.
+_TICKET_STOP = {"PR", "UTF", "ISO", "SHA", "RFC", "IPV", "HTTP", "HTTPS", "SSH",
+                "REVIEW", "RELEASE", "PART", "V", "VER", "TOP", "NO"}
+_REVIEW_PR_RE = re.compile(r"(?:^|[/-])review-pr-(\d{1,6})\b")
+_PR_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d{1,6})")
+_TICKET_CTX_RES = (
+    # A Jira link: .../browse/PROJ-142
+    re.compile(r"/browse/([A-Za-z]{2,10}-\d{1,6})(?![A-Za-z0-9])"),
+    # A branch name pasted into the prompt: feature/proj-142-agency-priced-lines
+    re.compile(r"(?:feature|fix|bugfix|hotfix|chore|story|task)/[\w.]*?"
+               r"([A-Za-z]{2,10}-\d{1,6})(?![A-Za-z0-9])"),
+    # Named outright: "ticket PROJ-142", "jira PROJ-142"
+    re.compile(r"\b(?:ticket|issue|jira|card)\s+(?:key\s+)?([A-Za-z]{2,10}-\d{1,6})"
+               r"(?![A-Za-z0-9])", re.I),
+)
+
+
+def _norm_ticket(prefix, num):
+    prefix = prefix.upper()
+    if prefix in _TICKET_STOP:
+        return None
+    return f"{prefix}-{num}"
+
+
+def _ticket_from_ref(text):
+    """A ticket key out of a branch name or directory name (trusted source)."""
+    if not text:
+        return None
+    for m in _TICKET_RE.finditer(text):
+        key = _norm_ticket(m.group(1), m.group(2))
+        if key:
+            return key
+    return None
+
+
+def _ticket_from_prompt(text):
+    """A ticket key out of prompt text, only from a deliberate reference."""
+    if not text:
+        return None
+    for rx in _TICKET_CTX_RES:
+        m = rx.search(text)
+        if m:
+            pre, _, num = m.group(1).partition("-")
+            key = _norm_ticket(pre, num)
+            if key:
+                return key
+    return None
+
+
+_UUIDISH_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-", re.I)
+
+
+def _repo_name(cwd):
+    """Just the repository name.
+
+    A worktree lives at <root>/WorkTrees/<repo>/<branch-dir>, so the repo is the
+    component right after the WorkTrees folder, not the directory you are in.
+    """
+    if not cwd:
+        return None
+    parts = [p for p in cwd.strip("/").split("/") if p]
+    if not parts:
+        return None
+    name = parts[-1]
+    for i, comp in enumerate(parts[:-1]):
+        if comp.lower() in ("worktrees", "worktree"):
+            name = parts[i + 1]
+            break
+    name = name.lstrip(".")
+    # A throwaway isolation worktree is named by uuid; that is not a repo name.
+    if not name or _UUIDISH_RE.match(name):
+        return None
+    return name
+
+
+def session_key(meta):
+    """What work this session belongs to: {kind, key, ref} or None.
+
+    kind is "ticket" or "pr"; key is the display key ("PROJ-142" / "PR #1452");
+    ref is the repo it belongs to.
+    """
+    branch = meta.get("git_branch") or ""
+    base = os.path.basename((meta.get("cwd") or "").rstrip("/"))
+    repo = _repo_name(meta.get("cwd"))
+
+    ticket = _ticket_from_ref(branch) or _ticket_from_ref(base)
+    if ticket:
+        return {"kind": "ticket", "key": ticket, "ref": repo}
+
+    m = _REVIEW_PR_RE.search(branch) or _REVIEW_PR_RE.search(base)
+    if m:
+        return {"kind": "pr", "key": f"PR #{m.group(1)}", "ref": repo}
+
+    first = meta.get("first_prompt")
+    m = _PR_URL_RE.search(first or "")
+    if m:
+        return {"kind": "pr", "key": f"PR #{m.group(2)}", "ref": m.group(1)}
+
+    ticket = _ticket_from_prompt(first)
+    if ticket:
+        return {"kind": "ticket", "key": ticket, "ref": repo}
+    return None
+
+
+_FILLER_SUMMARIES = {"continue", "go on", "carry on", "resume", "next", "ok", "yes",
+                     "proceed", "keep going", "continue please"}
+_BRANCH_PREFIX_RE = re.compile(r"^(?:feature|fix|bugfix|hotfix|chore|story|task)[/-]", re.I)
+
+
+def _slug_summary(meta, key):
+    """A readable summary out of the branch slug: story-PROJ-142-invoice-rollup -> invoice rollup."""
+    for src in (meta.get("git_branch"), os.path.basename((meta.get("cwd") or "").rstrip("/"))):
+        if not src:
+            continue
+        text = _BRANCH_PREFIX_RE.sub("", src.split("/")[-1])
+        if key:
+            text = re.sub(re.escape(key["key"].replace("PR #", "review-pr-")), "", text,
+                          flags=re.I)
+            text = re.sub(re.escape(key["key"]), "", text, flags=re.I)
+        text = " ".join(re.split(r"[-_.]+", text)).strip()
+        if len(text) >= 3:
+            return text
+    return None
+
+
+def session_label(meta, name, key=None):
+    """The display name: "<key> · <repo> · <summary>", dropping whatever is absent."""
+    parts = []
+    if key:
+        parts.append(key["key"])
+    repo = (key or {}).get("ref") or _repo_name(meta.get("cwd"))
+    if repo and repo not in parts:
+        parts.append(repo)
+    # A raw URL in the label is wasted width; the key already says which PR it is.
+    summary = " ".join(re.sub(r"https?://\S+", "", name or "").split()).rstrip(":,- ")
+    summary = _short(summary, 52) if len(summary) >= 3 else _short(name, 52)
+    # "continue" tells you nothing, and it is exactly how a session resumed after a
+    # crash starts. The branch slug says more.
+    if summary and summary.lower().strip(".!") in _FILLER_SUMMARIES:
+        summary = _slug_summary(meta, key) or summary
+    # `name` falls back to a session-id stub when the transcript captured no title
+    # and no prompt; that is noise next to a real key, so drop it.
+    if summary and summary == (meta.get("session_id") or "")[:8]:
+        summary = _slug_summary(meta, key)
+    if summary and summary.lower() not in [p.lower() for p in parts]:
+        parts.append(summary)
+    return " · ".join(parts) or (meta.get("session_id") or "unknown")[:8]
+
+
 def build_sessions():
     """Correlate live processes to sessions; return them newest-active first."""
     procs = collect_processes()
@@ -375,6 +547,8 @@ def build_sessions():
             meta.get("ai_title") or rc or _short(prompt) or _short(meta.get("first_prompt"))
             or (meta.get("session_id") or "unknown")[:8]
         )
+        rec["key"] = session_key(meta)
+        rec["label"] = session_label(meta, rec["name"], rec["key"])
     records.sort(key=lambda r: r["last_active"], reverse=True)
     return records
 
@@ -482,10 +656,20 @@ def _live_session_map():
     return live
 
 
-def _score(meta, tokens):
+def _score(meta, tokens, key=None, qnorm=None):
     """Relevance of a session's metadata to the query tokens. Higher = better."""
     if not tokens:
         return 0
+    keytxt = " ".join(filter(None, [(key or {}).get("key"),
+                                    (key or {}).get("ref")])).lower()
+    bonus = 0
+    if qnorm and key:
+        # The whole query IS this session's key ("PROJ-142", "PR #1458", "1458").
+        # Decide it here, before token scoring: "pr" on its own is a weak, common
+        # token that would otherwise drown the number that actually identifies it.
+        knorm = re.sub(r"[^a-z0-9]", "", key["key"].lower())
+        if qnorm == knorm or (qnorm.isdigit() and knorm == "pr" + qnorm):
+            bonus = 30
     title = (meta.get("ai_title") or "").lower()
     proj = (_repo_label(meta.get("cwd")) or "").lower()
     branch = (meta.get("git_branch") or "").lower()
@@ -508,11 +692,13 @@ def _score(meta, tokens):
             score += 2
         if tok in sid:
             score += 8   # a pasted id fragment is a strong signal
+        if keytxt and tok in keytxt:
+            score += 8   # a ticket key or PR number is just as exact
     # Whole-query phrase bonus.
     phrase = " ".join(tokens)
     if phrase and (phrase in title or phrase in prompts):
         score += 4
-    return score
+    return score + bonus
 
 
 def _resume_cmd(meta):
@@ -536,14 +722,17 @@ def search_sessions(query, limit=600):
         files = files[:limit]
     live = _live_session_map()
     tokens = [t for t in re.split(r"\s+", (query or "").strip().lower()) if t]
+    qnorm = re.sub(r"[^a-z0-9]", "", (query or "").lower())
 
     out = []
     for fp in files:
         meta = read_session_meta_fast(fp)
         sid = meta.get("session_id")
+        key = session_key(meta)
         rec = {
             "meta": meta,
-            "score": _score(meta, tokens),
+            "key": key,
+            "score": _score(meta, tokens, key, qnorm),
             "live": sid in live,
             "pids": live.get(sid, []),
             "last_active": meta.get("mtime") or 0,
@@ -551,6 +740,7 @@ def search_sessions(query, limit=600):
         }
         rec["name"] = (meta.get("ai_title") or _short(meta.get("first_prompt"))
                        or (sid or "unknown")[:8])
+        rec["label"] = session_label(meta, rec["name"], key)
         rec["doing"] = meta.get("last_prompt") or meta.get("first_prompt")
         out.append(rec)
 
@@ -584,9 +774,10 @@ def _repo_label(cwd):
     if not cwd:
         return "?"
     base = os.path.basename(cwd.rstrip("/"))
-    parent = os.path.basename(os.path.dirname(cwd.rstrip("/")))
-    if parent in ("WorkTrees", "worktrees"):
-        return f"{os.path.basename(os.path.dirname(os.path.dirname(cwd.rstrip('/'))))} / {base}"
+    repo = _repo_name(cwd)
+    if repo and repo != base:
+        # A worktree: name the repo it belongs to, then the worktree dir.
+        return f"{repo} / {base}"
     return base
 
 
@@ -627,7 +818,11 @@ def render_markdown(records):
     if top:
         lines.append("## Running right now (top)")
         lines.append("")
-        lines.append(f"- **Session:** {top['name']}")
+        lines.append(f"- **Session:** {top.get('label') or top['name']}")
+        if top.get("key"):
+            kind = "Ticket" if top["key"]["kind"] == "ticket" else "Pull request"
+            lines.append(f"- **{kind}:** `{top['key']['key']}`"
+                         + (f" ({top['key']['ref']})" if top["key"].get("ref") else ""))
         lines.append(f"- **Session ID:** `{top['meta'].get('session_id') or 'n/a'}`")
         lines.append(f"- **Where:** {_repo_label(top['meta'].get('cwd'))}"
                      + (f"  (`{top['meta'].get('git_branch')}`)" if top['meta'].get('git_branch') else ""))
@@ -655,7 +850,7 @@ def render_markdown(records):
         cwd = (m.get("cwd") or "unknown").replace("|", "│")
         lines.append(
             f"| {i} | {_ago(r['last_active'])} | {state} | "
-            f"{_clean_cell(r['name'], 50)} | {_clean_cell(proj, 48)} | "
+            f"{_clean_cell(r.get('label') or r['name'], 72)} | {_clean_cell(proj, 48)} | "
             f"`{cwd}` | {_clean_cell(r.get('doing'), 90)} | `{sid}` |"
         )
     lines.append("")
@@ -682,7 +877,11 @@ def render_json(records):
         m = r["meta"]
         out.append({
             "session_id": m.get("session_id"),
+            "label": r.get("label") or r["name"],
             "name": r["name"],
+            "key": (r.get("key") or {}).get("key"),
+            "key_kind": (r.get("key") or {}).get("kind"),
+            "key_ref": (r.get("key") or {}).get("ref"),
             "doing": r.get("doing"),
             "first_prompt": m.get("first_prompt"),
             "cwd": m.get("cwd"),
@@ -721,10 +920,14 @@ def render_search_markdown(records, query, limit, shown=12):
     for i, r in enumerate(records[:shown], 1):
         m = r["meta"]
         state = "\U0001F7E2 still running" if r["live"] else "⚪ closed"
-        lines.append(f"## {i}. {r['name']}")
+        lines.append(f"## {i}. {r.get('label') or r['name']}")
         lines.append("")
         lines.append(f"- **State:** {state}, last active {_ago(r['last_active'])}"
                      + (f" (pid {', '.join(map(str, r['pids']))})" if r["live"] else ""))
+        if r.get("key"):
+            kind = "Ticket" if r["key"]["kind"] == "ticket" else "Pull request"
+            lines.append(f"- **{kind}:** `{r['key']['key']}`"
+                         + (f" ({r['key']['ref']})" if r["key"].get("ref") else ""))
         lines.append(f"- **Project:** {_repo_label(m.get('cwd'))}"
                      + (f"  (`{m.get('git_branch')}`)" if m.get("git_branch") else ""))
         lines.append(f"- **Session ID:** `{m.get('session_id') or 'n/a'}`")
@@ -747,7 +950,11 @@ def render_search_json(records, query, limit):
         m = r["meta"]
         out.append({
             "session_id": m.get("session_id"),
+            "label": r.get("label") or r["name"],
             "name": r["name"],
+            "key": (r.get("key") or {}).get("key"),
+            "key_kind": (r.get("key") or {}).get("kind"),
+            "key_ref": (r.get("key") or {}).get("ref"),
             "score": r["score"],
             "live": r["live"],
             "pids": r["pids"],
@@ -807,7 +1014,10 @@ tr.row.open{background:#1b2230}
 .num{color:#6e7681;width:34px}
 .dot{width:24px}
 .ago{color:#8b949e;white-space:nowrap;width:92px}
-.name{font-weight:600;color:#58a6ff;max-width:240px}
+.name{font-weight:600;color:#58a6ff;max-width:300px}
+.key{display:inline-block;margin-right:7px;padding:1px 7px;border-radius:5px;
+   background:#1f3a63;border:1px solid #2f5896;color:#9ecbff;
+   font-family:ui-monospace,monospace;font-size:11px;white-space:nowrap}
 .caret{color:#6e7681;font-size:10px;margin-right:5px}
 .proj{color:#d29922;font-size:12px;max-width:230px}
 .branch{display:block;color:#6e7681;font-family:ui-monospace,monospace;font-size:11px}
@@ -839,7 +1049,7 @@ button.kill:disabled{opacity:.5;cursor:default}
 <header>
   <h1>Claude Code - Running Sessions</h1>
   <div class="sub" id="sub">loading&hellip;</div>
-  <input id="q" type="search" placeholder="Search name, project, directory, branch, doing, session id&hellip;" autocomplete="off">
+  <input id="q" type="search" placeholder="Search ticket key, PR number, project, directory, branch, doing, session id&hellip;" autocomplete="off">
   <span class="hint">click a row for full detail &middot; newest on top</span>
 </header>
 <div class="wrap">
@@ -857,7 +1067,7 @@ var KILL_ENABLED = false;
 function esc(s){ s = (s==null?'':String(s));
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function key(s){ return s.session_id || ('pids:'+(s.pids||[]).join(',')); }
-function haystack(s){ return [s.name,s.project,s.cwd,s.git_branch,s.doing,s.first_prompt,
+function haystack(s){ return [s.label,s.key,s.key_ref,s.name,s.project,s.cwd,s.git_branch,s.doing,s.first_prompt,
   s.session_id,(s.pids||[]).join(' '),s.remote_control,s.model].join('  ').toLowerCase(); }
 function matches(s,q){ if(!q) return true;
   var h = haystack(s);
@@ -866,7 +1076,9 @@ function detailHTML(s){
   var rows = [];
   function add(k,v,mono){ if(v==null||v==='') return;
     rows.push('<div class="drow"><div class="dk">'+esc(k)+'</div><div class="dv'+(mono?' mono':'')+'">'+esc(v)+'</div></div>'); }
-  add('Session', s.name);
+  add('Session', s.label || s.name);
+  add(s.key_kind === 'pr' ? 'Pull request' : 'Ticket',
+      s.key ? (s.key + (s.key_ref ? ' · ' + s.key_ref : '')) : '');
   add('Session ID', s.session_id || 'n/a (no transcript yet)', true);
   add('Directory', s.cwd || 'unknown', true);
   add('Git branch', s.git_branch, true);
@@ -908,7 +1120,9 @@ function render(){
       + '<td class="num">'+(i+1)+'</td>'
       + '<td class="dot">'+(s.active_now?'🟢':'⚪')+'</td>'
       + '<td class="ago">'+esc(s.last_active_human)+'</td>'
-      + '<td class="name"><span class="caret">'+(isOpen?'▼':'▶')+'</span>'+esc(s.name)+'</td>'
+      + '<td class="name"><span class="caret">'+(isOpen?'▼':'▶')+'</span>'
+      + (s.key ? '<span class="key">'+esc(s.key)+'</span>' : '')
+      + esc(s.key ? (s.label||'').slice(s.key.length+3) : (s.label||s.name))+'</td>'
       + '<td class="proj">'+esc(s.project||'?')+branch+'<span class="path">'+esc(s.cwd||'unknown')+'</span></td>'
       + '<td class="doing">'+doing+'</td>'
       + '<td class="sid">'+esc(s.session_id||'n/a')+'</td></tr>';

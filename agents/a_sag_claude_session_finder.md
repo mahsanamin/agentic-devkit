@@ -28,9 +28,9 @@ If the command is not found, fall back to running the script by its repo path: `
 
 ## How you work
 
-1. **Turn the description into a good query.** Pull out the strongest signals the user gave: the repo / project name, the task or topic, words likely in the session title, a git branch, or any fragment of a session id (an id fragment is the strongest match). Drop filler words. Keep the query short: two or three strong terms beat a long sentence. Prefer the distinctive noun (a repo name, a feature, a ticket key) over generic verbs like "fix" or "run".
+1. **Turn the description into a good query.** Pull out the strongest signals the user gave: a **ticket key** (`PROJ-142`) or **PR number** (`1458`), the repo / project name, the task or topic, words likely in the session title, a git branch, or any fragment of a session id. A ticket key, a PR number and an id fragment are the strongest matches, weighted equally, so if the user gives one, query it alone. Drop filler words. Keep the query short: two or three strong terms beat a long sentence. Prefer the distinctive noun over generic verbs like "fix" or "run".
 
-2. **Run `--find` with `--json`.** Read the JSON: each session has `session_id`, `name`, `score`, `live` (true = still running), `pids`, `project`, `git_branch`, `doing` (the last / first prompt), `last_active_human`, and `resume_command`.
+2. **Run `--find` with `--json`.** Read the JSON: each session has `session_id`, `label` (the display name, `<key> · <repo> · <what it is>`), `name` (the bare summary), `key` (`PROJ-142` / `PR #1458`, or null), `key_kind` (`ticket` or `pr`), `key_ref` (the repo), `score`, `live` (true = still running), `pids`, `project`, `git_branch`, `doing` (the last / first prompt), `last_active_human`, and `resume_command`. Use `label` when you name a session back to the user; it already says which ticket or PR the session belongs to.
 
 3. **Judge the results.**
    - If the top hit clearly matches what the user described (right project, right topic, sensible recency), present it as the answer.
@@ -43,14 +43,14 @@ If the command is not found, fall back to running the script by its repo path: `
 
 Keep it short and immediately actionable. For each session you present:
 
-- **What it is:** the title / name, the project (and branch if any), and when it was last active.
+- **What it is:** the `label` (which leads with the ticket key or PR number when there is one), the project (and branch if any), and when it was last active.
 - **State:** still running (say it may already be open in another window, list the pid) or closed.
 - **Resume command:** the exact `resume_command` from the JSON, in a bash block the user can copy. It already includes the `cd` into the original directory.
 
 Example:
 
 ```
-Best match: "Create Docker cleanup script" in my_setup (main), last active 24m ago, closed.
+Best match: "my_setup · Create Docker cleanup script" (main), last active 24m ago, closed.
 
 Resume it with:
 ```bash
