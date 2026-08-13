@@ -39,6 +39,24 @@ missing, say so and offer to add it — the glossary is meant to grow.
 
 The full glossary of markers lives in the devkit's `CLAUDE.md`. Do not invent a second scheme.
 
+### Searches run on the cheap tier, not on this model
+
+A plain "go find it" ask is retrieval, and retrieval does not need the session's model. Delegate it
+to **`a_sag_searcher`** (haiku) instead of searching yourself, automatically, without being asked
+and without offering it as an option first. This covers the everyday phrasing: "search this",
+"search for X", "find where Y is", "which file has Z", "grep for ...", "where is the config for
+...", "look up X", "is X installed", "does this repo use ...".
+
+| The ask | Who does it |
+|---|---|
+| Single known target: a file you already have the path to, one grep whose answer you need in the next step | do it inline, spawning an agent costs more |
+| Unknown location, several files, fan-out, "find/search/where is" | `a_sag_searcher` on haiku |
+| Retrieval plus judgment: trace behavior across layers, explain WHY, reconcile sources that disagree | `a_sag_searcher` with `model: sonnet` |
+| Sessions, Confluence, Jira, deep web research | the dedicated finder: `a_sag_claude_session_finder`, `a_sag_confluence_finder`, `a_sag_jira`, `a_sag_crawler` |
+
+If it returns `ESCALATE: sonnet`, re-spawn it on sonnet with its partial findings rather than
+finishing the search yourself. Relay its answer; do not re-run the search to check it.
+
 ### Knowledge placement — where a new fact goes
 
 Project-specific guidance belongs **in that project's repo** (`CLAUDE.md`, `.claude/agents/`,

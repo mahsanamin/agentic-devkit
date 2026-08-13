@@ -75,6 +75,7 @@ A personal, **project-agnostic** library of Claude Code sub-agents. Every agent 
 ### Search / recovery
 | Agent | Model | Role |
 |-------|-------|------|
+| `a_sag_searcher` | haiku (sonnet on escalation) | **The default search tier.** Any ordinary "find it / grep it / where is it / look it up" ask, answered as conclusion plus `file:line` citations, so retrieval never runs on the session's expensive model. Escalates to sonnet by returning `ESCALATE: sonnet` when the ask needs judgment, not retrieval. Read-only |
 | `a_sag_claude_session_finder` | haiku | Find a Claude Code session on this machine (live or closed) from a rough description; return the exact `claude --resume` command. Read-only |
 | `a_sag_confluence_finder` | haiku | Search one project's Confluence space and return the matching pages with links. Read-only |
 | `a_sag_jira` | haiku | Do Jira work in a cheap, disposable context: fetch issues, run JQL, and (only when asked) create/comment/transition/assign/link. Keeps noisy Atlassian MCP calls off the main context. Read by default |
