@@ -145,6 +145,43 @@ link_claude() {
     "$REPO_ROOT/scripts/a_c_agents" install ${flags[@]+"${flags[@]}"}
 }
 
+# ---------------------------------------------------------------------------
+# 3. Tell the user about the optional always-on bits.
+#
+# Deliberately NOT auto-installed: these are background services (a launchd job,
+# a listening port), and installing one behind someone's back on a fresh machine
+# is not ours to decide. But an unmentioned feature is an unused feature, so
+# print what exists, whether it is already running here, and the exact command.
+# ---------------------------------------------------------------------------
+suggest_extras() {
+    command -v python3 > /dev/null 2>&1 || return 0
+    local label="com.ahsan.claude-sessions-web"
+    local agent="$HOME/Library/LaunchAgents/$label.plist"
+    local daemon="/Library/LaunchDaemons/$label.plist"
+
+    say ""
+    say "${BLUE}Optional: the Claude sessions dashboard${NC}"
+    say "${DIM}One live web page listing every Claude Code session on this machine, with${NC}"
+    say "${DIM}its session id and a ready-to-run resume command, plus a search over every${NC}"
+    say "${DIM}session on disk so one you closed by mistake can be found again.${NC}"
+
+    if [ -f "$daemon" ]; then
+        say "  ${GREEN}already installed${NC} ${DIM}as a boot daemon (starts before login)${NC}"
+        return 0
+    fi
+    if [ -f "$agent" ]; then
+        say "  ${GREEN}already installed${NC} ${DIM}as a login agent${NC}"
+        say "    ${GREEN}sudo a_c_claude_sessions --install-boot-daemon${NC}  ${DIM}start at boot instead, no login needed${NC}"
+        return 0
+    fi
+    say "    ${GREEN}a_c_claude_sessions${NC}                            ${DIM}one-off snapshot, nothing installed${NC}"
+    say "    ${GREEN}a_c_claude_sessions --find \"what you remember\"${NC}   ${DIM}recover a closed session${NC}"
+    say "    ${GREEN}a_c_claude_sessions --serve --tailscale${NC}         ${DIM}live page on your tailnet, this shell only${NC}"
+    say "    ${GREEN}a_c_claude_sessions --install-web-agent${NC}         ${DIM}keep it running, starts at login${NC}"
+    say "    ${GREEN}sudo a_c_claude_sessions --install-boot-daemon${NC}  ${DIM}starts at boot, survives an unattended reboot${NC}"
+    say "${DIM}Details, including what is exposed on the network: docs/claude-sessions.md${NC}"
+}
+
 main() {
     say "${BLUE}my_setup install${NC} ${DIM}($REPO_ROOT)${NC}"
     $DRY_RUN && say "${YELLOW}(dry run - nothing will change)${NC}"
@@ -172,6 +209,8 @@ main() {
             say "    ${GREEN}a_c_claude_memory build${NC}  ${DIM}adopt it (your hand-written text is kept)${NC}"
         fi
     fi
+    $DRY_RUN || suggest_extras
+
     if $DRY_RUN; then
         :
     elif [ -n "${MY_WORKFLOW_DIR:-}" ]; then

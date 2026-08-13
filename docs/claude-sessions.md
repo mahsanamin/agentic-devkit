@@ -49,6 +49,51 @@ plist path, the log path, and the URL it is serving. The web agent uses `KeepAli
 so if Tailscale is not up yet at login it keeps retrying until the tailnet address
 exists.
 
+### Login versus boot (the gap, and how to close it)
+
+A **LaunchAgent starts at login, not at boot.** On a machine you sit at, that is the
+same thing in practice. On an always-on box it is not: an unattended reboot (a power
+cut, a remote `reboot`, a crash) leaves the dashboard down until somebody logs in.
+
+To start it at boot with nobody at the keyboard, install it as a system
+**LaunchDaemon** instead. This needs `sudo`:
+
+```bash
+sudo a_c_claude_sessions --install-boot-daemon        # port 8787
+sudo a_c_claude_sessions --install-boot-daemon 9000   # another port
+sudo a_c_claude_sessions --uninstall-boot-daemon
+```
+
+What that does, and why each part is needed:
+
+- Writes `/Library/LaunchDaemons/com.ahsan.claude-sessions-web.plist`, owned
+  `root:wheel` and mode `644`. launchd refuses a daemon plist that is group or world
+  writable, so the installer sets this itself.
+- Sets `UserName` to **your** account, not root. The dashboard reads session
+  transcripts under `~/.claude/projects`, so running as root would find nothing, and
+  anything it wrote would land root-owned.
+- Sets `HOME` explicitly in `EnvironmentVariables`. A daemon inherits no user
+  environment, so without this the script would look for `~/.claude` in the wrong
+  place.
+- **Retires the login agent** rather than leaving both installed. Two copies would
+  race for the same port and one would fail to bind, thrashing under `KeepAlive`. The
+  old plist is renamed to `...plist.replaced-by-boot-daemon`, so the change is
+  reversible and visible.
+- Keeps `KeepAlive`, so binding before Tailscale is up at boot just retries.
+
+Check it after a reboot:
+
+```bash
+sudo launchctl print system/com.ahsan.claude-sessions-web | head -20
+```
+
+**One case where boot-level start buys nothing:** if FileVault is **on**, the data
+volume stays locked until somebody unlocks it at the login screen, so no daemon can
+read `~/.claude` before that. There the LaunchAgent is the honest answer. Check with
+`fdesetup status`. The other route to the same outcome is enabling automatic login,
+which starts every LaunchAgent you have, at the cost of macOS storing your password
+weakly obfuscated in `/etc/kcpassword`.
+
 ## How a session is named
 
 A session is named after the **work it belongs to**, not after the first half
