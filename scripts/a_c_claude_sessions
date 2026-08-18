@@ -37,6 +37,8 @@ session you closed by mistake can be found again and resumed:
                  exact `claude --resume` command for each match. Newest activity
                  breaks ties.
   --all          list every session on disk (live + closed), newest first.
+  --since W      only sessions active within a window (36h, 2d, 90m); shows all
+                 of them and lifts the scan cap
   --limit N      cap the transcript scan to the N most-recently-active sessions
                  (default 600; use 0 for no cap). Search is head+tail only, so
                  even large transcripts are cheap to scan.
@@ -300,6 +302,9 @@ def read_session_meta(session_file):
         "git_branch": None,
         "model": None,
         "mtime": None,
+        "last_ts": None,
+        "custom_title": None,
+        "agent_name": None,
     }
     try:
         meta["mtime"] = os.path.getmtime(session_file)
@@ -316,8 +321,15 @@ def read_session_meta(session_file):
                 except json.JSONDecodeError:
                     continue
                 t = d.get("type")
+                ts = _epoch_from_iso(d.get("timestamp"))
+                if ts and ts > (meta.get("last_ts") or 0):
+                    meta["last_ts"] = ts
                 if t == "ai-title":
                     meta["ai_title"] = d.get("aiTitle") or meta["ai_title"]
+                elif t == "custom-title":
+                    meta["custom_title"] = d.get("customTitle") or meta["custom_title"]
+                elif t == "agent-name":
+                    meta["agent_name"] = d.get("agentName") or meta["agent_name"]
                 elif t == "last-prompt":
                     meta["last_prompt"] = d.get("lastPrompt") or meta["last_prompt"]
                 if d.get("cwd"):
@@ -543,7 +555,7 @@ def build_sessions():
     records = list(sessions.values())
     for rec in records:
         meta = rec["meta"]
-        mt = meta.get("mtime") or 0
+        mt = meta.get("last_ts") or meta.get("mtime") or 0
         rec["last_active"] = mt
         rec["active_now"] = (time.time() - mt) <= ACTIVE_WINDOW_SECS if mt else False
         # Best short name: ai title, else remote-control name, else prompt, else id.
@@ -554,7 +566,7 @@ def build_sessions():
         # "What it is doing": last prompt, then argv prompt, then first prompt.
         rec["doing"] = meta.get("last_prompt") or prompt or meta.get("first_prompt")
         rec["name"] = (
-            meta.get("ai_title") or rc or _short(prompt) or _short(meta.get("first_prompt"))
+            _best_title(meta) or rc or _short(prompt) or _short(meta.get("first_prompt"))
             or (meta.get("session_id") or "unknown")[:8]
         )
         rec["key"] = session_key(meta)
@@ -571,14 +583,54 @@ HEAD_LINES = 80          # title / first prompt / cwd / branch live near the top
 TAIL_BYTES = 96 * 1024   # last prompt / recent activity live at the very end
 
 
+def _best_title(meta):
+    """The name a human would recognise: what they typed beats what was generated."""
+    return (meta.get("custom_title") or meta.get("ai_title")
+            or meta.get("agent_name"))
+
+
+def _epoch_from_iso(value):
+    """Epoch seconds from a transcript ISO-8601 timestamp, or None."""
+    if not value or not isinstance(value, str):
+        return None
+    txt = value.strip()
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(txt).timestamp()
+    except ValueError:
+        return None
+
+
+def _parse_window(text):
+    """'36h' / '2d' / '90m' / '45s' / bare number (hours) -> seconds, or None."""
+    if not text:
+        return None
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhdw]?)\s*", str(text).lower())
+    if not m:
+        return None
+    n = float(m.group(1))
+    unit = m.group(2) or "h"
+    return n * {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
+
+
 def _apply_records(meta, records):
     """Fold a list of decoded transcript records into a meta dict, in order."""
     for d in records:
         if not isinstance(d, dict):
             continue
         t = d.get("type")
+        ts = _epoch_from_iso(d.get("timestamp"))
+        if ts and ts > (meta.get("last_ts") or 0):
+            meta["last_ts"] = ts
         if t == "ai-title":
             meta["ai_title"] = d.get("aiTitle") or meta["ai_title"]
+        elif t == "custom-title":
+            # A title the USER typed. Last one wins (they can rename mid-session),
+            # and it outranks the generated ai-title everywhere a name is shown.
+            meta["custom_title"] = d.get("customTitle") or meta["custom_title"]
+        elif t == "agent-name":
+            meta["agent_name"] = d.get("agentName") or meta["agent_name"]
         elif t == "last-prompt":
             meta["last_prompt"] = d.get("lastPrompt") or meta["last_prompt"]
         if d.get("cwd"):
@@ -604,7 +656,8 @@ def read_session_meta_fast(session_file):
         "file": session_file,
         "ai_title": None, "last_prompt": None, "first_prompt": None,
         "recent_user": None, "cwd": None, "git_branch": None,
-        "model": None, "mtime": None,
+        "model": None, "mtime": None, "last_ts": None,
+        "custom_title": None, "agent_name": None,
     }
     try:
         meta["mtime"] = os.path.getmtime(session_file)
@@ -721,11 +774,20 @@ def _resume_cmd(meta):
     return f"claude --resume {sid}"
 
 
-def search_sessions(query, limit=600):
-    """Rank EVERY session on disk against query. Returns records newest/best first."""
+def search_sessions(query, limit=600, since=None):
+    """Rank EVERY session on disk against query. Returns records newest/best first.
+
+    `since` is a window in seconds; only sessions whose LAST TRANSCRIPT ENTRY falls
+    inside it are returned.
+    """
     idx = _session_index()
     files = list(idx.values())
-    # Newest first, then cap the scan so huge histories stay cheap.
+    # Order the scan by file mtime. mtime is not the session's real last activity
+    # (other tooling touches these files long after the session ended, which is why
+    # last_active is read from the transcript instead), but it only ever moves
+    # FORWARD, so mtime >= true last activity for every file. That makes this a safe
+    # superset ordering for the scan cap: a genuinely recent session can never be
+    # pushed out of the window by it.
     files.sort(key=lambda fp: os.path.getmtime(fp) if os.path.exists(fp) else 0,
                reverse=True)
     if limit and limit > 0:
@@ -745,14 +807,18 @@ def search_sessions(query, limit=600):
             "score": _score(meta, tokens, key, qnorm),
             "live": sid in live,
             "pids": live.get(sid, []),
-            "last_active": meta.get("mtime") or 0,
+            "last_active": meta.get("last_ts") or meta.get("mtime") or 0,
             "resume": _resume_cmd(meta),
         }
-        rec["name"] = (meta.get("ai_title") or _short(meta.get("first_prompt"))
+        rec["name"] = (_best_title(meta) or _short(meta.get("first_prompt"))
                        or (sid or "unknown")[:8])
         rec["label"] = session_label(meta, rec["name"], key)
         rec["doing"] = meta.get("last_prompt") or meta.get("first_prompt")
         out.append(rec)
+
+    if since:
+        cutoff = time.time() - since
+        out = [r for r in out if r["last_active"] >= cutoff]
 
     if tokens:
         out = [r for r in out if r["score"] > 0]
@@ -911,15 +977,31 @@ def render_json(records):
                        "kill_enabled": _ALLOW_KILL, "sessions": out}, indent=2)
 
 
-def render_search_markdown(records, query, limit, shown=12):
+def _window_human(secs):
+    if not secs:
+        return None
+    if secs % 86400 == 0:
+        return f"{int(secs // 86400)}d"
+    if secs % 3600 == 0:
+        return f"{int(secs // 3600)}h"
+    return f"{int(secs // 60)}m"
+
+
+def render_search_markdown(records, query, limit, shown=12, since=None):
     lines = []
     title = f'sessions matching "{query}"' if query else "all sessions (newest first)"
+    if since:
+        title += f" - active in the last {_window_human(since)}"
     lines.append(f"# Claude Code - {title}")
     lines.append("")
     scanned = "no cap" if not limit else f"newest {limit}"
-    lines.append(f"_Updated {_now_str()}. {len(records)} match(es), showing top "
-                 f"{min(shown, len(records))}. Scanned {scanned} sessions on disk "
-                 "(live + closed)._")
+    if shown and shown > 0:
+        howmany = f"showing top {min(shown, len(records))}"
+    else:
+        howmany = "showing all"
+    lines.append(f"_Updated {_now_str()}. {len(records)} match(es), {howmany}. "
+                 f"Scanned {scanned} sessions on disk (live + closed). "
+                 "Last active is read from the transcript, not the file timestamp._")
     lines.append("")
     if not records:
         lines.append("No session matched. Try fewer / different words, a repo name, "
@@ -927,7 +1009,26 @@ def render_search_markdown(records, query, limit, shown=12):
         lines.append("")
         return "\n".join(lines)
 
-    for i, r in enumerate(records[:shown], 1):
+    shortlist = records if not shown or shown <= 0 else records[:shown]
+
+    # A windowed or long listing is for scanning, so lead with a table whose first
+    # real column is the session NAME - that is what the user recognises, not the id.
+    if since or len(shortlist) > 6:
+        lines.append("| # | Session | Last active | State | Project / branch | Session ID |")
+        lines.append("|---|---------|-------------|-------|------------------|------------|")
+        for i, r in enumerate(shortlist, 1):
+            m = r["meta"]
+            state = "\U0001F7E2 running" if r["live"] else "⚪ closed"
+            proj = _repo_label(m.get("cwd"))
+            if m.get("git_branch"):
+                proj = f"{proj}<br/>`{m['git_branch']}`"
+            lines.append(
+                f"| {i} | {_clean_cell(r.get('name') or r.get('label'), 60)} | "
+                f"{_ago(r['last_active'])} | {state} | {_clean_cell(proj, 40)} | "
+                f"`{m.get('session_id') or 'n/a'}` |")
+        lines.append("")
+
+    for i, r in enumerate(shortlist, 1):
         m = r["meta"]
         state = "\U0001F7E2 still running" if r["live"] else "⚪ closed"
         lines.append(f"## {i}. {r.get('label') or r['name']}")
@@ -954,7 +1055,7 @@ def render_search_markdown(records, query, limit, shown=12):
     return "\n".join(lines)
 
 
-def render_search_json(records, query, limit):
+def render_search_json(records, query, limit, since=None):
     out = []
     for r in records:
         m = r["meta"]
@@ -979,6 +1080,7 @@ def render_search_json(records, query, limit):
         })
     return json.dumps({
         "generated": _now_str(), "query": query, "scan_limit": limit,
+        "since_seconds": since, "since_human": _window_human(since),
         "count": len(out), "sessions": out,
     }, indent=2)
 
@@ -1778,10 +1880,16 @@ def main():
                          "resume command for each match, best/newest first")
     ap.add_argument("--all", action="store_true",
                     help="list every session on disk (live + closed), newest first")
-    ap.add_argument("--limit", type=int, default=600,
-                    help="cap the transcript scan to the N newest sessions (0 = no cap)")
-    ap.add_argument("--top", type=int, default=12,
-                    help="how many matches to show in --find/--all markdown (default 12)")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="cap the transcript scan to the N newest sessions "
+                         "(0 = no cap; default 600, or no cap when --since is used)")
+    ap.add_argument("--top", type=int, default=None,
+                    help="how many matches to show in --find/--all markdown "
+                         "(0 = all; default 12, or all when --since is used)")
+    ap.add_argument("--since", metavar="WINDOW",
+                    help="only sessions whose last transcript entry is inside this "
+                         "window, e.g. 36h, 2d, 90m (a bare number means hours). "
+                         "Shows every session in the window and lifts the scan cap.")
     ap.add_argument("--refresh", type=int, default=10, help="web auto-refresh seconds (default 10)")
     args = ap.parse_args()
 
@@ -1811,11 +1919,20 @@ def main():
         return
     if args.find is not None or args.all:
         query = "" if args.all else args.find
-        records = search_sessions(query, limit=args.limit)
+        since = _parse_window(args.since) if args.since else None
+        if args.since and since is None:
+            print(f"error: could not read --since {args.since!r}; "
+                  "use a form like 36h, 2d or 90m", file=sys.stderr)
+            sys.exit(1)
+        # A window is an explicit "show me everything in here", so neither the scan
+        # cap nor the display cap may silently cut it. Both still honour an explicit flag.
+        limit = args.limit if args.limit is not None else (0 if since else 600)
+        top = args.top if args.top is not None else (0 if since else 12)
+        records = search_sessions(query, limit=limit, since=since)
         if args.json:
-            print(render_search_json(records, query, args.limit))
+            print(render_search_json(records, query, limit, since=since))
         else:
-            print(render_search_markdown(records, query, args.limit, shown=args.top))
+            print(render_search_markdown(records, query, limit, shown=top, since=since))
         return
     if args.write_mdnest is not None:
         records = build_sessions()
