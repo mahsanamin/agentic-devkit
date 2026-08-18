@@ -73,6 +73,7 @@ import os
 import pwd
 import re
 import shutil
+import sqlite3
 import signal
 import subprocess
 import sys
@@ -1439,6 +1440,237 @@ def _json_feed(ttl=4):
         return body
 
 
+# --------------------------------------------------------------------------- #
+# Full-text search index over what YOU typed in every session.
+#
+# The point of this index is to make searching your own history something you do
+# yourself, instantly, instead of asking an assistant to grep for you and paying
+# tokens for it. It covers ALL sessions on disk, not just the running ones.
+#
+# Only USER prompts are indexed, deliberately. Assistant replies and tool output
+# are the overwhelming bulk of a transcript (hundreds of MB across a history this
+# size) and searching them mostly returns your own words quoted back at you. What
+# you actually remember is what you typed.
+#
+# Indexing is incremental: each session records how many bytes were already read,
+# so a refresh only parses what was appended since. The first build is the only
+# expensive one.
+# --------------------------------------------------------------------------- #
+INDEX_DB = os.path.expanduser("~/.claude/.cache/session-search.db")
+
+# Per session. Generous enough to hold a long conversation's prompts, bounded so
+# one runaway session cannot dominate the index.
+MAX_PROMPT_CHARS = 200_000
+
+
+def _index_connect():
+    os.makedirs(os.path.dirname(INDEX_DB), exist_ok=True)
+    conn = sqlite3.connect(INDEX_DB, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            cwd TEXT, project TEXT, branch TEXT, name TEXT,
+            key TEXT, key_kind TEXT,
+            last_active REAL, offset INTEGER DEFAULT 0, size INTEGER DEFAULT 0,
+            prompts TEXT DEFAULT '')""")
+    conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts
+            USING fts5(session_id UNINDEXED, name, project, branch, prompts,
+                       tokenize='porter unicode61')""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_last_active "
+                 "ON sessions(last_active DESC)")
+    conn.commit()
+    return conn
+
+
+def _user_prompts_from(text):
+    """The human-typed lines out of a chunk of transcript."""
+    out = []
+    for rec in _iter_index_records(text):
+        if rec.get("type") != "user" or rec.get("isMeta"):
+            continue
+        content = (rec.get("message") or {}).get("content")
+        txt = _text_from_content(content)
+        if not txt:
+            continue
+        txt = txt.strip()
+        # Tool results and injected context arrive as "user" records too. They are
+        # machine text, not something the person typed, so they do not belong here.
+        if not txt or txt.startswith("<"):
+            continue
+        out.append(txt)
+    return out
+
+
+def _iter_index_records(text):
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+
+def index_sessions(progress=False):
+    """Refresh the search index. Returns (indexed, skipped, total)."""
+    conn = _index_connect()
+    known = {row[0]: (row[1], row[2]) for row in
+             conn.execute("SELECT session_id, offset, size FROM sessions")}
+    files = _session_index()
+    indexed = skipped = 0
+    total = len(files)
+
+    for n, (sid, path) in enumerate(sorted(files.items()), 1):
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        prev_offset, prev_size = known.get(sid, (0, -1))
+        if size == prev_size:
+            skipped += 1
+            continue
+        # A shrunken file is not the file we indexed before; start it over.
+        start = prev_offset if size > prev_size else 0
+
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                raw = fh.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if start > 0 and "\n" in raw:
+            raw = raw.split("\n", 1)[1]
+
+        meta = read_session_meta_fast(path)
+        key = session_key(meta) or {}
+        new_text = "\n".join(_user_prompts_from(raw))
+
+        row = conn.execute("SELECT prompts FROM sessions WHERE session_id = ?",
+                           (sid,)).fetchone()
+        prompts = ((row[0] + "\n" + new_text) if row and start > 0 else new_text)
+        if len(prompts) > MAX_PROMPT_CHARS:
+            # Keep the most recent end of a very long session.
+            prompts = prompts[-MAX_PROMPT_CHARS:]
+
+        name = (_best_title(meta) or _short(meta.get("first_prompt"))
+                or (sid or "unknown")[:8])
+        project = _repo_label(meta.get("cwd")) or ""
+        last_active = meta.get("last_ts") or meta.get("mtime") or 0
+
+        conn.execute("""INSERT INTO sessions
+                (session_id, cwd, project, branch, name, key, key_kind,
+                 last_active, offset, size, prompts)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                 cwd=excluded.cwd, project=excluded.project, branch=excluded.branch,
+                 name=excluded.name, key=excluded.key, key_kind=excluded.key_kind,
+                 last_active=excluded.last_active, offset=excluded.offset,
+                 size=excluded.size, prompts=excluded.prompts""",
+            (sid, meta.get("cwd") or "", project, meta.get("git_branch") or "",
+             name, key.get("key") or "", key.get("kind") or "",
+             last_active, size, size, prompts))
+        conn.execute("DELETE FROM sessions_fts WHERE session_id = ?", (sid,))
+        conn.execute("INSERT INTO sessions_fts (session_id, name, project, branch, prompts) "
+                     "VALUES (?,?,?,?,?)", (sid, name, project,
+                                            meta.get("git_branch") or "", prompts))
+        indexed += 1
+        if progress and indexed % 25 == 0:
+            print(f"  indexed {indexed} (seen {n}/{total})", file=sys.stderr)
+
+    conn.commit()
+    conn.close()
+    return indexed, skipped, total
+
+
+def _fts_query(query):
+    """User words -> an FTS5 query. Quoted so punctuation cannot be syntax."""
+    words = [w for w in re.split(r"\s+", (query or "").strip()) if w]
+    if not words:
+        return None
+    return " AND ".join('"' + w.replace('"', '""') + '"*' for w in words)
+
+
+def search_index(query, limit=40, since=None):
+    """Sessions whose prompts match. Empty query = most recent, newest first."""
+    if not os.path.exists(INDEX_DB):
+        return None
+    conn = _index_connect()
+    where, params = [], []
+    if since:
+        where.append("s.last_active >= ?")
+        params.append(time.time() - since)
+
+    match = _fts_query(query)
+    if match:
+        sql = ("SELECT s.session_id, s.name, s.project, s.branch, s.cwd, "
+               "s.last_active, s.key, snippet(sessions_fts, 4, '[', ']', ' … ', 12) "
+               "FROM sessions_fts f JOIN sessions s ON s.session_id = f.session_id "
+               "WHERE sessions_fts MATCH ?")
+        params.insert(0, match)
+        if where:
+            sql += " AND " + " AND ".join(where)
+    else:
+        sql = ("SELECT s.session_id, s.name, s.project, s.branch, s.cwd, "
+               "s.last_active, s.key, '' FROM sessions s")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY s.last_active DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        conn.close()
+        return []
+    conn.close()
+
+    live = _live_session_map()
+    out = []
+    for sid, name, project, branch, cwd, last_active, key, snip in rows:
+        out.append({
+            "session_id": sid, "name": name, "project": project,
+            "branch": branch, "cwd": cwd, "key": key or None,
+            "last_active_epoch": last_active,
+            "last_active_human": _ago(last_active),
+            "live": sid in live,
+            "match": (snip or "").replace("\n", " ").strip(),
+            "resume_command": _resume_cmd({"session_id": sid, "cwd": cwd}),
+        })
+    return out
+
+
+def render_index_markdown(rows, query, since=None):
+    lines = []
+    what = f'you typed matching "{query}"' if query else "your newest sessions"
+    if since:
+        what += f" (last {_window_human(since)})"
+    lines.append(f"# Claude Code - {what}")
+    lines.append("")
+    if not rows:
+        lines.append("Nothing matched. Try one distinctive word; matching is "
+                     "prefix-based and every word must appear.")
+        return "\n".join(lines)
+    lines.append(f"_{len(rows)} session(s). Searching only what YOU typed._")
+    lines.append("")
+    lines.append("| # | Session | Last active | State | Project | Match |")
+    lines.append("|---|---------|-------------|-------|---------|-------|")
+    for i, r in enumerate(rows, 1):
+        state = "\U0001F7E2 running" if r["live"] else "⚪ closed"
+        lines.append(
+            f"| {i} | {_clean_cell(r['name'], 46)} | {r['last_active_human']} | "
+            f"{state} | {_clean_cell(r['project'], 28)} | "
+            f"{_clean_cell(r['match'] or '-', 70)} |")
+    lines.append("")
+    lines.append("Resume any of them:")
+    lines.append("")
+    lines.append("```bash")
+    for r in rows[:5]:
+        lines.append(r["resume_command"] or "")
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def serve(host, port, refresh, allow_kill=False):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -1886,6 +2118,11 @@ def main():
     ap.add_argument("--top", type=int, default=None,
                     help="how many matches to show in --find/--all markdown "
                          "(0 = all; default 12, or all when --since is used)")
+    ap.add_argument("--search", metavar="WORDS",
+                    help="search everything you TYPED across all sessions, using the "
+                         "local index (instant). Empty value lists the newest.")
+    ap.add_argument("--reindex", action="store_true",
+                    help="refresh the search index now (it also refreshes on demand)")
     ap.add_argument("--since", metavar="WINDOW",
                     help="only sessions whose last transcript entry is inside this "
                          "window, e.g. 36h, 2d, 90m (a bare number means hours). "
@@ -1917,6 +2154,27 @@ def main():
                 sys.exit(1)
         serve(host, args.serve, args.refresh, allow_kill=args.allow_kill)
         return
+    if args.reindex:
+        indexed, skipped, total = index_sessions(progress=True)
+        print(f"indexed {indexed}, unchanged {skipped}, {total} session(s) on disk")
+        if args.search is None:
+            return
+
+    if args.search is not None:
+        since = _parse_window(args.since) if args.since else None
+        if args.since and since is None:
+            print(f"error: could not read --since {args.since!r}", file=sys.stderr)
+            sys.exit(1)
+        # Keep the index warm without the user having to think about it.
+        index_sessions()
+        rows = search_index(args.search, limit=(args.top or 40), since=since)
+        if args.json:
+            print(json.dumps({"query": args.search, "count": len(rows or []),
+                              "sessions": rows or []}, indent=2))
+        else:
+            print(render_index_markdown(rows or [], args.search, since))
+        return
+
     if args.find is not None or args.all:
         query = "" if args.all else args.find
         since = _parse_window(args.since) if args.since else None
