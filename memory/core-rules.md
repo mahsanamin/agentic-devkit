@@ -57,6 +57,17 @@ and without offering it as an option first. This covers the everyday phrasing: "
 If it returns `ESCALATE: sonnet`, re-spawn it on sonnet with its partial findings rather than
 finishing the search yourself. Relay its answer; do not re-run the search to check it.
 
+### Finishing a change — push by default, never push unverified
+
+After committing, push. Do not leave a finished change sitting unpushed waiting to be asked —
+the work is not delivered until it is on the remote, and "shall I push?" is not a question worth
+a round trip.
+
+The one exception overrides that: **if the change could not be verified, do not push.** Say what
+is unverified and why, and let the user decide. Verified means the project's own gates actually
+ran and passed — a suite that was skipped, a module that would not compile, or a check blocked by
+a stale credential is a gap, not a pass. Report the gap plainly instead of pushing past it.
+
 ### Knowledge placement — where a new fact goes
 
 Project-specific guidance belongs **in that project's repo** (`CLAUDE.md`, `.claude/agents/`,
