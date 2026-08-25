@@ -59,14 +59,17 @@ finishing the search yourself. Relay its answer; do not re-run the search to che
 
 ### Finishing a change — push by default, never push unverified
 
-After committing, push. Do not leave a finished change sitting unpushed waiting to be asked —
-the work is not delivered until it is on the remote, and "shall I push?" is not a question worth
-a round trip.
+After committing, push. Do not leave finished work sitting unpushed, and do not end a turn by
+handing over a `git push` command. **A shared branch is not a reason to stop** — `staging`,
+`develop`, `release/*`, `story/*` are all pushable; only the repository's default branch is not.
 
-The one exception overrides that: **if the change could not be verified, do not push.** Say what
-is unverified and why, and let the user decide. Verified means the project's own gates actually
-ran and passed — a suite that was skipped, a module that would not compile, or a check blocked by
-a stale credential is a gap, not a pass. Report the gap plainly instead of pushing past it.
+**The exception: if the change could not be verified, do not push.** Say what is unverified and
+why, and let the user decide. Verified means the project's own gates actually ran and passed — a
+skipped suite, a module that would not compile, or a check blocked by a stale credential is a gap,
+not a pass.
+
+Full policy, including the other hard gates: `agentic-devkit/rules/commit-and-push.md`. Change it
+there, not here.
 
 ### Knowledge placement — where a new fact goes
 
