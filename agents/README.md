@@ -1,4 +1,8 @@
-# Agents
+# Claude subagents
+
+These definitions use Claude Code's custom-subagent schema, including Claude tool names and
+model selectors. They are installed only into `~/.claude/agents`. Put a reusable procedure in
+`skills/` when Codex and Gemini/AGY should be able to invoke it too.
 
 A personal, **project-agnostic** library of Claude Code sub-agents. Every agent here is generic: it carries no language, stack, company, or domain specifics, and defers to the rules of whatever project spawns it (its `AGENTS.md` / `CLAUDE.md`, `.claude/rules/`, installed standards, config, and ops skills). Invoke whichever one fits the situation while working in any project or skill.
 

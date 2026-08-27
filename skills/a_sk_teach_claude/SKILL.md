@@ -1,5 +1,6 @@
 ---
 name: a_sk_teach_claude
+providers: claude
 description: Make the setup self-learning by recording what this session taught you into the right layer, permanently. Takes a correction, a new fact, a stated preference, or a decision, works out whether it belongs in the private brain (knowledge), the global CLAUDE.md (a one-line always-on rule), or a skill/agent in a devkit repo (a reusable procedure), then writes it there, dated, and commits. Deliberately drops what is not worth keeping so the rules file stops growing. Use for "remember this", "don't make that mistake again", "add this to my brain", "record what we learned", "save this preference", "update the glossary with this", "capture this decision", or at the end of a session where you were corrected. Also run it after any session that discovered a repo, epic, owner, or convention Claude did not know.
 ---
 
@@ -80,8 +81,8 @@ Run the decision from `docs/managed-claude.md`:
 | Anything else | **nowhere** | say you dropped it, and why |
 
 **Never edit `~/.claude/CLAUDE.md` directly.** It is generated from the sources above; the next
-`a_c_claude_memory build` overwrites anything written into the managed region. After writing to
-a source, run `a_c_claude_memory build` so the change is live, and say that you did.
+`a_c_agent_memory build` overwrites anything written into the managed regions. After writing to
+a source, run `a_c_agent_memory build` so the change is live in every configured agent, and say that you did.
 
 **The glossary row is the most under-used option.** If you picked the wrong tool this session
 and were corrected, that is not a rule and not a brain fact — it is a missing glossary row.
@@ -130,8 +131,8 @@ Keep it to one or two lines — a glossary row is exactly one. Before finishing,
 section you touched and check it does not now contradict a line above or below it. Then:
 
 ```bash
-a_c_claude_memory diff    # confirm only your change moved
-a_c_claude_memory build   # make it live
+a_c_agent_memory diff    # confirm only your change moved
+a_c_agent_memory build   # make it live in Claude, Codex, and Gemini
 ```
 
 **Into a skill or agent.** Follow the repo's conventions: `a_sk_<name>` for a skill, `a_r_<name>`

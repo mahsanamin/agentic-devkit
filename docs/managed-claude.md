@@ -93,7 +93,7 @@ public repo is not something you want to discover later.
 that is hand-typed and version-controlled nowhere. Skills and agents survive a laptop swap; the
 rules do not. That is the last unmanaged thing in an otherwise managed setup.
 
-`a_c_claude_memory` fixes it by composing the file from sources that do live in git:
+`a_c_agent_memory` fixes it by composing every provider's native global file from sources that do live in git:
 
 | Block | Source | Layer |
 |---|---|---|
@@ -104,16 +104,16 @@ rules do not. That is the last unmanaged thing in an otherwise managed setup.
 | pointers | generated from the configured repo paths | — |
 
 ```bash
-a_c_claude_memory status   # sources found, region present, in sync?
-a_c_claude_memory diff     # what a build would change
-a_c_claude_memory build    # regenerate the managed region in place
-a_c_claude_memory check    # exit 1 on drift (used by a_c_workflow_doctor)
+a_c_agent_memory status   # sources found, regions present, in sync?
+a_c_agent_memory diff     # what a build would change
+a_c_agent_memory build    # regenerate all native provider files
+a_c_agent_memory check    # exit 1 on drift (used by a_c_workflow_doctor)
 ```
 
 Everything it writes sits between `agentic-devkit: managed memory` markers. **Text outside the
 markers is never touched** — adopting an existing hand-written file keeps that file, verbatim,
 below the generated region. Three variables in `configs.profile` drive it: `A_MACHINE_NAME`,
-`A_CLAUDE_OVERLAY_DIR`, `A_CLAUDE_BRAIN_DIR`. With none of them set you still get a valid file
+`A_AGENT_OVERLAY_DIR`, `A_AGENT_BRAIN_DIR`. With none of them set you still get valid files
 from the core rules alone.
 
 ### Machine identity
@@ -137,8 +137,8 @@ Write tokens instead. The build expands them per machine:
 | Token | Expands to |
 |---|---|
 | `{{DEVKIT}}` | `$MY_WORKFLOW_DIR` — the public core repo |
-| `{{OVERLAY}}` | `$A_CLAUDE_OVERLAY_DIR` — the private overlay |
-| `{{BRAIN}}` | `$A_CLAUDE_BRAIN_DIR` — the private brain |
+| `{{OVERLAY}}` | `$A_AGENT_OVERLAY_DIR` — the private overlay |
+| `{{BRAIN}}` | `$A_AGENT_BRAIN_DIR` — the private brain |
 
 ```markdown
 @{{DEVKIT}}/rules/mdnest.md

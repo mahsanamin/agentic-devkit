@@ -25,18 +25,22 @@ export a_dir_g_repos='/path/to/global/repos'
 export MY_WORKFLOW_DIR="${a_dir_p_repos}/agentic-devkit"
 
 ########################### Agentic Machine Identity ####
-# This machine's name, as Claude should introduce it. Pick something distinctive;
-# it does not have to match the hostname. Used by a_c_claude_memory to select the
-# machine profile at $A_CLAUDE_OVERLAY_DIR/machine/$A_MACHINE_NAME.md
+# This machine's name, as an agent should introduce it. Pick something distinctive;
+# it does not have to match the hostname. Used by a_c_agent_memory to select the
+# machine profile at $A_AGENT_OVERLAY_DIR/machine/$A_MACHINE_NAME.md
 export A_MACHINE_NAME=''
 
 # Private overlay repo: personal-only skills, this machine's identity + glossary.
 # Leave empty if you have no overlay - the memory build still works without it.
-export A_CLAUDE_OVERLAY_DIR=''
+export A_AGENT_OVERLAY_DIR=''
 
 # Private brain repo: durable knowledge (projects, decisions, people, setups).
 # Leave empty if you have no brain yet.
-export A_CLAUDE_BRAIN_DIR=''
+export A_AGENT_BRAIN_DIR=''
+
+# Backwards compatibility for older overlay scripts.
+export A_CLAUDE_OVERLAY_DIR="$A_AGENT_OVERLAY_DIR"
+export A_CLAUDE_BRAIN_DIR="$A_AGENT_BRAIN_DIR"
 
 # Optional: Google Drive path (uncomment and set if needed)
 # export a_dir_gd='/Users/YOUR_USER/Library/CloudStorage/GoogleDrive-YOU@EMAIL/My\ Drive'

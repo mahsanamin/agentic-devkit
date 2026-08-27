@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#
+# a_c_agent_memory - build the same managed guidance for every supported agent.
+#
+# Usage:
+#   a_c_agent_memory [build|diff|status|check|render]
+#                    [--provider all|claude|codex|gemini|agy]
+#                    [-n|--dry-run] [-F|--force]
+#
+# The content still comes from memory/core-rules.md plus the optional private
+# overlay and brain. Each provider gets its native global instruction filename:
+#
+#   Claude Code  ~/.claude/CLAUDE.md
+#   Codex        ~/.codex/AGENTS.md
+#   Gemini/AGY   ~/.gemini/GEMINI.md
+#
+# Existing hand-written text outside the managed markers is preserved in each
+# file by a_c_claude_memory. That older command remains the single-file engine
+# and a backwards-compatible entry point for Claude-only setups.
+
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+ENGINE="$SCRIPT_DIR/a_c_claude_memory"
+
+provider="all"
+args=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --provider|--providers)
+      [ "$#" -ge 2 ] || { echo "error: $1 needs a value" >&2; exit 1; }
+      provider="$2"
+      shift 2
+      ;;
+    -h|--help)
+      sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//; /^set -euo/d'
+      exit 0
+      ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+case "$provider" in
+  agy) providers=(gemini) ;;
+  all) providers=(claude codex gemini) ;;
+  claude|codex|gemini) providers=("$provider") ;;
+  *) echo "error: unknown provider '$provider' (use all, claude, codex, gemini, or agy)" >&2; exit 1 ;;
+esac
+
+target_for() {
+  case "$1" in
+    claude) echo "${CLAUDE_MEMORY_FILE:-$HOME/.claude/CLAUDE.md}" ;;
+    codex)  echo "${CODEX_MEMORY_FILE:-$HOME/.codex/AGENTS.md}" ;;
+    gemini) echo "${GEMINI_MEMORY_FILE:-$HOME/.gemini/GEMINI.md}" ;;
+  esac
+}
+
+rc=0
+for p in "${providers[@]}"; do
+  target="$(target_for "$p")"
+  printf '\n==> %s (%s)\n' "$p" "$target"
+  CLAUDE_MEMORY_FILE="$target" "$ENGINE" ${args[@]+"${args[@]}"} || rc=$?
+done
+exit "$rc"

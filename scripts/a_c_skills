@@ -55,6 +55,10 @@ discover_skills() {
     local d
     for d in "$SKILLS_SRC"/*/; do
         [ -f "${d}SKILL.md" ] || continue
+        if [ "${AGENT_SKILL_PROVIDER:-claude}" != claude ] \
+            && grep -Eq '^providers:[[:space:]]*claude[[:space:]]*$' "${d}SKILL.md"; then
+            continue
+        fi
         basename "$d"
     done
 }
@@ -199,7 +203,7 @@ main() {
         list)   cmd_list ;;
         status) cmd_status ;;
         install)
-            mkdir -p "$TARGET_DIR"
+            $DRY_RUN || mkdir -p "$TARGET_DIR"
             $DRY_RUN && echo -e "${YELLOW}(dry run)${NC}"
             echo -e "${BLUE}Installing into${NC} $TARGET_DIR"
             for n in "${names[@]}"; do install_one "$n"; done ;;

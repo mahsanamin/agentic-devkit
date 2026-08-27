@@ -1,11 +1,11 @@
 # Skills
 
-Source of truth for my [Claude Code skills](https://docs.claude.com/en/docs/claude-code/skills).
-Each skill is a directory here, symlinked into `~/.claude/skills/` by `a_c_skills`, so editing a
-file here updates the live skill with no reinstall.
+Source of truth for portable Agent Skills used by Claude Code, Codex, and Gemini/AGY.
+Each skill is a directory here, symlinked into `~/.claude/skills/` and `~/.agents/skills/` by
+`install.sh`, so editing a file here updates every provider with no copied files to drift.
 
-The symlink model, the installer's behavior, and the full naming glossary live in the root
-[`CLAUDE.md`](../CLAUDE.md). This file is just the catalog.
+The symlink model, compatibility boundaries, and full naming glossary live in
+[`AGENTS.md`](../AGENTS.md) and [`docs/multi-agent.md`](../docs/multi-agent.md).
 
 **Naming, in one line:** `a_sk_<name>` is an on-demand skill; `a_r_<name>` is a routine that can
 run in the cloud; `a_r_l_<name>` is a routine that must run locally. `l_` applies to routines
@@ -15,10 +15,11 @@ write `a_sk_l_*`.
 Routines are **parameterized** so a scheduled prompt can fill in the blanks, for example
 `run a_r_l_dependabot_collector for repo=my-service`.
 
-## Managing your Claude setup
+## Managing your agent setup
 
 | Skill | What it does |
 |-------|--------------|
+| `a_sk_setup_agents` | Install or update the devkit across Claude Code, Codex, and Gemini/AGY, verify shared skills and generated guidance, and keep provider-specific boundaries explicit. |
 | `a_sk_setup_claude` | Wire this machine's Claude to the devkit: detect the machine's state, run the installer, verify every link resolves, teach the global `CLAUDE.md` what it now has, and offer the overlay and brain layers. |
 | `a_sk_tame_claude` | Turn a messy, unmanaged `~/.claude` into a managed one: audit every loaded file, adopt what is worth keeping into a repo, delete the dead, repair broken links, shrink a bloated `CLAUDE.md`, and scaffold a private brain repo. |
 | `a_sk_teach_claude` | The self-learning loop. Take what a session taught you and record it in the right layer (brain / rules / skill), dated and committed, dropping what is not worth keeping. |
@@ -52,8 +53,10 @@ Background for all three: [`docs/managed-claude.md`](../docs/managed-claude.md).
    and `description`. Write the description so the skill actually triggers: say what it does
    **and** when to use it, including the phrasings someone would really type.
 2. Add supporting files alongside it (`references/`, `scripts/`, `evals/`).
-3. Run `a_c_skills install <name>`.
-4. Commit. The installer auto-discovers any directory here containing a `SKILL.md`.
+3. If it genuinely depends on Claude-only paths or APIs, add `providers: claude` to its
+   frontmatter. Portable is the default.
+4. Run `./install.sh --link-only` (or `a_c_skills install <name>` for Claude only).
+5. Commit. The installer auto-discovers any directory here containing a `SKILL.md`.
 
 ## Not in this repo
 
