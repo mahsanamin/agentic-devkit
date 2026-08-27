@@ -3,7 +3,7 @@
 # install.sh - bootstrap my_setup on this machine, in one command.
 #
 #   ./install.sh              Wire shell + install Claude, Codex, and Gemini assets
-#   ./install.sh --provider X Install all, claude, codex, gemini, or agy (default: all)
+#   ./install.sh --provider X Install all, claude, codex, agy, gemini-cli, or gemini
 #   ./install.sh --link-only  Skip shell wiring; just (re)link agent assets
 #   ./install.sh -n           Dry run: print what would change, touch nothing
 #   ./install.sh -f           Force: repoint skill/agent links that point elsewhere
@@ -17,8 +17,8 @@
 # Two layers get installed:
 #   1. Shell   - MY_WORKFLOW_DIR + the profile that puts scripts/ on PATH and
 #                loads sourced/ functions. One-time per machine.
-#   2. Agents  - shared skills -> Claude and the open ~/.agents/skills location;
-#                Claude-specific subagents -> ~/.claude/agents.
+#   2. Agents  - shared skills plus provider-native subagents for Claude, Codex,
+#                AGY/Antigravity, and Gemini CLI.
 
 set -euo pipefail
 
@@ -55,8 +55,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$PROVIDER" in
-    agy) PROVIDER=gemini ;;
-    all|claude|codex|gemini) ;;
+    all|claude|codex|agy|gemini|gemini-cli) ;;
     *) echo -e "${RED}Unknown provider: $PROVIDER${NC}"; exit 1 ;;
 esac
 
@@ -143,7 +142,8 @@ wire_shell() {
 # 2. Link skills + agents (delegates to the granular installers).
 # ---------------------------------------------------------------------------
 has_provider() {
-    [ "$PROVIDER" = all ] || [ "$PROVIDER" = "$1" ]
+    [ "$PROVIDER" = all ] || [ "$PROVIDER" = "$1" ] \
+        || { [ "$PROVIDER" = gemini ] && { [ "$1" = agy ] || [ "$1" = gemini-cli ]; }; }
 }
 
 link_agents() {
@@ -159,27 +159,35 @@ link_agents() {
             "$REPO_ROOT/scripts/a_c_skills" install ${flags[@]+"${flags[@]}"}
 
         step "Subagents (Claude Code)"
-        "$REPO_ROOT/scripts/a_c_agents" install ${flags[@]+"${flags[@]}"}
+        "$REPO_ROOT/scripts/a_c_agents" --provider claude install ${flags[@]+"${flags[@]}"}
     fi
 
-    # Codex and Gemini CLI both support the open Agent Skills location. Install
-    # it once when either provider is selected; they share the same symlinks.
-    if has_provider codex || has_provider gemini; then
+    # Codex and Google's agents support the open Agent Skills location. Install
+    # it once when any of them is selected; they share the same symlinks.
+    if has_provider codex || has_provider agy || has_provider gemini-cli; then
         step "Skills (Codex + Gemini CLI)"
         AGENT_SKILL_PROVIDER=portable CLAUDE_SKILLS_DIR="$HOME/.agents/skills" \
             "$REPO_ROOT/scripts/a_c_skills" install ${flags[@]+"${flags[@]}"}
     fi
 
-    # Antigravity uses GEMINI.md too, but has its own global skill locations.
-    # Link both the IDE and `agy` CLI paths documented by Google.
-    if has_provider gemini; then
-        step "Skills (Antigravity IDE)"
+    if has_provider codex; then
+        step "Subagents (Codex)"
+        "$REPO_ROOT/scripts/a_c_agents" --provider codex install ${flags[@]+"${flags[@]}"}
+    fi
+
+    # Antigravity 2.0 and AGY CLI share the global customizations directory.
+    if has_provider agy; then
+        step "Skills (AGY / Antigravity)"
         AGENT_SKILL_PROVIDER=portable CLAUDE_SKILLS_DIR="$HOME/.gemini/config/skills" \
             "$REPO_ROOT/scripts/a_c_skills" install ${flags[@]+"${flags[@]}"}
 
-        step "Skills (Antigravity CLI / agy)"
-        AGENT_SKILL_PROVIDER=portable CLAUDE_SKILLS_DIR="$HOME/.gemini/antigravity-cli/skills" \
-            "$REPO_ROOT/scripts/a_c_skills" install ${flags[@]+"${flags[@]}"}
+        step "Subagents (AGY / Antigravity)"
+        "$REPO_ROOT/scripts/a_c_agents" --provider agy install ${flags[@]+"${flags[@]}"}
+    fi
+
+    if has_provider gemini-cli; then
+        step "Subagents (Gemini CLI)"
+        "$REPO_ROOT/scripts/a_c_agents" --provider gemini-cli install ${flags[@]+"${flags[@]}"}
     fi
 }
 

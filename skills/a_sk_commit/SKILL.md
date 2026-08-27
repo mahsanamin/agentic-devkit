@@ -17,7 +17,7 @@ An on-demand skill to turn the current working changes into a well-scoped commit
 3. **Draft the message** by invoking the **`a_sag_commit_writer`** agent with the diff + any ticket/context. It returns the message text only; it does not run git.
 4. **Show, then commit** per the repo's permission posture:
    - Default (`ask`): show the staged diff summary + the drafted message, get approval, then `git commit`.
-   - Autonomous (`git add`/`commit`/`push` already in `.claude/settings.json` `allow`): commit deliberately at meaningful checkpoints with the same care, narrating *"Committing at checkpoint: <what>"*. Don't ask redundantly, don't commit noisily.
+   - Autonomous (the active provider's permissions already allow `git add` and `git commit`): commit deliberately at meaningful checkpoints with the same care, narrating *"Committing at checkpoint: <what>"*. Don't ask redundantly, don't commit noisily.
 5. **Never force-push.** Pushing is a separate, explicit step — only if asked.
 
 ## Done-when

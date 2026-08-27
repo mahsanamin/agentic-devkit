@@ -1,17 +1,17 @@
 ---
 name: a_sk_routine_instruction_writer
-description: Turn a rough, half-formed task description into a clean, self-contained instruction prompt for an autonomous or scheduled routine (Claude Code local/cloud routine, /goal, /loop, /schedule, or a reusable skill). Vets the raw text, fixes typos and ambiguity, clarifies only the decisions that change the steps, verifies the plan against a prior real run when a reference exists (a PR, a past routine, a transcript), and hardens the result for unattended execution. Use when the user says "write this routine instruction", "make this prompt count", "clean up this prompt so Claude does it right", pastes a draft for a scheduled/local routine, or asks to author instructions for a recurring/automated task.
+description: Turn a rough, half-formed task description into a clean, self-contained instruction prompt for an autonomous or scheduled agent routine (local/cloud routine, goal, loop, schedule, or reusable skill). Vets the raw text, fixes typos and ambiguity, clarifies only the decisions that change the steps, verifies the plan against a prior real run when a reference exists, and hardens the result for unattended execution. Use when the user says "write this routine instruction", "make this prompt count", "clean up this agent prompt", pastes a routine draft, or asks to author recurring automation instructions.
 ---
 
 # a_sk_routine_instruction_writer
 
-You help the user turn a rough task description into an instruction prompt that another Claude (often an unattended, scheduled one) can execute correctly every time. The output is the artifact. Treat the user's draft as intent, not final wording, and make it count.
+You help the user turn a rough task description into an instruction prompt that another agent (often an unattended, scheduled one) can execute correctly every time. The output is the artifact. Treat the user's draft as intent, not final wording, and make it count.
 
 ## What "good" looks like
 
 A finished instruction prompt is:
 - **Self-contained.** It assumes no chat history. Everything needed to act is in the text.
-- **Directive.** Written as commands to the executing Claude ("You maintain...", "Run...", "Do not merge..."), not as a description of what the user wants.
+- **Directive.** Written as commands to the executing agent ("You maintain...", "Run...", "Do not merge..."), not as a description of what the user wants.
 - **Deterministic.** No "ask the user" steps if it runs unattended. Defaults are derived, not prompted (dates, tags, versions, branch names).
 - **Bounded.** The blast radius is explicit and capped. Destructive or outward-facing actions (merge to main, push, deploy, send) are either forbidden or clearly gated.
 - **Honest about confidence.** It distinguishes "verified green" from "looks done but a machine can't prove it," and routes the second kind to a human.
@@ -25,7 +25,7 @@ Work through these in order. Skip a step only when it clearly does not apply, an
 Read the raw draft and write back, in two or three sentences, what you believe they are trying to automate. Fix the typos silently in your understanding. This catches misreads before you invest in structure. If the draft is already clear, keep this short.
 
 ### 2. Clarify only what changes the steps
-Use `AskUserQuestion` for genuine forks where the answer changes the instructions, not for things you can default sensibly. Good candidates: naming conventions, autonomy level (how far it may go before a human gate), fix aggressiveness, what counts as done. Bad candidates: anything with an obvious default, or detail you can infer. Recommend an option and put it first. One round of questions is usually enough; do not interrogate.
+Use the active provider's user-question mechanism for genuine forks where the answer changes the instructions, not for things you can default sensibly. Good candidates: naming conventions, autonomy level, fix aggressiveness, and what counts as done. Recommend an option and put it first. One round is usually enough; do not interrogate.
 
 ### 3. Verify against reality when a reference exists
 If the user points to a prior run (a PR URL, a past routine, a transcript, a ticket), inspect it before finalizing. This is the highest-leverage step: a real outcome exposes where the plan is too optimistic.
@@ -58,5 +58,5 @@ The lesson the example carries: the value is not retyping the draft neatly. It i
 ## Guardrails
 - Do not invent steps the user did not intend. When you add something (a no-op exit, a dedup pass, a risk-note section), it should trace to either their intent, a clarifying answer, or a lesson from the verified reference. Say why you added it.
 - Prefer capping blast radius over trusting the model. If unsure whether an action is safe to automate, gate it behind a human.
-- Keep the prose tight. The executing Claude reads this every run; every sentence should earn its place.
+- Keep the prose tight. The executing agent reads this every run; every sentence should earn its place.
 - Never use em dashes or en dashes anywhere in the output.

@@ -1,37 +1,10 @@
-#!/bin/bash
-#
-# a_c_agents - manage Claude Code subagents that live in this repo.
-#
-# Each agent file <repo>/agents/<name>.md is symlinked into your global agents
-# dir (~/.claude/agents/<name>.md). Because the link points at the repo, editing
-# an agent here updates the live agent with no reinstall. Pull the repo, and
-# every machine you linked picks up the change. Mirror of a_c_skills, but agents
-# are single .md files rather than directories.
-#
-# Usage:
-#   a_c_agents install [name...]     Symlink repo agents into ~/.claude/agents
-#   a_c_agents uninstall [name...]   Remove the symlinks this tool created
-#   a_c_agents status                Show link state for every repo agent
-#   a_c_agents list                  List the agents available in this repo
-#
-# Flags (for install/uninstall):
-#   -n, --dry-run    Print what would change without touching the filesystem
-#   -f, --force      Repoint a symlink that currently points somewhere else
-#   -h, --help       Show this help
-#
-# Names may be given with or without the .md suffix. With no [name...], the
-# command applies to every agent in the repo (README.md is never a agent).
-# Override the target dir with CLAUDE_AGENTS_DIR (defaults to ~/.claude/agents).
-# Override the SOURCE agents dir with CLAUDE_AGENTS_SRC (defaults to <repo>/agents)
-# so an overlay repo (e.g. a private dev kit) can reuse this installer instead of
-# shipping its own copy: CLAUDE_AGENTS_SRC=/path/to/other/agents a_c_agents install
+#!/usr/bin/env bash
+# Manage the canonical subagent library for Claude, Codex, AGY, and Gemini CLI.
 
 set -euo pipefail
 
-# Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; DIM='\033[2m'; NC='\033[0m'
 
-# Resolve this script's real location, then the repo's agents dir.
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
     DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
@@ -40,189 +13,197 @@ while [ -L "$SOURCE" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
-# CLAUDE_AGENTS_SRC lets an overlay repo point this installer at its own agents
-# dir, so the private dev kit reuses this tool rather than duplicating it.
-AGENTS_SRC="${CLAUDE_AGENTS_SRC:-$REPO_ROOT/agents}"
-TARGET_DIR="${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}"
-# Backups live OUTSIDE the agents dir so Claude Code never scans them as agents.
-BACKUP_DIR="${CLAUDE_AGENTS_BACKUP_DIR:-${TARGET_DIR%/}.backups}"
+AGENTS_SRC="${AGENTS_SRC:-${CLAUDE_AGENTS_SRC:-$REPO_ROOT/agents}}"
+RENDERER="$SCRIPT_DIR/a_s_render_agent"
 
+PROVIDER="${AGENT_PROVIDER:-claude}"
+TARGET_DIR=""
+BACKUP_DIR=""
 DRY_RUN=false
 FORCE=false
 
-usage() { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//; /^set -euo/d'; }
+usage() {
+    cat <<'EOF'
+Usage: a_c_agents [--provider claude|codex|agy|gemini-cli] ACTION [name...] [flags]
 
-# Discover agents: *.md files in AGENTS_SRC, excluding README.md
+Actions: install, uninstall, status, list
+Flags:   -n/--dry-run, -f/--force, -h/--help
+
+The canonical sources are agents/*.md. Claude receives source symlinks; Codex,
+AGY/Antigravity, and Gemini CLI receive generated provider-native definitions.
+EOF
+}
+
 discover_agents() {
-    local f name
+    local f
     for f in "$AGENTS_SRC"/*.md; do
         [ -f "$f" ] || continue
-        name="$(basename "$f")"
-        [ "$name" = "README.md" ] && continue
-        echo "$name"
+        [ "$(basename "$f")" = README.md ] || basename "$f" .md
     done
 }
 
-# Normalize a user-supplied name to a bare "<name>.md" basename.
-normalize() {
-    local n="$1"
-    n="$(basename "$n")"
-    [[ "$n" == *.md ]] || n="$n.md"
-    echo "$n"
+normalize_provider() {
+    case "$PROVIDER" in
+        gemini) PROVIDER=agy ;;
+        claude|codex|agy|gemini-cli) ;;
+        *) echo -e "${RED}Unknown provider: $PROVIDER${NC}" >&2; exit 2 ;;
+    esac
+    case "$PROVIDER" in
+        claude) TARGET_DIR="${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}" ;;
+        codex) TARGET_DIR="${CODEX_AGENTS_DIR:-$HOME/.codex/agents}" ;;
+        agy) TARGET_DIR="${AGY_AGENTS_DIR:-$HOME/.gemini/config/agents}" ;;
+        gemini-cli) TARGET_DIR="${GEMINI_CLI_AGENTS_DIR:-$HOME/.gemini/agents}" ;;
+    esac
+    BACKUP_DIR="${AGENTS_BACKUP_DIR:-${TARGET_DIR%/}.backups}"
 }
 
-run() {
-    if $DRY_RUN; then
-        echo -e "  ${DIM}would run:${NC} $*"
-    else
-        "$@"
-    fi
+target_name() {
+    case "$PROVIDER" in
+        codex) printf '%s.toml\n' "$1" ;;
+        *) printf '%s.md\n' "$1" ;;
+    esac
 }
 
-# Where does the global entry currently point? echoes one of:
-#   linked    - symlink already points at our repo copy
-#   elsewhere - symlink points somewhere else
-#   realfile  - a real (non-symlink) file exists
-#   missing   - nothing there
-link_state() {
-    local name="$1"
-    local target="$TARGET_DIR/$name"
-    local want="$AGENTS_SRC/$name"
-    if [ -L "$target" ]; then
-        local cur; cur="$(readlink "$target")"
-        if [ "$cur" = "$want" ]; then echo linked; else echo "elsewhere:$cur"; fi
-    elif [ -e "$target" ]; then
-        echo realfile
-    else
-        echo missing
-    fi
+is_managed() {
+    grep -q 'Generated by agentic-devkit' "$1" 2>/dev/null
+}
+
+render_to() {
+    "$RENDERER" "$PROVIDER" "$AGENTS_SRC/$1.md" > "$2"
 }
 
 install_one() {
-    local name="$1"
-    local target="$TARGET_DIR/$name"
-    local want="$AGENTS_SRC/$name"
-    if [ ! -f "$want" ]; then
-        echo -e "  ${RED}missing${NC}   $name ${DIM}(no such agent in repo)${NC}"; return
+    local name="$1" source="$AGENTS_SRC/$1.md" target="$TARGET_DIR/$(target_name "$1")"
+    [ -f "$source" ] || { echo -e "  ${RED}missing${NC}   $name"; return 1; }
+
+    if [ "$PROVIDER" = claude ]; then
+        if [ -L "$target" ] && [ "$(readlink "$target")" = "$source" ]; then
+            echo -e "  ${GREEN}ok${NC}        $name ${DIM}(already linked)${NC}"
+            return
+        fi
+        if [ -e "$target" ] || [ -L "$target" ]; then
+            if ! $FORCE; then
+                echo -e "  ${YELLOW}skip${NC}      $name ${DIM}(target exists; use --force)${NC}"
+                return
+            fi
+            $DRY_RUN || { mkdir -p "$BACKUP_DIR"; mv "$target" "$BACKUP_DIR/$(basename "$target").$(date +%Y%m%d-%H%M%S)"; }
+        fi
+        $DRY_RUN || ln -s "$source" "$target"
+        echo -e "  ${GREEN}linked${NC}    $name ${DIM}-> $source${NC}"
+        return
     fi
-    local state; state="$(link_state "$name")"
-    case "$state" in
-        linked)
-            echo -e "  ${GREEN}ok${NC}        $name ${DIM}(already linked)${NC}" ;;
-        missing)
-            run ln -s "$want" "$target"
-            echo -e "  ${GREEN}linked${NC}    $name ${DIM}-> $want${NC}" ;;
-        elsewhere:*)
-            local cur="${state#elsewhere:}"
-            if $FORCE; then
-                run rm "$target"
-                run ln -s "$want" "$target"
-                echo -e "  ${YELLOW}repointed${NC} $name ${DIM}(was -> $cur)${NC}"
-            else
-                echo -e "  ${YELLOW}skip${NC}      $name ${DIM}symlink points elsewhere ($cur); use --force${NC}"
-            fi ;;
-        realfile)
-            # If the live file is byte-identical to the repo copy, there is
-            # nothing to preserve: drop it and link. Only back up (loudly) when
-            # the global copy has diverged from the repo source.
-            if diff -q "$target" "$want" >/dev/null 2>&1; then
-                run rm -f "$target"
-                run ln -s "$want" "$target"
-                echo -e "  ${GREEN}linked${NC}    $name ${DIM}(replaced identical real file)${NC}"
-            else
-                local backup="$BACKUP_DIR/$name.$(date +%Y%m%d-%H%M%S)"
-                run mkdir -p "$BACKUP_DIR"
-                run mv "$target" "$backup"
-                run ln -s "$want" "$target"
-                echo -e "  ${YELLOW}backed up${NC} $name ${DIM}DIFFERS from repo -> $backup, then linked${NC}"
-            fi ;;
-    esac
+
+    local rendered
+    rendered="$(mktemp)"
+    render_to "$name" "$rendered"
+    if [ -f "$target" ] && cmp -s "$rendered" "$target"; then
+        echo -e "  ${GREEN}ok${NC}        $name ${DIM}(generated $PROVIDER adapter is current)${NC}"
+    elif [ -e "$target" ] && ! is_managed "$target" && ! $FORCE; then
+        echo -e "  ${YELLOW}skip${NC}      $name ${DIM}(unmanaged target exists; use --force)${NC}"
+    else
+        if [ -e "$target" ] && ! is_managed "$target"; then
+            $DRY_RUN || { mkdir -p "$BACKUP_DIR"; mv "$target" "$BACKUP_DIR/$(basename "$target").$(date +%Y%m%d-%H%M%S)"; }
+        fi
+        $DRY_RUN || cp "$rendered" "$target"
+        echo -e "  ${GREEN}generated${NC} $name ${DIM}-> $target${NC}"
+    fi
+    rm -f "$rendered"
 }
 
 uninstall_one() {
-    local name="$1"
-    local target="$TARGET_DIR/$name"
-    local state; state="$(link_state "$name")"
-    case "$state" in
-        linked)
-            run rm "$target"
-            echo -e "  ${GREEN}unlinked${NC}  $name" ;;
-        missing)
-            echo -e "  ${DIM}absent${NC}    $name" ;;
-        realfile)
-            echo -e "  ${YELLOW}skip${NC}      $name ${DIM}is a real file, not our symlink; left untouched${NC}" ;;
-        elsewhere:*)
-            echo -e "  ${YELLOW}skip${NC}      $name ${DIM}symlink points outside this repo; left untouched${NC}" ;;
-    esac
+    local name="$1" target="$TARGET_DIR/$(target_name "$1")" source="$AGENTS_SRC/$1.md"
+    if [ "$PROVIDER" = claude ] && [ -L "$target" ] && [ "$(readlink "$target")" = "$source" ]; then
+        $DRY_RUN || rm "$target"
+        echo -e "  ${GREEN}unlinked${NC}  $name"
+    elif [ "$PROVIDER" != claude ] && [ -f "$target" ] && is_managed "$target"; then
+        $DRY_RUN || rm "$target"
+        echo -e "  ${GREEN}removed${NC}   $name ${DIM}($PROVIDER adapter)${NC}"
+    elif [ -e "$target" ] || [ -L "$target" ]; then
+        echo -e "  ${YELLOW}skip${NC}      $name ${DIM}(not managed by this repo)${NC}"
+    else
+        echo -e "  ${DIM}absent${NC}    $name"
+    fi
 }
 
-cmd_status() {
-    echo -e "${BLUE}Repo agents:${NC} $AGENTS_SRC"
-    echo -e "${BLUE}Target dir:${NC}  $TARGET_DIR"
-    echo ""
-    local name state
-    while read -r name; do
-        [ -z "$name" ] && continue
-        state="$(link_state "$name")"
-        case "$state" in
-            linked)      echo -e "  ${GREEN}● linked${NC}      $name" ;;
-            missing)     echo -e "  ${DIM}○ not linked${NC}  $name" ;;
-            realfile)    echo -e "  ${YELLOW}▲ real file${NC}    $name ${DIM}(shadows repo copy)${NC}" ;;
-            elsewhere:*) echo -e "  ${RED}✗ elsewhere${NC}   $name ${DIM}-> ${state#elsewhere:}${NC}" ;;
-        esac
-    done < <(discover_agents)
-}
-
-cmd_list() {
-    echo -e "${BLUE}Agents in this repo${NC} ${DIM}($AGENTS_SRC)${NC}"
-    local name desc
-    while read -r name; do
-        [ -z "$name" ] && continue
-        # Pull the description line from the agent frontmatter (first ~160 chars).
-        desc="$(awk -F': ' '/^description:/{ $1=""; print substr($0,2,160); exit }' "$AGENTS_SRC/$name" 2>/dev/null)"
-        echo -e "  ${GREEN}${name%.md}${NC}"
-        [ -n "$desc" ] && echo -e "    ${DIM}${desc}...${NC}"
-    done < <(discover_agents)
+status_one() {
+    local name="$1" target="$TARGET_DIR/$(target_name "$1")" source="$AGENTS_SRC/$1.md"
+    if [ "$PROVIDER" = claude ]; then
+        if [ -L "$target" ] && [ "$(readlink "$target")" = "$source" ]; then
+            echo -e "  ${GREEN}● linked${NC}      $name"
+        elif [ -e "$target" ] || [ -L "$target" ]; then
+            echo -e "  ${YELLOW}▲ unmanaged${NC}   $name"
+        else
+            echo -e "  ${DIM}○ not installed${NC} $name"
+        fi
+        return
+    fi
+    if [ -f "$target" ] && is_managed "$target"; then
+        local rendered
+        rendered="$(mktemp)"
+        render_to "$name" "$rendered"
+        if cmp -s "$rendered" "$target"; then
+            echo -e "  ${GREEN}● current${NC}     $name"
+        else
+            echo -e "  ${YELLOW}▲ stale${NC}       $name"
+        fi
+        rm -f "$rendered"
+    elif [ -e "$target" ] || [ -L "$target" ]; then
+        echo -e "  ${YELLOW}▲ unmanaged${NC}   $name"
+    else
+        echo -e "  ${DIM}○ not installed${NC} $name"
+    fi
 }
 
 main() {
-    [ -d "$AGENTS_SRC" ] || { echo -e "${RED}No agents dir at $AGENTS_SRC${NC}"; exit 1; }
-
-    local action="${1:-status}"; shift || true
-    local names=()
+    local args=()
     while [ "$#" -gt 0 ]; do
         case "$1" in
+            --provider)
+                [ "$#" -ge 2 ] || { echo "--provider needs a value" >&2; exit 2; }
+                PROVIDER="$2"; shift ;;
             -n|--dry-run) DRY_RUN=true ;;
-            -f|--force)   FORCE=true ;;
-            -h|--help)    usage; exit 0 ;;
-            -*)           echo -e "${RED}Unknown flag: $1${NC}"; exit 1 ;;
-            *)            names+=("$(normalize "$1")") ;;
+            -f|--force) FORCE=true ;;
+            -h|--help) usage; exit 0 ;;
+            *) args+=("$1") ;;
         esac
         shift
     done
+    normalize_provider
+    [ -d "$AGENTS_SRC" ] || { echo -e "${RED}No agents dir at $AGENTS_SRC${NC}"; exit 1; }
+    [ -x "$RENDERER" ] || { echo -e "${RED}Renderer is not executable: $RENDERER${NC}"; exit 1; }
 
-    # No explicit names -> operate on all discovered agents.
+    local action="${args[0]:-status}" names=() i normalized
+    for ((i=1; i<${#args[@]}; i++)); do
+        normalized="$(basename "${args[$i]}")"
+        normalized="${normalized%.md}"
+        normalized="${normalized%.toml}"
+        names+=("$normalized")
+    done
     if [ "${#names[@]}" -eq 0 ]; then
-        while read -r n; do [ -n "$n" ] && names+=("$n"); done < <(discover_agents)
-    fi
-    if [ "${#names[@]}" -eq 0 ] && [ "$action" = install -o "$action" = uninstall ]; then
-        echo -e "${YELLOW}No agents found in $AGENTS_SRC${NC}"; exit 0
+        while read -r normalized; do [ -n "$normalized" ] && names+=("$normalized"); done < <(discover_agents)
     fi
 
     case "$action" in
-        -h|--help|help) usage ;;
-        list)   cmd_list ;;
-        status) cmd_status ;;
+        list)
+            echo -e "${BLUE}Canonical agents${NC} ${DIM}($AGENTS_SRC)${NC}"
+            printf '  %s\n' "${names[@]}"
+            ;;
+        status)
+            echo -e "${BLUE}Provider:${NC} $PROVIDER"
+            echo -e "${BLUE}Target:${NC}   $TARGET_DIR"
+            for normalized in "${names[@]}"; do status_one "$normalized"; done
+            ;;
         install)
             $DRY_RUN || mkdir -p "$TARGET_DIR"
             $DRY_RUN && echo -e "${YELLOW}(dry run)${NC}"
-            echo -e "${BLUE}Installing into${NC} $TARGET_DIR"
-            for n in "${names[@]}"; do install_one "$n"; done ;;
+            echo -e "${BLUE}Installing $PROVIDER agents into${NC} $TARGET_DIR"
+            for normalized in "${names[@]}"; do install_one "$normalized"; done
+            ;;
         uninstall)
             $DRY_RUN && echo -e "${YELLOW}(dry run)${NC}"
-            echo -e "${BLUE}Uninstalling from${NC} $TARGET_DIR"
-            for n in "${names[@]}"; do uninstall_one "$n"; done ;;
-        *) echo -e "${RED}Unknown command: $action${NC}"; echo "Try: a_c_agents --help"; exit 1 ;;
+            for normalized in "${names[@]}"; do uninstall_one "$normalized"; done
+            ;;
+        *) echo -e "${RED}Unknown action: $action${NC}"; usage; exit 2 ;;
     esac
 }
 

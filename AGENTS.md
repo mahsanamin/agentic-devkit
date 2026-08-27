@@ -17,30 +17,32 @@ Everything here is deliberately generic: no company, client, or project specific
 
 ## The source-of-truth model (skills, agents, and guidance)
 
-Provider directories hold **links, not copies**. The real files live in this repo:
+Provider directories hold **links or generated adapters, never independent sources**. The real files live in this repo:
 
-| Consumer path | Symlinks to (source of truth) | Support | Installer |
+| Consumer path | Source of truth | Support | Installer |
 |---|---|---|---|
 | `~/.claude/skills/<name>/` | `skills/<name>/` | Claude | `install.sh` / `a_c_skills` |
 | `~/.agents/skills/<name>/` | `skills/<name>/` | Codex + Gemini CLI | `install.sh` / `a_c_skills` |
-| `~/.gemini/config/skills/<name>/` | `skills/<name>/` | Antigravity IDE | `install.sh` / `a_c_skills` |
-| `~/.gemini/antigravity-cli/skills/<name>/` | `skills/<name>/` | Antigravity CLI (`agy`) | `install.sh` / `a_c_skills` |
-| `~/.claude/agents/<name>.md` | `agents/<name>.md` | Claude-only subagents | `install.sh` / `a_c_agents` |
+| `~/.gemini/config/skills/<name>/` | `skills/<name>/` | AGY / Antigravity | `install.sh` / `a_c_skills` |
+| `~/.claude/agents/<name>.md` | `agents/<name>.md` | Claude subagents (direct links) | `install.sh` / `a_c_agents` |
+| `~/.codex/agents/<name>.toml` | generated from `agents/<name>.md` | Codex subagents | `install.sh` / `a_c_agents` |
+| `~/.gemini/config/agents/<name>.md` | generated from `agents/<name>.md` | AGY / Antigravity subagents | `install.sh` / `a_c_agents` |
+| `~/.gemini/agents/<name>.md` | generated from `agents/<name>.md` | Gemini CLI subagents | `install.sh` / `a_c_agents` |
 
-> **The one-shot install command:** `./install.sh` wires the shell and all supported providers. Use `--provider claude|codex|gemini` to target one. It is idempotent; `--link-only` skips shell wiring, `-n` dry-runs, and `-f` repoints stray links.
+> **The one-shot install command:** `./install.sh` wires the shell and all supported providers. Use `--provider claude|codex|agy|gemini-cli`; `gemini` selects both Google clients. It is idempotent; `--link-only` skips shell wiring, `-n` dry-runs, and `-f` replaces a conflicting unmanaged target after backing it up.
 
 ```mermaid
 flowchart LR
     subgraph repo["my_setup (in git, source of truth)"]
         SK["skills/&lt;name&gt;/SKILL.md"]
-        AG["agents/&lt;name&gt;.md"]
+        AG["agents/&lt;name&gt;.md<br/>canonical agent definition"]
     end
     subgraph global["provider homes"]
         LSK["~/.claude/skills + ~/.agents/skills -> symlinks"]
-        LAG["agents/&lt;name&gt;.md -> symlink"]
+        LAG["Claude symlink + generated<br/>Codex TOML / AGY Markdown"]
     end
     SK -. "Claude + Codex + Gemini" .-> LSK
-    AG -. "Claude only" .-> LAG
+    AG -. "provider adapters" .-> LAG
     style repo fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff,stroke-width:2px
     style global fill:#1f7a3a,stroke:#0f4d24,color:#ffffff,stroke-width:2px
 ```
@@ -52,8 +54,8 @@ flowchart LR
 When you edit, add, or remove an `a_*` skill or agent that is loaded globally, **you are editing this repo**:
 
 - Make the change in `my_setup/skills/` or `my_setup/agents/`, then commit it here.
-- Never hand-copy a skill/agent into a provider's global directory; never treat the global path as a separate copy. It is a pointer.
-- To create or repair a link, use the installer (skills) or `ln -s` (agents). See below.
+- Never hand-copy a skill/agent into a provider's global directory; never treat a generated adapter as an editable source.
+- To create, refresh, or repair an installed asset, use the installer. See below.
 
 ### Skills installer: `a_c_skills`
 
@@ -71,17 +73,20 @@ Flags: `-n/--dry-run`, `-f/--force` (repoint a link aimed elsewhere). `install.s
 
 ### Agents installer: `a_c_agents`
 
-`agents/` is a project-agnostic subagent library (see `agents/README.md`). `scripts/a_c_agents` (on PATH once the profile is sourced) manages the agent symlinks, mirroring `a_c_skills` but for single `.md` files:
+`agents/` is a project-agnostic canonical subagent library (see `agents/README.md`). `scripts/a_c_agents` installs it in each provider's native format:
 
 ```bash
-a_c_agents install          # symlink every repo agent into ~/.claude/agents
-a_c_agents install <name>   # just one (name with or without .md)
-a_c_agents status           # show link state for each repo agent
+a_c_agents --provider claude install  # direct Markdown symlinks
+a_c_agents --provider codex install   # generated ~/.codex/agents/*.toml
+a_c_agents --provider agy install     # generated ~/.gemini/config/agents/*.md
+a_c_agents --provider gemini-cli install
+a_c_agents --provider codex install <name>
+a_c_agents --provider codex status
 a_c_agents list             # list agents available in this repo
-a_c_agents uninstall        # remove the symlinks this tool created
+a_c_agents --provider codex uninstall
 ```
 
-Same flags as `a_c_skills` (`-n/--dry-run`, `-f/--force`). It auto-discovers every `agents/*.md` (skipping `README.md`). An identical real file at the target is replaced with a link; a **divergent** one is backed up to `~/.claude/agents.backups/<name>.<timestamp>` before linking. Or just run `./install.sh` to wire + link everything in one shot.
+Same flags as `a_c_skills` (`-n/--dry-run`, `-f/--force`). It auto-discovers every `agents/*.md` (skipping `README.md`). Claude receives a link to the canonical file. Codex and Google clients receive generated files with model and tool translations. Generated files carry a managed marker and are refreshed on reinstall; conflicting unmanaged files are left alone unless `--force` backs them up first.
 
 ---
 
@@ -132,7 +137,7 @@ my_setup/
 ├── sourced/      # functions sourced into the shell: git.sh, worktree.sh, process.sh, doctor.sh, task.sh
 ├── scripts/      # standalone scripts on PATH: a_c_* (commands), a_g_* (git/worktree/branch), a_s_* (helpers)
 ├── skills/       # portable Agent Skills shared by Claude, Codex, and Gemini
-├── agents/       # Claude-specific subagents (provider schema is not portable)
+├── agents/       # canonical subagents rendered into each provider's native schema
 ├── memory/       # source for all generated global instruction files
 ├── rules/        # shared rule files (e.g. mdnest.md), imported into global CLAUDE.md and read by agents
 ├── tools/        # self-contained tools (slack-summarizer, mdcf)
@@ -147,7 +152,7 @@ my_setup/
 
 **A skill** - create `skills/<name>/SKILL.md` (frontmatter `name:` must equal the dir name). Use `a_sk_<name>` for an on-demand skill, or `a_r_<name>` / `a_r_l_<name>` for a routine (`l_` only if it cannot run in the cloud). Run `a_c_skills install <name>`, then commit.
 
-**An agent** - create `agents/<name>.md` only for Claude-specific isolated subagents. If the procedure should work in every provider, make it a skill instead. See `agents/README.md` for the house conventions.
+**An agent** - create one canonical `agents/<name>.md` with the documented tier and capability fields. `a_s_render_agent` translates it for Codex and Google clients. Use a skill instead when the workflow should run inline rather than in an isolated subagent context.
 
 **An always-on rule, a machine fact, or a glossary term** - do not hand-edit a provider's generated global file. Edit the source and run `a_c_agent_memory build`. Generic rule -> `memory/core-rules.md`; personal rule, machine identity, or glossary row -> `machine/*.md` in the private overlay.
 
@@ -170,7 +175,7 @@ Leave these to their own systems, do not pull them in: any framework skills/agen
 
 ## Setup guide
 
-**The fast path is `./install.sh` from the repo root** - it wires the shell, shares skills across Claude/Codex/Gemini, and installs Claude-specific subagents, idempotently. Then `source ~/.zshrc`. Use `--provider` when only one tool should be configured.
+**The fast path is `./install.sh` from the repo root** - it wires the shell, shares skills, and installs native subagents across Claude, Codex, AGY, and Gemini CLI, idempotently. Then `source ~/.zshrc`. Use `--provider` when only one tool should be configured.
 
 1. **Personal config:** `install.sh` creates `~/my_settings/configs.profile` with `MY_WORKFLOW_DIR` set correctly but the rest left as sample placeholders. Edit it to fill in: personal repos path, work repos path, machine type (`m1` / `i7`), and optional org name. (If a config already exists, `install.sh` never overwrites it.)
 2. **(Optional) org profile:** `cp shell/org.machine.profile.sample shell/<org>.<machine>.profile` and set `a_company_name`. Add SSH aliases, directory shortcuts, DB connections there.

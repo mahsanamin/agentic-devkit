@@ -45,8 +45,8 @@ Do not change anything until I say go.
 ```
 
 It will look at your actual machine and answer for your situation. When you are ready, say
-**"set up my agentic devkit"** — or run `./install.sh` directly. It installs shared skills for
-all three providers, Claude's provider-specific subagents, and tells you exactly what changed.
+**"set up my agentic devkit"** — or run `./install.sh` directly. It installs shared skills and
+native subagents for Claude, Codex, and AGY/Gemini, and tells you exactly what changed.
 
 Later, useful things to say: **"my Claude config is a mess"** (`a_sk_tame_claude` audits and
 repairs it), or **"remember this"** (`a_sk_teach_claude` files what you just taught it in the
@@ -131,9 +131,9 @@ one-shot commit and push, process and port killers, macOS helpers. All on your P
 **AI skills** — open-format Agent Skills for the repetitive parts: commit, open a PR, review a PR,
 raise test coverage, turn a rough idea into a clean automation prompt.
 
-**Claude subagents** — 40+ specialists (code review, debugging, refactoring, testing, incident
-triage, and a full autonomous build pipeline). Their frontmatter is Claude-specific; portable
-workflows belong in `skills/` so Codex and Gemini can use them too.
+**Cross-provider subagents** — 40+ specialists (code review, debugging, refactoring, testing,
+incident triage, and a full autonomous build pipeline). One canonical definition is installed
+directly for Claude and rendered into native Codex TOML and AGY/Gemini Markdown.
 
 **Managed guidance** — each provider's native global file becomes a *generated* file composed
 from the same git-backed sources: `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` stay aligned.
@@ -181,8 +181,11 @@ The full model, including the private brain and the self-learning loop, is in
 
 ~/.claude/skills/*   ->  symlinks into  this-repo/skills/
 ~/.agents/skills/*   ->  the same skills for Codex + Gemini CLI
-~/.gemini/config/skills/* and ~/.gemini/antigravity-cli/skills/* -> Antigravity/AGY
-~/.claude/agents/*   ->  symlinks into  this-repo/agents/
+~/.gemini/config/skills/* -> the same skills for Antigravity/AGY
+~/.claude/agents/*        -> symlinks into this-repo/agents/
+~/.codex/agents/*.toml    -> generated Codex adapters from this-repo/agents/
+~/.gemini/config/agents/* -> generated AGY adapters from this-repo/agents/
+~/.gemini/agents/*        -> generated Gemini CLI adapters from this-repo/agents/
 
 ~/.claude/CLAUDE.md  ┐
 ~/.codex/AGENTS.md    ├─ generated from this-repo/memory/ + your overlay's machine/

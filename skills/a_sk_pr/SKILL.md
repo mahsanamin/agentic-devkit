@@ -18,7 +18,7 @@ An on-demand skill to open a clean PR for the current branch. It delegates the t
 4. **Fill the template.** Find the project's PR template (`.github/PULL_REQUEST_TEMPLATE.md` or `.github/PULL_REQUEST_TEMPLATE/*`). Invoke the **`a_sag_pr_writer`** agent with the diff + template + any ticket context; it returns the title and the filled body (it does not run git/gh). If there's no template, produce a concise Summary / Changes / Testing body.
 5. **Create the PR** per the repo's permission posture:
    - Default (`ask`): show the title + body + base, get approval, then `gh pr create --base <base> --title … --body …`.
-   - Autonomous (`git push` / `gh pr create` already in `.claude/settings.json` `allow`): narrate *"Creating PR against <base>: <title>"* and proceed, only when genuinely PR-ready. Don't ask redundantly.
+   - Autonomous (the active provider's permissions already allow `git push` and `gh pr create`): narrate *"Creating PR against <base>: <title>"* and proceed, only when genuinely PR-ready. Don't ask redundantly.
 6. **Never force-push.** Report the PR URL.
 
 ## Done-when

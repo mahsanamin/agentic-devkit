@@ -38,7 +38,7 @@ Review GitHub PRs safely in an **isolated worktree** so the review never touches
 
 ## Worktree helpers (the real commands)
 
-This skill uses the worktree helpers. From Claude Code's non-interactive Bash, invoke the scripts directly (the shell-function auto-`cd` does not persist across separate Bash calls, so always `cd` into the printed worktree path yourself):
+This skill uses the worktree helpers. From any agent's non-interactive shell, invoke the scripts directly (the shell-function auto-`cd` does not persist across separate calls, so always `cd` into the printed worktree path yourself):
 
 - **Create (the right primitive for PRs):** `a_g_worktree_review <N>` — looks the PR up via `gh`, fetches its head, and creates a worktree on a local branch **`review-pr-<N>`** at `…/WorkTrees/<project>/review-pr-<N>`. Use this, not `a_g_worktree_init` (that one is for starting your own branch and prompts for a base).
 - **Already exists? Delete and recreate.** If `a_g_worktree_review <N>` reports the `review-pr-<N>` worktree/branch already exists, remove it (`a_g_worktree_remove review-pr-<N> --force`) and run `a_g_worktree_review <N>` again. This is the easy, deterministic path: a fresh checkout always reflects the latest PR head. (It only ever deletes a `review-pr-<N>` worktree, never your working tree.)
@@ -73,8 +73,8 @@ Post ONE top-level comment on the PR saying the review has started, **before** r
 
 **Rules:**
 - **Mode-gated.** `post=auto` posts it. `post=draft` does **not**: a dry run must leave no trace on the PR.
-- **Name the agent when one is defined.** If the global rules (`~/.claude/CLAUDE.md`) define an agent identity for this machine, name it in the comment, using whatever display form those rules specify. If no agent name is defined, post the same comment without one. Never invent a name and never guess a machine/unit suffix: read it from the global rules or leave it out.
-- **Keep Claude attribution.** The agent name labels the configured setup; it never replaces the fact that this is Claude Code. Both appear.
+- **Name the agent when one is defined.** Read the identity from the active provider's global guidance. If no name is defined, post without one. Never invent a name or machine suffix.
+- **Name the runtime.** Use the actual client performing the review: Claude Code, Codex, or AGY.
 - **Never reword the marker.** The comment MUST start with the literal string `🔍 Review started`, byte for byte, on every run. The idempotency check below greps for exactly that, so any variation ("Re-review started", "Starting review", a different emoji) silently defeats the check and posts a duplicate on the next run. Put the "this is a re-review" signal in the head SHA, which already differs, not in the wording.
 - **Idempotent per head SHA.** Before posting, check the PR's existing issue comments for the marker **and** the current short head SHA, case-insensitively. Skip if it is already there. A **new** head SHA posts a fresh one, so a force-push gets its own announcement.
 - **Best-effort, never blocking.** If the post fails, record it in the report and carry on with the review. A failed announcement is not a failed review.
@@ -90,7 +90,7 @@ ALREADY="$(gh api "repos/{owner}/{repo}/issues/<N>/comments" \
   --jq "[.[] | select(.body | test(\"Review started\"; \"i\")) | select(.body | contains(\"$HEAD_SHA\"))] | length")"
 
 if [ "$ALREADY" = "0" ]; then
-  gh api "repos/{owner}/{repo}/issues/<N>/comments" -f body="🔍 Review started by **<AGENT-NAME>** (Claude Code) on \`$HEAD_SHA\`.
+  gh api "repos/{owner}/{repo}/issues/<N>/comments" -f body="🔍 Review started by **<AGENT-NAME>** (<RUNTIME>) on \`$HEAD_SHA\`.
 Anything that needs action will land as inline comments; a clean pass posts nothing."
 fi
 ```
@@ -100,13 +100,13 @@ fi
 With no agent name defined, drop the `by **...**` clause and keep the rest identical:
 
 ```
-🔍 Review started (Claude Code) on `<short-sha>`.
+🔍 Review started (<RUNTIME>) on `<short-sha>`.
 Anything that needs action will land as inline comments; a clean pass posts nothing.
 ```
 
 The second line matters: without it, a review that finds nothing looks like a review that never finished.
 
-**Note on the naming rule.** If the global rules otherwise say to keep the agent name out of PR bodies (because an unexplained third-party name confuses reviewers), this step is a deliberate exception: here the name **is** the payload (it tells the author which agent claimed their PR), not an unexplained aside, and Claude Code is named alongside it.
+**Note on the naming rule.** If global rules otherwise keep the agent name out of PR bodies, this is a deliberate exception: here the name tells the author which agent claimed the PR, and the actual runtime is named alongside it.
 
 ## Auto-post policy (`post=auto`)
 
@@ -160,4 +160,4 @@ End with a per-PR summary: PR number + title; worktree path and branch; head and
 
 ## Run logging (visibility)
 
-When this run finishes (success, partial, nothing-to-do, or failure), call the **a_sag_routine_logger** sub-agent once (Agent tool, `subagent_type: a_sag_routine_logger`) with `routine=<this skill's name from the frontmatter above>`, a `status`, and a one-line `summary` of what the run did. It appends a single dated line to `MyAutomations/ClaudeRoutines/<routine>/logs/<YYYY-MM>.md`, so the last run and what it did are visible at a glance. Keep the summary to ONE line. Logging is best-effort: if the mdnest CLI is unavailable (e.g. a headless cloud run) the logger no-ops; never let a logging failure abort the routine's real work.
+When this run finishes (success, partial, nothing-to-do, or failure), invoke **a_sag_routine_logger** once through the active provider's subagent mechanism with `routine=<this skill's name>`, a `status`, and a one-line `summary`. It appends one dated line to the routine log. Logging is best-effort; never let a logging failure abort the real work.

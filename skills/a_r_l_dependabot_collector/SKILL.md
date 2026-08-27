@@ -159,4 +159,4 @@ These are optional, hard-won hints, NOT required per-repo config. Step 0.5 resol
 
 ## Run logging (visibility)
 
-When this run finishes (success, partial, nothing-to-do, or failure), call the **a_sag_routine_logger** sub-agent once (Agent tool, `subagent_type: a_sag_routine_logger`) with `routine=<this skill's name from the frontmatter above>`, a `status`, and a one-line `summary` of what the run did. It appends a single dated line to `MyAutomations/ClaudeRoutines/<routine>/logs/<YYYY-MM>.md`, so the last run and what it did are visible at a glance. Keep the summary to ONE line. Logging is best-effort: if the mdnest CLI is unavailable (e.g. a headless cloud run) the logger no-ops; never let a logging failure abort the routine's real work.
+When this run finishes (success, partial, nothing-to-do, or failure), invoke **a_sag_routine_logger** once through the active provider's subagent mechanism with `routine=<this skill's name>`, a `status`, and a one-line `summary`. Logging is best-effort; never let a logging failure abort the real work.

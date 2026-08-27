@@ -1,17 +1,27 @@
-# Claude subagents
+# Cross-provider subagents
 
-These definitions use Claude Code's custom-subagent schema, including Claude tool names and
-model selectors. They are installed only into `~/.claude/agents`. Put a reusable procedure in
-`skills/` when Codex and Gemini/AGY should be able to invoke it too.
+These Markdown files are the canonical agent definitions. Claude loads them directly. The
+installer translates their model tiers, tool capabilities, and prompts into Codex TOML,
+AGY/Antigravity Markdown, and Gemini CLI Markdown. Do not hand-edit generated provider files.
 
-A personal, **project-agnostic** library of Claude Code sub-agents. Every agent here is generic: it carries no language, stack, company, or domain specifics, and defers to the rules of whatever project spawns it (its `AGENTS.md` / `CLAUDE.md`, `.claude/rules/`, installed standards, config, and ops skills). Invoke whichever one fits the situation while working in any project or skill.
+A personal, **project-agnostic** library of subagents. Every agent here is generic: it carries no language, stack, company, or domain specifics, and defers to the rules of whatever project spawns it. Invoke whichever one fits the situation while working in any project or skill.
 
 ## Conventions
 
 - **Naming:** all agents use the `a_sag_` prefix (matching this repo's personal-namespace convention). Filename equals the frontmatter `name`.
 - **Operating context:** every agent opens with an "Operating context" note stating the spawning project's conventions win, and that any path/command/tool it names is a default to replace with the project's actual equivalent. That is what keeps them reusable.
 - **No em or en dashes** in any of these files (house style).
-- **Models** are assigned by task tier: **Haiku** for fast mechanical execution, **Sonnet** for code understanding / testing / debugging / refactoring / docs / incident work, **Opus** for architecture, security, deep review, and production-critical decisions.
+- **Models** use provider-neutral workload tiers spelled with the familiar Claude labels: **Haiku** for fast mechanical execution, **Sonnet** for normal implementation and analysis, and **Opus** for architecture, security, deep review, and production-critical decisions. They render as Luna/Terra/GPT-5.6 in Codex and Flash/Pro in AGY. These are role/cost mappings, not claims that the models are equivalent.
+- **Tools** use the Claude capability names in the canonical frontmatter. The renderer maps them to exact AGY names and converts the Codex safety boundary to `read-only` or `workspace-write`. Provider-only tools remain available through the parent/provider environment.
+
+Install or inspect one provider:
+
+```bash
+a_c_agents --provider claude install
+a_c_agents --provider codex install
+a_c_agents --provider agy install
+a_c_agents --provider gemini-cli install
+```
 
 ## Catalog
 

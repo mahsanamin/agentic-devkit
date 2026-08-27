@@ -15,12 +15,14 @@ Use the repository's own scripts; do not reproduce their filesystem logic by han
    - `./install.sh --dry-run`
    - whether `~/.claude`, `~/.codex`, `~/.gemini`, and `~/.agents/skills` already exist
 3. Explain any divergent real skill directory or existing provider instruction file that the installer will preserve or back up.
-4. Run `./install.sh` unless the user named a single provider; then use `--provider claude`, `codex`, or `gemini`.
+4. Run `./install.sh` unless the user named a single provider; then use `--provider claude`, `codex`, `agy`, or `gemini-cli`. `--provider gemini` selects both Google clients.
 5. Source the shell profile only when needed for the current shell. Never edit provider authentication, API keys, or login state.
 6. Verify:
    - repo skills resolve through `~/.claude/skills` when Claude was selected
    - repo skills resolve through `~/.agents/skills` when Codex or Gemini was selected
-   - Claude subagents resolve through `~/.claude/agents` only
+   - Claude subagents resolve through `~/.claude/agents`
+   - Codex subagents are valid generated TOML in `~/.codex/agents`
+   - AGY subagents have `subagent: true` in `~/.gemini/config/agents`
    - `a_c_agent_memory check --provider <selection>` succeeds after guidance has been adopted
    - `a_c_workflow_doctor` reports no setup errors
 7. Tell the user to start a fresh agent session. Give the provider-native check from `docs/multi-agent.md`.
@@ -29,5 +31,5 @@ Use the repository's own scripts; do not reproduce their filesystem logic by han
 
 - Do not replace divergent files without the installer's backup behavior.
 - Do not copy skills; keep repository-backed symlinks.
-- Do not claim Claude subagent files work in Codex or Gemini.
+- Do not edit generated provider agents; change the canonical file under `agents/` and reinstall.
 - If global guidance has not been adopted yet, show `a_c_agent_memory diff` before building it.

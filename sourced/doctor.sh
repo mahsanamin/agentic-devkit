@@ -177,11 +177,11 @@ a_c_workflow_doctor() {
         fi
     fi
     local unmanaged
-    unmanaged=$(find ~/.claude/skills ~/.claude/agents ~/.agents/skills ~/.gemini/config/skills ~/.gemini/antigravity-cli/skills -mindepth 1 -maxdepth 1 ! -type l 2>/dev/null | wc -l | tr -d ' ')
+    unmanaged=$(find ~/.claude/skills ~/.claude/agents ~/.agents/skills ~/.gemini/config/skills -mindepth 1 -maxdepth 1 ! -type l 2>/dev/null | wc -l | tr -d ' ')
     if [ "${unmanaged:-0}" -gt 0 ]; then
         _doc_warn "$unmanaged unmanaged agent asset(s) — inspect the provider skill directories"
     else
-        _doc_ok "every installed provider skill/agent is a managed symlink"
+        _doc_ok "every installed provider asset is managed by the devkit"
     fi
 
     echo "─────────────────────────────────────────────────────────────"
