@@ -62,3 +62,33 @@ link, and only when it changes whether he should click it. "This one needs an ap
 its place. "Here is what else landed, and here is a query to run beforehand" does not, unless he
 asked. If something genuinely needs saying at length, say the URL first and offer the rest: he can
 ask for it in three words.
+
+## Documents and artifacts get the SAME plain English, no exceptions
+
+**As of 2026-09-01.** The plain-language rule at the top of this file is not just for chat replies.
+It binds every artifact, document, memo, spec, RFC, PR body, Confluence page, and note. A published
+page is not a licence to switch into magazine prose.
+
+The test: could someone with no context, reading fast, understand every sentence on the first pass?
+If a sentence needs a second read, rewrite it. Aim it at the least prepared person who will open the
+file, not the most.
+
+What keeps going wrong, so ban it explicitly:
+
+- **Consultant and journalist vocabulary.** "blast radius", "load-bearing", "unit of
+  randomisation", "grain", "dilution", "contamination", "probabilistic", "stateless", "structural",
+  "the honest measure of", "the part nobody has said out loud", "in one paragraph", "thesis".
+  Every one of these has a shorter everyday word. Use that instead.
+- **Naming a mechanism instead of explaining it.** Do not write "assignment is deterministic and
+  sticky per identifier". Write "same id in, same variant out, every time". Show the mechanism in
+  ordinary words, with a small concrete example, and the reader never needs the term.
+- **Section titles that describe a genre instead of the content.** "Blast radius" and "Method in one
+  paragraph" tell the reader nothing. "What else uses these ids" and "How we pick a variant today"
+  tell them exactly what is inside.
+- **Long sentences with two or three clauses.** Break them. One idea per sentence.
+- **Stating a fact without its consequence.** After the fact, say what it means for the reader in
+  plain terms: "so clear the cookie and you are a new person to us".
+
+Recorded after a meeting pre-read had to be fully rewritten: the research and the structure were
+right, the language was "full of jargon" and read like a newspaper article. The content was never
+the problem, the words were. Write it plainly the first time.
