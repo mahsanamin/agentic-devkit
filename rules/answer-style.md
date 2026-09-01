@@ -44,3 +44,21 @@ doing. An investigation write-up is its own request; do not attach one to a "wha
 
 This does not license hiding bad news. A real problem still gets said, in a sentence, as a step or a
 blocker. The rule removes the parts that carry no action, not the parts he would want to know.
+
+## "Give me the URL" means the URL, on its own
+
+**As of 2026-09-01.** When he asks for a link, a URL, a PR number, a command, or an id, the reply is
+that value and nothing else. One line per item, no table, no surrounding paragraph, no status
+recap, no caveat, no next steps. He asked for a thing to click or paste, so hand it over.
+
+This is the same rule as the section above, but it needs saying separately because it keeps getting
+broken in exactly one way: the answer carries the right URL and then buries it under what else was
+merged, what is still unverified, and what to run first. He asked twice on 2026-09-01 and got a
+five-paragraph answer both times, the second one after he had already narrowed the question to
+"what PR do I need, give me exact URLs".
+
+The blocker exception from the section above still applies, but it is ONE short line under the
+link, and only when it changes whether he should click it. "This one needs an approval first" earns
+its place. "Here is what else landed, and here is a query to run beforehand" does not, unless he
+asked. If something genuinely needs saying at length, say the URL first and offer the rest: he can
+ask for it in three words.
