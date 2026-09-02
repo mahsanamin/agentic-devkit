@@ -20,11 +20,31 @@ Run `a_c_mem_doctor`. Read-only by default, safe to run anywhere.
 
 ```bash
 a_c_mem_doctor              # verdict + memory by app family + JVMs + candidates
+a_c_mem_doctor -i           # ...then a menu of ways out. Pick one, it acts.
 a_c_mem_doctor --deep       # per-process swapped-out detail (the smoking gun)
 a_c_mem_doctor --reclaim    # stop idle build daemons + orphaned test forks
 a_c_mem_doctor --reclaim -n # dry run of the above
 a_c_mem_doctor --procs      # also show the raw per-process table
 ```
+
+`-i` is the one to reach for when the machine is already unusable. It lists
+each way out with the memory it frees and its risk, you pick a number, it acts,
+shows the swap delta, and offers a re-scan so you can escalate one step at a
+time. Apps are quit **gracefully** (Chrome keeps its tabs), never killed, and it
+refuses to touch the process tree you are running it from.
+
+**It measures with `top`, not `ps`.** This matters more than it sounds. `ps rss`
+is resident-only, so on a thrashing machine it understates the worst offenders
+*by design*: once a process gets compressed or swapped out its rss **shrinks**
+and it looks innocent. On a live box `ps` reported WindowServer at 198MB when
+its real footprint was 2756MB, and Chrome at 9.2GB when it was really 13.9GB
+with 10GB compressed. Ranking by rss points you at the wrong process.
+
+**It will not kill a running build.** A Gradle *worker* only exists while a
+build is in flight, so if any worker is alive the whole Gradle family is off
+limits, daemon included. `--force` overrides if you mean to abort the build.
+System processes (WindowServer and friends) are shown but never offered as
+restart candidates, because quitting them logs you out.
 
 **Why a machine running JVM services dies on a multi-day curve.** A JVM commits
 heap up to `-Xmx` and by default never returns it to the OS. Services that each

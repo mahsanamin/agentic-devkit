@@ -23,20 +23,35 @@
 #   report (default, READ-ONLY) - swap + compressor verdict, memory by app
 #     family, every JVM with its -Xmx and age, reclaimable build daemons, and
 #     restart candidates with the memory each would return.
+#   -i / --interactive - after the report, offer a numbered menu of ways out,
+#     each with the memory it frees and its risk. You pick one, it acts, shows
+#     the swap delta, and offers a re-scan. Apps are quit GRACEFULLY (tabs and
+#     session preserved), never killed. It refuses to touch the process tree
+#     this script is running inside.
 #   --reclaim - stop only what is always safe to stop and respawns on demand:
-#     Gradle / Kotlin / Maven build daemons, and forked test JVMs idle longer
-#     than STALE_HOURS. It NEVER touches your services, your IDE, or anything
-#     it cannot identify. Restarting real services stays a manual decision;
-#     the report tells you which ones and what you would get back.
+#     idle Gradle / Kotlin / Maven daemons, and forked test JVMs idle longer
+#     than STALE_HOURS. If a Gradle WORKER is alive a build is in flight, and
+#     it refuses everything Gradle-related (a worker only exists during a
+#     build, so killing it fails that build). --force overrides. It NEVER
+#     touches your services, your IDE, or system processes.
+#
+# Memory comes from top(1), not ps(1). ps rss is resident-only, so on a
+# thrashing machine it understates the worst offenders by design: once their
+# pages are compressed or swapped out their rss SHRINKS and they look
+# innocent. Measured on a live box, ps reported WindowServer at 198MB where
+# its real footprint was 2756MB. top MEM is phys_footprint (what Activity
+# Monitor shows) and CMPRS is the compressed portion.
 #
 # Usage:
 #   a_c_mem_doctor                  Report only. Changes nothing.
 #   a_c_mem_doctor --deep           Also show per-process compressed/swapped
 #                                   footprint for the top JVMs (slower).
 #   a_c_mem_doctor --procs          Also show the raw per-process table.
+#   a_c_mem_doctor -i               Report, then offer a menu of ways out.
 #   a_c_mem_doctor --reclaim        Report, then stop safe reclaimables.
 #   a_c_mem_doctor --reclaim -n     Show what --reclaim would kill, kill nothing.
 #   a_c_mem_doctor --top 20         Rows per table (default 12).
+#   a_c_mem_doctor --force          Allow reclaim even during a live build.
 #   a_c_mem_doctor --help           Show this help.
 #
 # Tuning (env vars):
@@ -72,6 +87,8 @@ DRY_RUN=0
 RECLAIM=0
 DEEP=0
 SHOW_PROCS=0
+INTERACTIVE=0
+FORCE=0
 
 if [ -t 1 ]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; DIM='\033[2m'; BOLD='\033[1m'; NC='\033[0m'
@@ -85,6 +102,8 @@ while [ $# -gt 0 ]; do
         -r|--reclaim) RECLAIM=1 ;;
         -d|--deep)    DEEP=1 ;;
         -p|--procs)   SHOW_PROCS=1 ;;
+        -i|--interactive) INTERACTIVE=1 ;;
+        -f|--force)   FORCE=1 ;;
         -t|--top)     shift; TOP="${1:-12}" ;;
         -h|--help)    awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
@@ -119,17 +138,31 @@ function human_age(sec) {
     if (sec >= 3600)  return sprintf("%dh", sec/3600)
     return sprintf("%dm", sec/60)
 }
+function tokb(v,   u, n) {
+    gsub(/[+*]$/, "", v)
+    u = substr(v, length(v), 1)
+    n = substr(v, 1, length(v) - 1) + 0
+    if (u == "B") return n / 1024
+    if (u == "K") return n
+    if (u == "M") return n * 1024
+    if (u == "G") return n * 1048576
+    if (u == "T") return n * 1073741824
+    return v + 0
+}
 function human_mb(mb) {
     if (mb >= 1024) return sprintf("%.2f GB", mb/1024)
     return sprintf("%.0f MB", mb)
 }
 function label(cmd) {
     if (cmd ~ /KotlinCompileDaemon/)                     return "Kotlin compile daemon"
-    if (cmd ~ /GradleWorkerMain/)                        return "Gradle worker"
+    if (cmd ~ /GradleWorkerMain|gradle-worker-classpath/) return "Gradle worker"
     if (cmd ~ /GradleDaemon|org\.gradle\.launcher\.daemon/) return "Gradle daemon"
     if (cmd ~ /MavenDaemon|mvnd/)                        return "Maven daemon (mvnd)"
     if (cmd ~ /ForkedBooter|surefire|failsafe/)          return "orphaned test fork"
     return "build process"
+}
+function is_system(p) {
+    return (p ~ /^\/System\// || p ~ /^\/usr\// || p ~ /^\/sbin\// || p ~ /^\/bin\//)
 }
 function family(p,   i, pre) {
     i = index(p, ".app/")
@@ -176,41 +209,74 @@ log "compressor  ${COMP_GB}GB compressed    wired ${WIRED_GB}GB    free ${FREE_P
 log "load        ${LOADAVG}"
 
 # ---- 2. memory by app family -------------------------------------------
-PSDUMP=$(ps -Ao rss=,etime=,pid=,comm= 2>/dev/null)
+# ps(1) rss is resident-only, so on a thrashing machine it UNDERSTATES the
+# worst offenders by design: once their pages are compressed or swapped out,
+# their rss shrinks and they look innocent. top's MEM is phys_footprint (what
+# Activity Monitor shows) and CMPRS is the compressed portion. We take memory
+# from top and full binary paths from ps, joined on pid.
+TOPDUMP=$(top -l 1 -n 9999 -stats pid,mem,cmprs 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && NF >= 3')
+PSDUMP=$(ps -Ao pid=,etime=,comm= 2>/dev/null)
 
-FAMILIES=$(printf '%s\n' "$PSDUMP" | awk "$AWKLIB"'
+if [ -z "$TOPDUMP" ]; then
+    log ""
+    log "  ${YELLOW}top(1) returned nothing; falling back to ps rss (understates swapped processes)${NC}"
+    TOPDUMP=$(ps -Ao pid=,rss= 2>/dev/null | awk '{print $1, $2"K", "0B"}')
+fi
+
+JOINED=$(awk "$AWKLIB"'
+NR == FNR { mem[$1] = tokb($2); cmp[$1] = tokb($3); next }
 {
-    rss = $1; path = substr($0, index($0, $4))
-    f = family(path)
-    tot[f] += rss; n[f]++
-    s = etime_secs($2); if (s > old[f]) old[f] = s
-    if (rss > maxr[f]) { maxr[f] = rss; maxp[f] = $3 }
+    pid = $1; path = substr($0, index($0, $3))
+    if (!(pid in mem)) next
+    printf "%d\t%d\t%d\t%s\t%s\n", mem[pid], cmp[pid], etime_secs($2), pid, path
+}' <(printf '%s\n' "$TOPDUMP") <(printf '%s\n' "$PSDUMP"))
+
+FAMILIES=$(printf '%s\n' "$JOINED" | awk -F'\t' "$AWKLIB"'
+{
+    f = family($5)
+    tot[f] += $1; comp[f] += $2; n[f]++
+    if (is_system($5)) sys[f] = 1
+    if (index($5, ".app/") > 0) app[f] = 1
+    if ($3 > old[f]) old[f] = $3
+    if ($1 > maxm[f]) { maxm[f] = $1; maxp[f] = $4 }
 }
-END { for (f in tot) printf "%d\t%d\t%d\t%s\t%s\n", tot[f], n[f], old[f], maxp[f], f }' \
+END { for (f in tot) printf "%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\n", tot[f], n[f], old[f], maxp[f], f, comp[f], (f in sys ? 1 : 0), (f in app ? 1 : 0) }' \
 | sort -rn)
 
-head2 "Memory by app family  ${DIM}(what you would actually quit)${NC}"
-log "  ${DIM}     TOTAL   PROCS   OLDEST   APP${NC}"
+head2 "Memory by app family  ${DIM}(footprint, not rss - what you would actually quit)${NC}"
+log "  ${DIM}     TOTAL   COMPRESSED   PROCS   OLDEST   APP${NC}"
 printf '%s\n' "$FAMILIES" | head -n "$TOP" | awk -F'\t' "$AWKLIB"'
-{ printf "  %10s   %5d   %6s   %s\n", human_mb($1/1024), $2, human_age($3), $5 }'
+{ printf "  %10s   %10s   %5d   %6s   %s%s\n", human_mb($1/1024), human_mb($6/1024), $2, human_age($3), $5, ($7 == 1 ? "  (system)" : "") }'
+
+ACCOUNTED=$(printf '%s\n' "$FAMILIES" | awk -F'\t' '{s+=$1} END {printf "%.1f", s/1048576}')
+log "  ${DIM}total across all families: ${ACCOUNTED} GB${NC}"
 
 if [ "$SHOW_PROCS" -eq 1 ]; then
     head2 "Top ${TOP} individual processes"
-    printf '%s\n' "$PSDUMP" | sort -rn | head -n "$TOP" | awk "$AWKLIB"'
-    { path = substr($0, index($0, $4)); n = path; sub(/.*\//, "", n)
-      printf "  %10s   %6s   %7s   %s  ${DIM}(%s)${NC}\n", human_mb($1/1024), human_age(etime_secs($2)), $3, n, family(path) }'
+    log "  ${DIM}     TOTAL   COMPRESSED   OLDEST       PID   PROCESS${NC}"
+    printf '%s\n' "$JOINED" | sort -rn | head -n "$TOP" | awk -F'\t' "$AWKLIB"'
+    { n = $5; sub(/.*\//, "", n)
+      printf "  %10s   %10s   %6s   %7s   %s\n", human_mb($1/1024), human_mb($2/1024), human_age($3), $4, n }'
 fi
 
 # ---- 3. the JVMs --------------------------------------------------------
-JVMS=$(ps -Ao rss=,etime=,pid=,%cpu=,command= 2>/dev/null \
+JVMPS=$(ps -Ao pid=,etime=,command= 2>/dev/null \
        | grep -E '(^| )[^ ]*/java( |$)|[[:space:]]-Xmx' \
-       | grep -v grep | grep -v 'a_c_mem_doctor' | sort -rn)
+       | grep -v grep | grep -v 'a_c_mem_doctor')
+
+# A Gradle WORKER only exists while a build is actually running. If any is
+# alive, a build is in flight and nothing Gradle-related is safe to stop.
+GRADLE_WORKERS=$(printf '%s\n' "$JVMPS" | grep -cE 'GradleWorkerMain|gradle-worker-classpath' 2>/dev/null || echo 0)
+GRADLE_WORKERS=$(printf '%s' "$GRADLE_WORKERS" | tr -d ' \n')
+BUILD_ACTIVE=0
+[ "${GRADLE_WORKERS:-0}" -gt 0 ] && BUILD_ACTIVE=1
 
 head2 "JVMs  ${DIM}(heap is committed up to -Xmx and is not returned while the process lives)${NC}"
-if [ -z "$JVMS" ]; then
+if [ -z "$JVMPS" ]; then
     log "  ${DIM}none running${NC}"
+    JVM_GB=0
 else
-    printf '%s\n' "$JVMS" | awk "$AWKLIB"'
+    JVMROWS=$(awk "$AWKLIB"'
     function jvm_name(s,   n, i, t, skip) {
         n = split(s, t, /[ ]+/)
         for (i = 1; i <= n; i++)
@@ -224,52 +290,76 @@ else
         }
         return "?"
     }
+    NR == FNR { mem[$1] = tokb($2); cmp[$1] = tokb($3); next }
     {
-        cmd = substr($0, index($0, $5)); xmx = "-"
+        pid = $1; cmd = substr($0, index($0, $3))
+        m = (pid in mem) ? mem[pid] : 0
+        c = (pid in mem) ? cmp[pid] : 0
+        xmx = "-"
         if (match(cmd, /-Xmx[0-9]+[kKmMgG]?/)) xmx = substr(cmd, RSTART+4, RLENGTH-4)
-        printf "  %10s   xmx=%-6s %5s   cpu=%-5s %7s   %.55s\n", \
-               human_mb($1/1024), xmx, human_age(etime_secs($2)), $4, $3, jvm_name(cmd)
-    }' | head -n "$TOP"
-    JVM_GB=$(printf '%s\n' "$JVMS" | awk '{s+=$1} END {printf "%.1f", s/1048576}')
-    JVM_N=$(printf '%s\n' "$JVMS" | wc -l | tr -d ' ')
-    log "  ${BOLD}${JVM_N} JVMs holding ${JVM_GB} GB total${NC}"
-    log "  ${DIM}cpu is the lifetime average, not current load. A near-zero value on a"
-    log "  multi-day JVM is the classic idle-service-sitting-on-a-huge-heap case.${NC}"
+        kind = (cmd ~ /GradleWorkerMain|gradle-worker-classpath/) ? "worker" \
+             : (cmd ~ /GradleDaemon|org\.gradle\.launcher\.daemon/) ? "daemon" \
+             : (cmd ~ /KotlinCompileDaemon/) ? "kotlin" \
+             : (cmd ~ /ForkedBooter|surefire|failsafe/) ? "test-fork" : "service"
+        printf "%d\t%d\t%d\t%s\t%s\t%s\t%s\n", m, c, etime_secs($2), pid, xmx, kind, jvm_name(cmd)
+    }' <(printf '%s\n' "$TOPDUMP") <(printf '%s\n' "$JVMPS") | sort -rn)
+
+    log "  ${DIM}     TOTAL   COMPRESSED   XMX      AGE       PID   KIND       NAME${NC}"
+    printf '%s\n' "$JVMROWS" | head -n "$TOP" | awk -F'\t' "$AWKLIB"'
+    { printf "  %10s   %10s   %-6s %5s   %7s   %-9s  %.40s\n", human_mb($1/1024), human_mb($2/1024), $5, human_age($3), $4, $6, $7 }'
+    JVM_GB=$(printf '%s\n' "$JVMROWS" | awk -F'\t' '{s+=$1} END {printf "%.1f", s/1048576}')
+    JVM_N=$(printf '%s\n' "$JVMROWS" | wc -l | tr -d ' ')
+    log "  ${BOLD}${JVM_N} JVMs holding ${JVM_GB} GB${NC}"
+    if [ "$BUILD_ACTIVE" -eq 1 ]; then
+        log "  ${YELLOW}A Gradle build is running right now (${GRADLE_WORKERS} workers).${NC}"
+        log "  ${DIM}Workers only exist during a build, so this is live work, not stale heap.${NC}"
+    fi
 fi
+
 
 # ---- 4. what is safely reclaimable right now ----------------------------
 STALE_SECS=$((STALE_HOURS * 3600))
 
-# Always safe: build daemons. They respawn on the next build.
-DAEMONS=$(ps -Ao rss=,etime=,pid=,command= 2>/dev/null \
-    | grep -E 'GradleDaemon|KotlinCompileDaemon|org\.gradle\.launcher\.daemon|GradleWorkerMain|MavenDaemon|mvnd' \
+DAEMONS=$(ps -Ao pid=,etime=,command= 2>/dev/null \
+    | grep -E 'GradleDaemon|KotlinCompileDaemon|org\.gradle\.launcher\.daemon|GradleWorkerMain|gradle-worker-classpath|MavenDaemon|mvnd' \
     | grep -v grep | grep -v 'a_c_mem_doctor')
 
-# Conditionally safe: forked test JVMs older than STALE_HOURS. A live test run
-# is short, so anything older is an orphan left by a crashed or killed build.
-FORKS=$(ps -Ao rss=,etime=,pid=,command= 2>/dev/null \
+FORKS=$(ps -Ao pid=,etime=,command= 2>/dev/null \
     | grep -E 'surefire|failsafe|ForkedBooter' | grep -v grep | grep -v 'a_c_mem_doctor' \
     | awk "$AWKLIB"'{ if (etime_secs($2) > '"$STALE_SECS"') print }')
 
-RECLAIMABLE=$(printf '%s\n%s\n' "$DAEMONS" "$FORKS" | grep -v '^[[:space:]]*$')
-
 head2 "Safe to reclaim now  ${DIM}(respawn on demand, no service impact)${NC}"
 RECLAIM_MB=0
-if [ -z "$RECLAIMABLE" ]; then
-    log "  ${DIM}nothing - no idle build daemons or orphaned test forks${NC}"
+RECLAIMABLE=""
+if [ "$BUILD_ACTIVE" -eq 1 ]; then
+    log "  ${YELLOW}Nothing - a Gradle build is in flight (${GRADLE_WORKERS} workers active).${NC}"
+    log "  ${DIM}Stopping the daemon or its workers now would fail that build. Re-run when"
+    log "  it finishes, or pass --force if you intend to abort the build.${NC}"
+    [ "${FORCE:-0}" -eq 1 ] && RECLAIMABLE=$(printf '%s\n%s\n' "$DAEMONS" "$FORKS" | grep -v '^[[:space:]]*$')
 else
-    printf '%s\n' "$RECLAIMABLE" | sort -rn | awk "$AWKLIB"'
-    { cmd = substr($0, index($0, $4))
-      printf "  %10s   %5s   %7s   %s\n", human_mb($1/1024), human_age(etime_secs($2)), $3, label(cmd) }'
-    RECLAIM_MB=$(printf '%s\n' "$RECLAIMABLE" | awk '{s+=$1} END {printf "%.0f", s/1024}')
-    log "  ${BOLD}total: ${RECLAIM_MB} MB${NC}   ${DIM}run with --reclaim to stop these${NC}"
+    RECLAIMABLE=$(printf '%s\n%s\n' "$DAEMONS" "$FORKS" | grep -v '^[[:space:]]*$')
 fi
+
+if [ -z "$RECLAIMABLE" ]; then
+    [ "$BUILD_ACTIVE" -eq 0 ] && log "  ${DIM}nothing - no idle build daemons or orphaned test forks${NC}"
+else
+    RECLAIM_ROWS=$(awk "$AWKLIB"'
+    NR == FNR { mem[$1] = tokb($2); next }
+    { pid = $1; cmd = substr($0, index($0, $3))
+      printf "%d\t%d\t%s\t%s\n", (pid in mem ? mem[pid] : 0), etime_secs($2), pid, label(cmd) }' \
+      <(printf '%s\n' "$TOPDUMP") <(printf '%s\n' "$RECLAIMABLE") | sort -rn)
+    printf '%s\n' "$RECLAIM_ROWS" | awk -F'\t' "$AWKLIB"'
+    { printf "  %10s   %5s   %7s   %s\n", human_mb($1/1024), human_age($2), $3, $4 }'
+    RECLAIM_MB=$(printf '%s\n' "$RECLAIM_ROWS" | awk -F'\t' '{s+=$1} END {printf "%.0f", s/1024}')
+    log "  ${BOLD}total: ${RECLAIM_MB} MB${NC}"
+fi
+
 
 # ---- 5. restart candidates (reported, never auto-killed) ----------------
 OLD_SECS=$((OLD_DAYS * 86400))
-head2 "Restart candidates  ${DIM}(family >${BIG_MB}MB, running >${OLD_DAYS}d - quit and reopen to reclaim)${NC}"
+head2 "Restart candidates  ${DIM}(family >${BIG_MB}MB, running >${OLD_DAYS}d, user-quittable)${NC}"
 CANDIDATES=$(printf '%s\n' "$FAMILIES" | awk -F'\t' \
-    -v big="$((BIG_MB * 1024))" -v old="$OLD_SECS" '$1 > big && $3 > old')
+    -v big="$((BIG_MB * 1024))" -v old="$OLD_SECS" '$1 > big && $3 > old && $7 != 1')
 if [ -z "$CANDIDATES" ]; then
     log "  ${DIM}none${NC}"
     CAND_GB=0
@@ -283,11 +373,11 @@ fi
 DOCKER_UP=0
 if pgrep -f 'com.docker.virtualization|Docker Desktop' >/dev/null 2>&1; then
     DOCKER_UP=1
-    DOCK_MB=$(ps -Ao rss=,command= 2>/dev/null | grep -E 'com\.docker\.virtualization|Docker Desktop' \
-              | grep -v grep | awk '{s+=$1} END {printf "%.0f", s/1024}')
-    log "  ${DIM}Docker Desktop is running (~${DOCK_MB} MB). Its VM never returns memory"
-    log "  either; quit and reopen it, or lower its RAM allocation in settings.${NC}"
+    DOCK_MB=$(printf '%s\n' "$JOINED" | awk -F'\t' '$5 ~ /[Dd]ocker|Virtualization/ {s+=$1} END {printf "%.0f", s/1024}')
+    log "  ${DIM}Docker Desktop is running (~${DOCK_MB} MB incl. its VM). The VM never"
+    log "  returns memory either; quit and reopen, or lower its RAM in settings.${NC}"
 fi
+
 
 # ---- 6. optional deep per-process footprint -----------------------------
 if [ "$DEEP" -eq 1 ]; then
@@ -295,7 +385,7 @@ if [ "$DEEP" -eq 1 ]; then
     if ! command -v vmmap >/dev/null 2>&1; then
         log "  ${YELLOW}vmmap(1) is not available on this system${NC}"
     else
-        DEEP_PIDS=$(printf '%s\n' "$JVMS" | head -6 | awk '{print $3}')
+        DEEP_PIDS=$(printf '%s\n' "$JVMPS" | head -6 | awk '{print $1}')
         [ -n "$DEEP_PIDS" ] || DEEP_PIDS=$(printf '%s\n' "$FAMILIES" | head -6 | awk -F'\t' '{print $4}')
         log "  ${DIM}    PID   FOOTPRINT   SWAPPED-OUT   PROCESS${NC}"
         for pid in $DEEP_PIDS; do
@@ -354,7 +444,7 @@ if [ "$STATUS" -gt 0 ]; then
         log "  $i. ${BOLD}a_c_mem_doctor --reclaim${NC}   frees ~${RECLAIM_MB} MB of idle build daemons"
         i=$((i+1))
     fi
-    if [ -n "$JVMS" ]; then
+    if [ -n "$JVMPS" ]; then
         log "  $i. restart the fattest JVM services one at a time (JVMs section)"
         i=$((i+1))
     fi
@@ -368,11 +458,174 @@ if [ "$STATUS" -gt 0 ]; then
     fi
     log "  $i. ${BOLD}a_c_restart_login${NC}   logout/login: drains everything, no reboot,"
     log "     the machine stays up and reachable over SSH"
-    if [ -n "$JVMS" ]; then
+    if [ -n "$JVMPS" ]; then
         log ""
         log "  ${DIM}Durable fix so this stops recurring: give the JVMs flags that hand"
         log "  memory back to the OS. See a_c_mem_doctor --help.${NC}"
     fi
 fi
+
+# ---- 9. interactive: pick a way out -------------------------------------
+ask() {
+    local __var="$1" __prompt="$2" __ans=""
+    printf "%b" "$__prompt"
+    if { exec 3< /dev/tty; } 2>/dev/null; then
+        read -r __ans <&3 2>/dev/null || __ans=""
+        exec 3<&-
+    else
+        read -r __ans 2>/dev/null || __ans=""
+    fi
+    printf -v "$__var" '%s' "$__ans"
+}
+
+swap_used_mb() {
+    sysctl -n vm.swapusage | awk '
+        { for (i=1;i<=NF;i++) if ($i=="used") { u=$(i+2); sub(/M$/,"",u) } }
+        END { printf "%.0f", u }'
+}
+
+# Never offer to kill the process tree we are running inside.
+SELF_CHAIN=""
+_p=$$
+while [ -n "$_p" ] && [ "$_p" -gt 1 ]; do
+    SELF_CHAIN="$SELF_CHAIN $_p"
+    _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
+done
+
+family_pids() {
+    printf '%s\n' "$JOINED" | awk -F'\t' -v want="$1" "$AWKLIB"'family($5) == want { print $4 }'
+}
+family_mb() {
+    printf '%s\n' "$FAMILIES" | awk -F'\t' -v want="$1" '$5 == want { printf "%.0f", $1/1024 }'
+}
+
+# Quit an app bundle gracefully (preserves tabs/session), then report.
+quit_family() {
+    local fam="$1" pids kept n
+    pids=$(family_pids "$fam")
+    kept=""
+    for pid in $pids; do
+        case " $SELF_CHAIN " in *" $pid "*) kept="$kept $pid" ;; esac
+    done
+    if [ -n "$kept" ]; then
+        log "  ${YELLOW}Skipping$kept - that is this session's own process tree.${NC}"
+    fi
+    if osascript -e "tell application \"$fam\" to quit" >/dev/null 2>&1; then
+        log "  ${GREEN}asked \"$fam\" to quit gracefully${NC} ${DIM}(session/tabs preserved)${NC}"
+        sleep 5
+    fi
+    n=0
+    for pid in $pids; do
+        case " $SELF_CHAIN " in *" $pid "*) continue ;; esac
+        kill -0 "$pid" 2>/dev/null && n=$((n+1))
+    done
+    if [ "$n" -gt 0 ]; then
+        log "  ${DIM}${n} process(es) still alive.${NC}"
+        ask yn "  Force-kill them? [y/N] "
+        if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
+            for pid in $pids; do
+                case " $SELF_CHAIN " in *" $pid "*) continue ;; esac
+                kill "$pid" 2>/dev/null
+            done
+            sleep 3
+            log "  ${GREEN}done${NC}"
+        fi
+    fi
+}
+
+if [ "$INTERACTIVE" -eq 1 ]; then
+    head2 "Options - pick one"
+    OPT_N=0; OPT_KEY=""; OPT_ARG=""
+
+    add_opt() {
+        OPT_N=$((OPT_N+1))
+        OPT_KEY="$OPT_KEY $1"
+        OPT_ARG="$OPT_ARG|$2"
+        log "  ${BOLD}${OPT_N})${NC} $3"
+    }
+
+    if [ "$RECLAIM_MB" -gt 0 ]; then
+        add_opt reclaim "" "Stop idle build daemons + orphaned test forks  ${GREEN}~${RECLAIM_MB} MB${NC}  ${DIM}safe, they respawn${NC}"
+    fi
+
+    if [ -n "$CANDIDATES" ]; then
+        while IFS=$'\t' read -r tot n old maxp fam comp sys isapp; do
+            [ -n "$fam" ] || continue
+            [ "${sys:-0}" = "1" ] && continue
+            mb=$((tot / 1024))
+            if [ "${isapp:-0}" = "1" ]; then
+                add_opt quit "$fam" "Quit and reopen ${BOLD}$fam${NC}  ${GREEN}~${mb} MB${NC}  ${DIM}graceful, restores on relaunch${NC}"
+            else
+                add_opt killfam "$fam" "Kill the ${BOLD}$fam${NC} background processes ($n)  ${GREEN}~${mb} MB${NC}  ${YELLOW}no window, no graceful quit${NC}"
+            fi
+        done <<EOF
+$(printf '%s\n' "$CANDIDATES" | head -5)
+EOF
+    fi
+
+    [ "$DOCKER_UP" -eq 1 ] && add_opt docker "" "Quit and reopen Docker Desktop  ${GREEN}~${DOCK_MB} MB${NC}  ${DIM}stops containers${NC}"
+
+    add_opt deep   "" "Show me which processes hold the most swap first ${DIM}(diagnostic only)${NC}"
+    add_opt logout "" "${BOLD}Log out and back in${NC}  ${GREEN}frees everything${NC}  ${YELLOW}closes all apps, no reboot, stays reachable over SSH${NC}"
+
+    log ""
+    log "  ${BOLD}0)${NC} Do nothing and exit"
+    log ""
+    ask CHOICE "$(printf "  Choice [0-%d]: " "$OPT_N")"
+    [ -n "$CHOICE" ] || CHOICE=0
+
+    if [ "$CHOICE" = "0" ]; then
+        log "  ${DIM}nothing changed${NC}"
+        exit "$STATUS"
+    fi
+
+    KEY=$(printf '%s' "$OPT_KEY" | awk -v i="$CHOICE" '{print $i}')
+    ARG=$(printf '%s' "$OPT_ARG" | awk -F'|' -v i="$((CHOICE+1))" '{print $i}')
+    [ -n "$KEY" ] || { log "  ${RED}invalid choice${NC}"; exit "$STATUS"; }
+
+    SWAP_BEFORE=$(swap_used_mb)
+    log ""
+    case "$KEY" in
+        reclaim)
+            for pid in $(printf '%s\n' "$RECLAIMABLE" | awk '{print $1}'); do
+                [ -n "$pid" ] || continue
+                desc=$(ps -o command= -p "$pid" 2>/dev/null | awk "$AWKLIB"'{ print label($0) }')
+                [ -n "$desc" ] || continue
+                kill "$pid" 2>/dev/null && log "  ${GREEN}stopped${NC} $pid  $desc"
+            done
+            sleep 3 ;;
+        quit)     quit_family "$ARG" ;;
+        killfam)
+            log "  ${YELLOW}Killing $ARG processes.${NC}"
+            ask yn "  Confirm? [y/N] "
+            if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
+                for pid in $(family_pids "$ARG"); do
+                    case " $SELF_CHAIN " in *" $pid "*) log "  ${DIM}skipped $pid (this session)${NC}"; continue ;; esac
+                    kill "$pid" 2>/dev/null
+                done
+                sleep 3; log "  ${GREEN}done${NC}"
+            else
+                log "  ${DIM}cancelled${NC}"; exit "$STATUS"
+            fi ;;
+        docker)
+            osascript -e 'quit app "Docker Desktop"' >/dev/null 2>&1 || osascript -e 'quit app "Docker"' >/dev/null 2>&1
+            log "  ${GREEN}asked Docker to quit${NC} ${DIM}(reopen it when you need it)${NC}"
+            sleep 5 ;;
+        deep)
+            exec "$0" --deep --top "$TOP" ;;
+        logout)
+            log "  ${YELLOW}This closes every app. Unsaved work will be lost.${NC}"
+            ask yn "  Type 'logout' to confirm: "
+            if [ "$yn" = "logout" ]; then sudo killall loginwindow
+            else log "  ${DIM}cancelled${NC}"; exit "$STATUS"; fi ;;
+    esac
+
+    SWAP_AFTER=$(swap_used_mb)
+    log ""
+    log "  swap: ${SWAP_BEFORE}M -> ${SWAP_AFTER}M   ${DIM}(drains lazily, give it a minute)${NC}"
+    ask again "  Re-scan now? [Y/n] "
+    case "$again" in n|N) : ;; *) exec "$0" -i --top "$TOP" ;; esac
+fi
+
 
 exit "$STATUS"
