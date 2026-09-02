@@ -161,7 +161,11 @@ function label(cmd) {
     if (cmd ~ /ForkedBooter|surefire|failsafe/)          return "orphaned test fork"
     return "build process"
 }
+function is_vm(p) {
+    return (p ~ /Virtualization\.VirtualMachine|com\.docker\.virtualization|qemu|VirtualBoxVM|com\.utmapp/)
+}
 function is_system(p) {
+    if (is_vm(p)) return 0
     return (p ~ /^\/System\// || p ~ /^\/usr\// || p ~ /^\/sbin\// || p ~ /^\/bin\//)
 }
 function family(p,   i, pre) {
@@ -250,6 +254,10 @@ printf '%s\n' "$FAMILIES" | head -n "$TOP" | awk -F'\t' "$AWKLIB"'
 
 ACCOUNTED=$(printf '%s\n' "$FAMILIES" | awk -F'\t' '{s+=$1} END {printf "%.1f", s/1048576}')
 log "  ${DIM}total across all families: ${ACCOUNTED} GB${NC}"
+if printf '%s\n' "$FAMILIES" | awk -F'\t' '$6 > $1 {found=1} END {exit !found}'; then
+    log "  ${DIM}(a compressed figure above the total means VM-backed memory, which is"
+    log "  accounted through the hypervisor, not the host. Size the VM, do not quit it.)${NC}"
+fi
 
 if [ "$SHOW_PROCS" -eq 1 ]; then
     head2 "Top ${TOP} individual processes"
@@ -371,11 +379,33 @@ else
 fi
 
 DOCKER_UP=0
-if pgrep -f 'com.docker.virtualization|Docker Desktop' >/dev/null 2>&1; then
+DOCK_CFG_MB=0
+if pgrep -f 'com.docker.virtualization|Docker Desktop|Virtualization.VirtualMachine' >/dev/null 2>&1; then
     DOCKER_UP=1
     DOCK_MB=$(printf '%s\n' "$JOINED" | awk -F'\t' '$5 ~ /[Dd]ocker|Virtualization/ {s+=$1} END {printf "%.0f", s/1024}')
-    log "  ${DIM}Docker Desktop is running (~${DOCK_MB} MB incl. its VM). The VM never"
-    log "  returns memory either; quit and reopen, or lower its RAM in settings.${NC}"
+    # The VM's real cost is what it is ALLOCATED, not what top attributes to it:
+    # a hypervisor VM reserves its full allocation up front and never gives it
+    # back while it runs, whether containers are busy or idle.
+    for f in "$HOME/Library/Group Containers/group.com.docker/settings-store.json" \
+             "$HOME/Library/Group Containers/group.com.docker/settings.json"; do
+        [ -f "$f" ] || continue
+        v=$(grep -oE '"[Mm]emoryMiB"[[:space:]]*:[[:space:]]*[0-9]+' "$f" 2>/dev/null | grep -oE '[0-9]+$' | head -1)
+        [ -n "$v" ] && { DOCK_CFG_MB="$v"; break; }
+    done
+    if [ "$DOCK_CFG_MB" -gt 0 ]; then
+        PCT=$(( DOCK_CFG_MB * 100 / (TOTAL_GB * 1024) ))
+        if [ "$PCT" -ge 33 ]; then
+            log "  ${YELLOW}Docker Desktop's VM is allocated ${DOCK_CFG_MB} MB - ${PCT}% of this machine's RAM.${NC}"
+        else
+            log "  ${DIM}Docker Desktop's VM is allocated ${DOCK_CFG_MB} MB (${PCT}% of RAM).${NC}"
+        fi
+        log "  ${DIM}A VM reserves its whole allocation up front and holds it while it runs,"
+        log "  idle or not. Quitting Docker frees it; lowering the allocation keeps it"
+        log "  freed. Docker Desktop > Settings > Resources > Memory.${NC}"
+    else
+        log "  ${DIM}Docker Desktop is running (~${DOCK_MB} MB incl. its VM). The VM never"
+        log "  returns memory either; quit and reopen, or lower its RAM in settings.${NC}"
+    fi
 fi
 
 
@@ -495,6 +525,10 @@ done
 family_pids() {
     printf '%s\n' "$JOINED" | awk -F'\t' -v want="$1" "$AWKLIB"'family($5) == want { print $4 }'
 }
+family_pids_older() {
+    printf '%s\n' "$JOINED" | awk -F'\t' -v want="$1" -v mins="$2" "$AWKLIB"'
+        family($5) == want && $3 > (mins * 60) { print $4 }'
+}
 family_mb() {
     printf '%s\n' "$FAMILIES" | awk -F'\t' -v want="$1" '$5 == want { printf "%.0f", $1/1024 }'
 }
@@ -563,7 +597,13 @@ $(printf '%s\n' "$CANDIDATES" | head -5)
 EOF
     fi
 
-    [ "$DOCKER_UP" -eq 1 ] && add_opt docker "" "Quit and reopen Docker Desktop  ${GREEN}~${DOCK_MB} MB${NC}  ${DIM}stops containers${NC}"
+    if [ "$DOCKER_UP" -eq 1 ]; then
+        if [ "$DOCK_CFG_MB" -gt 0 ]; then
+            add_opt docker "" "Quit Docker Desktop  ${GREEN}~${DOCK_CFG_MB} MB${NC} ${DIM}(its whole VM allocation)  stops containers${NC}"
+        else
+            add_opt docker "" "Quit Docker Desktop  ${GREEN}~${DOCK_MB} MB${NC}  ${DIM}stops containers${NC}"
+        fi
+    fi
 
     add_opt deep   "" "Show me which processes hold the most swap first ${DIM}(diagnostic only)${NC}"
     add_opt logout "" "${BOLD}Log out and back in${NC}  ${GREEN}frees everything${NC}  ${YELLOW}closes all apps, no reboot, stays reachable over SSH${NC}"
@@ -596,14 +636,28 @@ EOF
             sleep 3 ;;
         quit)     quit_family "$ARG" ;;
         killfam)
-            log "  ${YELLOW}Killing $ARG processes.${NC}"
+            ask MINAGE "  Kill $ARG processes older than how many hours? [enter = ${OLD_DAYS}d, 0 = all] "
+            case "$MINAGE" in
+                ""|*[!0-9]*) MINS=$((OLD_DAYS * 1440)); AGEDESC="${OLD_DAYS}d" ;;
+                0)           MINS=0;                    AGEDESC="any age" ;;
+                *)           MINS=$((MINAGE * 60));     AGEDESC="${MINAGE}h" ;;
+            esac
+            VICTIMS=""
+            for pid in $(family_pids_older "$ARG" "$MINS"); do
+                case " $SELF_CHAIN " in *" $pid "*) continue ;; esac
+                VICTIMS="$VICTIMS $pid"
+            done
+            NVIC=$(printf '%s' "$VICTIMS" | wc -w | tr -d ' ')
+            NALL=$(family_pids "$ARG" | wc -l | tr -d ' ')
+            if [ "$NVIC" -eq 0 ]; then
+                log "  ${DIM}nothing in $ARG is older than $AGEDESC${NC}"; exit "$STATUS"
+            fi
+            log "  ${YELLOW}Will kill ${NVIC} of ${NALL} ${ARG} process(es), those older than ${AGEDESC}.${NC}"
+            [ "$((NALL - NVIC))" -gt 0 ] && log "  ${DIM}$((NALL - NVIC)) left alone: newer than ${AGEDESC}, or this session's own tree${NC}"
             ask yn "  Confirm? [y/N] "
             if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
-                for pid in $(family_pids "$ARG"); do
-                    case " $SELF_CHAIN " in *" $pid "*) log "  ${DIM}skipped $pid (this session)${NC}"; continue ;; esac
-                    kill "$pid" 2>/dev/null
-                done
-                sleep 3; log "  ${GREEN}done${NC}"
+                for pid in $VICTIMS; do kill "$pid" 2>/dev/null; done
+                sleep 3; log "  ${GREEN}killed ${NVIC} process(es)${NC}"
             else
                 log "  ${DIM}cancelled${NC}"; exit "$STATUS"
             fi ;;

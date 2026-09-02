@@ -40,6 +40,13 @@ and it looks innocent. On a live box `ps` reported WindowServer at 198MB when
 its real footprint was 2756MB, and Chrome at 9.2GB when it was really 13.9GB
 with 10GB compressed. Ranking by rss points you at the wrong process.
 
+**Watch the VM row.** A hypervisor VM (Docker Desktop's, mainly) reserves its
+whole allocation up front and holds it for as long as it runs, busy or idle. The
+report reads Docker's configured `MemoryMiB` directly and warns when it is a
+third or more of the machine. A 12GB allocation on a 24GB machine is half the
+RAM gone before anything else starts. Fix it in Docker Desktop > Settings >
+Resources > Memory, not by quitting Docker each time.
+
 **It will not kill a running build.** A Gradle *worker* only exists while a
 build is in flight, so if any worker is alive the whole Gradle family is off
 limits, daemon included. `--force` overrides if you mean to abort the build.
