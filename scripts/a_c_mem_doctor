@@ -241,10 +241,11 @@ FAMILIES=$(printf '%s\n' "$JOINED" | awk -F'\t' "$AWKLIB"'
     tot[f] += $1; comp[f] += $2; n[f]++
     if (is_system($5)) sys[f] = 1
     if (index($5, ".app/") > 0) app[f] = 1
+    if (is_vm($5)) vm[f] = 1
     if ($3 > old[f]) old[f] = $3
     if ($1 > maxm[f]) { maxm[f] = $1; maxp[f] = $4 }
 }
-END { for (f in tot) printf "%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\n", tot[f], n[f], old[f], maxp[f], f, comp[f], (f in sys ? 1 : 0), (f in app ? 1 : 0) }' \
+END { for (f in tot) printf "%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\n", tot[f], n[f], old[f], maxp[f], f, comp[f], (f in sys ? 1 : 0), (f in app ? 1 : 0), (f in vm ? 1 : 0) }' \
 | sort -rn)
 
 head2 "Memory by app family  ${DIM}(footprint, not rss - what you would actually quit)${NC}"
@@ -373,7 +374,8 @@ if [ -z "$CANDIDATES" ]; then
     CAND_GB=0
 else
     printf '%s\n' "$CANDIDATES" | head -n "$TOP" | awk -F'\t' "$AWKLIB"'
-    { printf "  %10s   %5d procs   up %-5s   %s\n", human_mb($1/1024), $2, human_age($3), $5 }'
+    { printf "  %10s   %5d procs   up %-5s   %s%s\n", human_mb($1/1024), $2, human_age($3), $5,
+             ($9 == 1 ? "   <- a VM: resize it, do not kill it" : "") }'
     CAND_GB=$(printf '%s\n' "$CANDIDATES" | awk -F'\t' '{s+=$1} END {printf "%.1f", s/1048576}')
     log "  ${BOLD}restarting all of these would return roughly ${CAND_GB} GB${NC}"
 fi
@@ -583,10 +585,14 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     fi
 
     if [ -n "$CANDIDATES" ]; then
-        while IFS=$'\t' read -r tot n old maxp fam comp sys isapp; do
+        while IFS=$'\t' read -r tot n old maxp fam comp sys isapp isvm; do
             [ -n "$fam" ] || continue
             [ "${sys:-0}" = "1" ] && continue
             mb=$((tot / 1024))
+            # A VM is offered once, below, as the Docker quit action. Killing
+            # the VM process directly is an abrupt hypervisor kill, not a
+            # clean shutdown of what is running inside it.
+            [ "${isvm:-0}" = "1" ] && continue
             if [ "${isapp:-0}" = "1" ]; then
                 add_opt quit "$fam" "Quit and reopen ${BOLD}$fam${NC}  ${GREEN}~${mb} MB${NC}  ${DIM}graceful, restores on relaunch${NC}"
             else
