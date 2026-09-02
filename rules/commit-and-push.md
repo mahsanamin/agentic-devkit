@@ -38,6 +38,12 @@ of "done".
   `develop`, `release/*`, or `story/*`. If a guard blocks it, say so and hand over the `! ` command
   rather than stalling silently.
 - **Open a PR only when the task was heading there.** Do not create one speculatively.
+- **Could not verify it? Do not push.** Say what is unverified and why, and let the user decide.
+  Verified means the project's own gates actually ran and passed — a suite that was skipped, a
+  module that would not compile, or a check blocked by a stale credential is a gap, not a pass.
+  Never let a green summary line stand in for a suite that never ran. Recorded 2026-08-25, after a
+  `staging` merge where the push was correctly held because one module could not compile against a
+  stale S3 token.
 - **A push that fails on `Permission denied (publickey)` is the user's to run, not mine to debug.**
   A non-interactive shell has no ssh-agent, so once that agent dies mid-session nothing
   authenticates, in ANY repo, including ones already pushed to in the same session. Do not retry
