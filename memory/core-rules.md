@@ -57,6 +57,20 @@ and without offering it as an option first. This covers the everyday phrasing: "
 If it returns `ESCALATE: sonnet`, re-spawn it on sonnet with its partial findings rather than
 finishing the search yourself. Relay its answer; do not re-run the search to check it.
 
+### Finishing a change — push by default, never push unverified
+
+After committing, push. Do not leave finished work sitting unpushed, and do not end a turn by
+handing over a `git push` command. **A shared branch is not a reason to stop** — `staging`,
+`develop`, `release/*`, `story/*` are all pushable; only the repository's default branch is not.
+
+**The exception: if the change could not be verified, do not push.** Say what is unverified and
+why, and let the user decide. Verified means the project's own gates actually ran and passed — a
+skipped suite, a module that would not compile, or a check blocked by a stale credential is a gap,
+not a pass.
+
+Full policy, including the other hard gates: `agentic-devkit/rules/commit-and-push.md`. Change it
+there, not here.
+
 ### Knowledge placement — where a new fact goes
 
 Project-specific guidance belongs **in that project's repo** (`CLAUDE.md`, `.claude/agents/`,
