@@ -1,5 +1,6 @@
 ---
 name: a_sk_tame_claude
+providers: claude
 description: Turn a messy, unmanaged ~/.claude into a managed one that lives in git. Audits every file Claude loads (CLAUDE.md, skills, agents, commands, settings, hooks, MCP), classifies each as managed, adoptable, or junk, then adopts what is worth keeping into the right repo, deletes what is dead, repairs broken symlinks, and rewrites a bloated global CLAUDE.md into a short set of rules that point at real sources, and converts it from a hand-typed file into one generated from git (machine identity, personal rules, glossary) via a_c_claude_memory. Also recommends and scaffolds a PRIVATE GitHub brain repo (my_private_brain or a name the user picks) for durable knowledge (glossary, decisions, people, conventions) and wires it in, so memory stops living in one long file. Use for "my Claude config is a mess", "clean up ~/.claude", "make my Claude setup managed", "audit my Claude memory", "my CLAUDE.md is too long", "set up a second brain for Claude", "I keep re-explaining my projects to Claude", "organize my Claude skills", or after moving/renaming a repo that Claude links into. Never deletes without showing the user first. Local (needs the filesystem, git, and ~/.claude).
 ---
 

@@ -18,7 +18,7 @@ if [ -n "$a_company_name" ] && [ -n "$a_machine_type" ]; then
 fi
 
 ########################### Directory Aliases ####
-# cd_p = personal repos, cd_w = work repos
+# cd_p = personal repos, cd_w = work repos, cd_g = global/shared repos
 # Define more in your org profile (e.g., cd_be, cd_api, etc.)
 if [ -n "$a_dir_p_repos" ]; then
     alias cd_p="cd ${a_dir_p_repos}"
@@ -26,12 +26,26 @@ fi
 if [ -n "$a_dir_w_repos" ]; then
     alias cd_w="cd ${a_dir_w_repos}"
 fi
+if [ -n "$a_dir_g_repos" ]; then
+    alias cd_g="cd ${a_dir_g_repos}"
+fi
 alias cd_wf="cd ${MY_WORKFLOW_DIR}"
 
 ########################### Secrets & Keys ####
 # Source local secrets files if they exist (never commit these)
 [ -f ~/.aws_keys ] && source ~/.aws_keys
 [ -f ~/.my_secrets ] && source ~/.my_secrets
+[ -f ~/.a_secs ] && source ~/.a_secs
+
+# Jira creds for the task suite (a_c_task_start's title + issue-type lookup).
+# Those scripts read A_JIRA_EMAIL / A_JIRA_TOKEN / A_JIRA_BASE, but a secrets
+# file written for other tools usually carries the generic Atlassian names
+# instead. Map them across when the A_JIRA_* form is not already set, so the
+# ticket title pre-fills the branch slug rather than silently falling back to a
+# ticket-only branch name. Explicit A_JIRA_* always wins.
+[ -z "${A_JIRA_EMAIL:-}" ] && [ -n "${ATLASSIAN_USERNAME:-}" ] && export A_JIRA_EMAIL="$ATLASSIAN_USERNAME"
+[ -z "${A_JIRA_TOKEN:-}" ] && [ -n "${ATLASSIAN_API_TOKEN:-}" ] && export A_JIRA_TOKEN="$ATLASSIAN_API_TOKEN"
+[ -z "${A_JIRA_BASE:-}" ]  && [ -n "${JIRA_URL:-}" ]            && export A_JIRA_BASE="${JIRA_URL%/}"
 
 ########################### Clear Shadowing Aliases ####
 # zsh refuses to define a function whose name is already an alias, and the parse

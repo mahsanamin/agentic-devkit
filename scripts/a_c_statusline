@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Claude Code status line: context window usage + tokens consumed this session.
+
+Claude Code pipes a JSON blob to this script on stdin every time it redraws the
+status line, and prints whatever comes back on stdout. Wire it up with:
+
+    "statusLine": {"type": "command", "command": "<abs path to this file>"}
+
+in ~/.claude/settings.json.
+
+What it shows, left to right:
+
+    opus-5 1M │ my-repo ⎇ main* │ ctx 38% 382k/1M │ ▲315k ▼2.2M │ $12.34
+
+    - model, and its context window size
+    - repo directory, git branch, and a * when the tree is dirty
+    - ctx: how full the context window is right now (this is the number that
+      decides when a session gets compacted)
+    - ▲ output tokens generated this session, ▼ fresh input tokens sent
+      (new prompt + cache writes; cheap cache READS are excluded because they
+      are neither what you are billed for nor what fills the window)
+    - session cost, when Claude Code supplies it
+
+Two things make this cheap enough to run on every redraw:
+
+    - current context is read from the TAIL of the transcript only, never the
+      whole file, so a 50 MB history costs the same as a fresh one;
+    - session totals are accumulated incrementally in a small cache keyed by
+      session id, so each redraw parses only the bytes appended since the last
+      one.
+
+Everything is defensive: any missing field, unreadable file or unexpected shape
+degrades to a shorter line rather than an error. A status line that crashes is
+worse than one that is briefly incomplete.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+# Read this much from the end of the transcript to find the newest usage record.
+# One assistant record with tool results can be large, so this is deliberately
+# generous; it is still a fixed cost no matter how long the session runs.
+TAIL_BYTES = 512 * 1024
+
+CACHE_DIR = os.path.expanduser("~/.claude/.cache/statusline")
+
+# Context window per model. Claude Code reports the 1M variants with a "[1m]"
+# suffix on the model id, which is the only reliable signal available here.
+DEFAULT_WINDOW = 200_000
+LARGE_WINDOW = 1_000_000
+
+RESET = "\033[0m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+BLUE = "\033[34m"
+CYAN = "\033[36m"
+
+
+def _human(n):
+    """Compact token count: 940 -> 940, 38_400 -> 38k, 2_213_000 -> 2.2M."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "?"
+    if n < 1_000:
+        return str(n)
+    if n < 1_000_000:
+        return f"{n / 1_000:.0f}k"
+    return f"{n / 1_000_000:.1f}M"
+
+
+def _usage_of(record):
+    """The usage block of an assistant record, or None."""
+    msg = record.get("message")
+    if not isinstance(msg, dict):
+        return None
+    usage = msg.get("usage")
+    return usage if isinstance(usage, dict) else None
+
+
+def _context_tokens(usage):
+    """How much of the window this request occupied.
+
+    Cache reads count: a cached prefix still takes up window space even though it
+    is billed at a discount. This is the number that drives compaction.
+    """
+    return (usage.get("input_tokens", 0)
+            + usage.get("cache_read_input_tokens", 0)
+            + usage.get("cache_creation_input_tokens", 0))
+
+
+def _iter_records(text):
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+
+def read_current_context(path):
+    """Newest context size, from the tail of the transcript only."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            start = max(0, size - TAIL_BYTES)
+            fh.seek(start)
+            raw = fh.read().decode("utf-8", "replace")
+        if start > 0:
+            # Drop the partial first line produced by seeking mid-file.
+            raw = raw.split("\n", 1)[1] if "\n" in raw else ""
+    except OSError:
+        return None
+
+    newest = None
+    for rec in _iter_records(raw):
+        # Sub-agent turns are their own conversations and do not occupy the main
+        # window, so they must not be mistaken for it.
+        if rec.get("isSidechain"):
+            continue
+        usage = _usage_of(rec)
+        if usage:
+            newest = usage
+    return _context_tokens(newest) if newest else None
+
+
+def read_session_totals(path, session_id):
+    """Cumulative tokens for the session, parsing only newly appended bytes."""
+    totals = {"offset": 0, "input": 0, "cache_create": 0, "cache_read": 0, "output": 0}
+    cache_file = os.path.join(CACHE_DIR, f"{session_id}.json") if session_id else None
+
+    if cache_file and os.path.exists(cache_file):
+        try:
+            with open(cache_file) as fh:
+                saved = json.load(fh)
+            if isinstance(saved, dict) and all(k in saved for k in totals):
+                totals = saved
+        except (OSError, ValueError):
+            pass
+
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+
+    # The file shrank, so it is not the file we counted before. Start over.
+    if size < totals["offset"]:
+        totals = {"offset": 0, "input": 0, "cache_create": 0,
+                  "cache_read": 0, "output": 0}
+
+    if size > totals["offset"]:
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(totals["offset"])
+                raw = fh.read().decode("utf-8", "replace")
+        except OSError:
+            return None
+        # Only consume up to the last complete line; the rest arrives next redraw.
+        cut = raw.rfind("\n")
+        if cut == -1:
+            consumed = 0
+            raw = ""
+        else:
+            consumed = len(raw[:cut + 1].encode("utf-8"))
+            raw = raw[:cut + 1]
+        for rec in _iter_records(raw):
+            usage = _usage_of(rec)
+            if not usage:
+                continue
+            totals["input"] += usage.get("input_tokens", 0)
+            totals["cache_create"] += usage.get("cache_creation_input_tokens", 0)
+            totals["cache_read"] += usage.get("cache_read_input_tokens", 0)
+            totals["output"] += usage.get("output_tokens", 0)
+        totals["offset"] += consumed
+
+        if cache_file:
+            try:
+                os.makedirs(CACHE_DIR, exist_ok=True)
+                tmp = cache_file + ".tmp"
+                with open(tmp, "w") as fh:
+                    json.dump(totals, fh)
+                os.replace(tmp, cache_file)
+            except OSError:
+                pass
+
+    return totals
+
+
+def git_bit(cwd):
+    """'branch' or 'branch*' when dirty, or None outside a repo."""
+    if not cwd or not os.path.isdir(cwd):
+        return None
+    try:
+        branch = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=1).stdout.strip()
+        if not branch or branch == "HEAD":
+            return None
+        dirty = subprocess.run(
+            ["git", "-C", cwd, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=1).stdout.strip()
+        return branch + ("*" if dirty else "")
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def window_for(model_id):
+    if model_id and "[1m]" in model_id.lower():
+        return LARGE_WINDOW
+    return DEFAULT_WINDOW
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except (ValueError, OSError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    model = payload.get("model") or {}
+    model_id = model.get("id") or ""
+    model_name = model.get("display_name") or model_id or "claude"
+    workspace = payload.get("workspace") or {}
+    cwd = workspace.get("current_dir") or payload.get("cwd") or os.getcwd()
+    transcript = payload.get("transcript_path")
+    session_id = payload.get("session_id")
+
+    window = window_for(model_id)
+    parts = []
+
+    label = model_name
+    if window >= LARGE_WINDOW:
+        label += " 1M"
+    parts.append(f"{BOLD}{CYAN}{label}{RESET}")
+
+    where = os.path.basename(cwd.rstrip("/")) or cwd
+    branch = git_bit(cwd)
+    parts.append(f"{BLUE}{where}{RESET}" + (f" {DIM}⎇ {branch}{RESET}" if branch else ""))
+
+    if transcript and os.path.exists(transcript):
+        used = read_current_context(transcript)
+        if used:
+            # A session cannot exceed its own window, so overflowing one is proof
+            # the window was guessed too small. Believe the transcript over the
+            # model id, which is the part most likely to change format on us.
+            if used > window and window < LARGE_WINDOW:
+                window = LARGE_WINDOW
+            pct = used * 100 // window
+            colour = GREEN if pct < 50 else (YELLOW if pct < 75 else RED)
+            parts.append(f"{colour}ctx {pct}% {_human(used)}/{_human(window)}{RESET}")
+
+        totals = read_session_totals(transcript, session_id)
+        if totals:
+            fresh_in = totals["input"] + totals["cache_create"]
+            parts.append(f"{DIM}▲{_human(totals['output'])} "
+                         f"▼{_human(fresh_in)}{RESET}")
+
+    cost = (payload.get("cost") or {}).get("total_cost_usd")
+    if isinstance(cost, (int, float)) and cost > 0:
+        parts.append(f"{DIM}${cost:.2f}{RESET}")
+
+    sys.stdout.write(f" {DIM}│{RESET} ".join(parts))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        # Never let a status line take the session down with it.
+        sys.exit(0)

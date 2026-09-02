@@ -121,8 +121,18 @@ if [ "$use_zellij" -eq 1 ]; then
         || { echo "$prog: could not build launcher" >&2; exit 1; }
     echo "$prog: opening in zellij session '$zellij_session', tab '$tab' ..." >&2
     if a_task_zellij_setup "$zellij_session" "$tab" "$IDEA_DIR" "$launcher"; then
-        if [ -z "${ZELLIJ:-}" ]; then
+        # Attach ONLY when a human is actually looking at a terminal. Without one
+        # (a routine, a cron job, a tether button) `zellij attach` paints the whole
+        # zellij UI into the caller's output as escape-code soup, holds this script
+        # open forever, and clamps the fresh session to that tiny pty. It reads as
+        # "nothing started" even though the tab and Claude are running fine.
+        # a_task_can_attach tests the window SIZE, not just isatty: a pty passes
+        # isatty with nobody watching. See its comment.
+        if [ -z "${ZELLIJ:-}" ] && a_task_can_attach; then
             zellij attach "$zellij_session"          # not in zellij: land on the new tab (detach to return)
+        elif [ -z "${ZELLIJ:-}" ]; then
+            echo "  idea running in session '$zellij_session', tab '$tab'." >&2
+            echo "  switch to it:  zellij attach $zellij_session   (or Ctrl-o w)" >&2
         elif [ "${ZELLIJ_SESSION_NAME:-}" = "$zellij_session" ]; then
             zellij action go-to-tab-name "$tab" >/dev/null 2>&1
             echo "  switched to tab '$tab' (this session)." >&2

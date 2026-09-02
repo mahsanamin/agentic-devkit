@@ -93,7 +93,7 @@ public repo is not something you want to discover later.
 that is hand-typed and version-controlled nowhere. Skills and agents survive a laptop swap; the
 rules do not. That is the last unmanaged thing in an otherwise managed setup.
 
-`a_c_claude_memory` fixes it by composing the file from sources that do live in git:
+`a_c_agent_memory` fixes it by composing every provider's native global file from sources that do live in git:
 
 | Block | Source | Layer |
 |---|---|---|
@@ -104,16 +104,16 @@ rules do not. That is the last unmanaged thing in an otherwise managed setup.
 | pointers | generated from the configured repo paths | — |
 
 ```bash
-a_c_claude_memory status   # sources found, region present, in sync?
-a_c_claude_memory diff     # what a build would change
-a_c_claude_memory build    # regenerate the managed region in place
-a_c_claude_memory check    # exit 1 on drift (used by a_c_workflow_doctor)
+a_c_agent_memory status   # sources found, regions present, in sync?
+a_c_agent_memory diff     # what a build would change
+a_c_agent_memory build    # regenerate all native provider files
+a_c_agent_memory check    # exit 1 on drift (used by a_c_workflow_doctor)
 ```
 
 Everything it writes sits between `agentic-devkit: managed memory` markers. **Text outside the
 markers is never touched** — adopting an existing hand-written file keeps that file, verbatim,
 below the generated region. Three variables in `configs.profile` drive it: `A_MACHINE_NAME`,
-`A_CLAUDE_OVERLAY_DIR`, `A_CLAUDE_BRAIN_DIR`. With none of them set you still get a valid file
+`A_AGENT_OVERLAY_DIR`, `A_AGENT_BRAIN_DIR`. With none of them set you still get valid files
 from the core rules alone.
 
 ### Machine identity
@@ -124,6 +124,29 @@ overlay: the name (which need not be the hostname), what lives on the box, which
 mounted, which git identity to commit as, and what a scheduled routine is allowed to touch.
 
 Name it distinctly. "Which machine am I on" should never be answered by inference.
+
+### Path tokens — because overlay sources are shared
+
+`machine/rules.md` and `machine/glossary.md` are read by **every** machine, but the repos they
+talk about sit at a different absolute path on each one. A hardcoded path is therefore correct on
+exactly one box, and an `@/abs/path/file.md` import that does not resolve is worse than a missing
+rule: it fails silently, so the machine looks configured and quietly runs without that rule.
+
+Write tokens instead. The build expands them per machine:
+
+| Token | Expands to |
+|---|---|
+| `{{DEVKIT}}` | `$MY_WORKFLOW_DIR` — the public core repo |
+| `{{OVERLAY}}` | `$A_AGENT_OVERLAY_DIR` — the private overlay |
+| `{{BRAIN}}` | `$A_AGENT_BRAIN_DIR` — the private brain |
+
+```markdown
+@{{DEVKIT}}/rules/mdnest.md
+```
+
+Better still, in prose: name repos by their `cd_g` / `cd_p` / `cd_w` tier rather than by path, and
+keep absolute paths in `machine/<name>.md`, which is the one source that is allowed to be
+machine-specific because there is one per machine.
 
 ### The glossary
 
@@ -164,6 +187,36 @@ Two rules keep it useful:
 Hook it into the global `CLAUDE.md` with a short section naming the path and telling Claude to
 read the brain's `CLAUDE.md` first, and to skip silently if the path is missing (unmounted
 volume, different machine). Never let a missing brain block a session.
+
+## More than one machine
+
+Once a second machine exists, the overlay and the brain are only shared in theory: a fact helps
+the other box after it is **pushed**, and a clone that has not pulled is how two machines end up
+disagreeing with each other. `a_c_repo_sync` closes that gap.
+
+```bash
+a_c_repo_sync              # pull, commit anything local, push - overlay and brain
+a_c_repo_sync -n           # dry run
+a_c_repo_sync --pull-only  # take updates, send nothing
+a_c_repo_sync <path> ...   # specific repos (default: $A_CLAUDE_OVERLAY_DIR, $A_CLAUDE_BRAIN_DIR)
+```
+
+It is intentionally dull, and the guarantees are the point: it never force-pushes, never rewrites
+history, and never resolves a conflict — on any conflict it aborts, restores the repo, and tells
+you to fix it by hand. It skips a repo that is mid-rebase, detached, upstream-less, or has no git
+identity, and one repo failing does not stop the others. When a pull changes anything under
+`machine/`, it rebuilds the rules file, because otherwise the machine keeps running yesterday's
+rules.
+
+Two things it is not. It is **not** a knowledge-producing routine — it moves that machine's own
+commits and nothing else, which is why every machine may run it on a timer even when the fleet
+rule is that only one box owns the scheduled routines. And it is **not** a substitute for an
+unlocked SSH agent: if every key on the box is passphrase-protected, an unattended run can only
+push after a human has unlocked the agent once since boot. The script says so plainly instead of
+failing obscurely.
+
+Wire it per machine with whatever that OS uses — a systemd user timer on Linux, a launchd agent
+on macOS. Per machine, because it is local plumbing, not shared capability.
 
 ## The self-learning loop
 

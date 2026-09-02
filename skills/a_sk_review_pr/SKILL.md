@@ -7,7 +7,7 @@ description: Review a GitHub PR end-to-end from just its URL. Give it a PR link 
 
 One entry point: hand it a PR URL and it does the whole thing. It owns **getting the right code onto disk with zero duplication** and the **posting + cleanup**; it delegates the **review itself** to an existing reviewer skill. Do not reinvent the review engine, the repo-resolution logic, or the worktree layout — each already exists and is reused here.
 
-> **From a terminal (no need to open Claude first):** the command `a_c_review_pr <pr-url>` does the mechanical setup — resolve the repo, make the worktree on the head branch — and then launches a Claude session in auto mode whose opening prompt runs *this* review policy. When invoked that way you are told "you are already in the worktree" — so skip step 2/4 (resolve + create) and go straight to step 4b (announce), then the review + post; the command handles teardown.
+> **Optional Claude terminal wrapper:** `a_c_review_pr <pr-url>` performs the mechanical setup and launches Claude with this policy. Codex and AGY users invoke this shared skill from their existing session. When the wrapper says "you are already in the worktree", skip repo resolution and worktree creation; the wrapper handles teardown.
 
 ## What this reuses (do not duplicate)
 
@@ -61,7 +61,7 @@ Worktrees live beside the main repo, matching the layout used everywhere else:
 - **Verify before reviewing:** print the worktree path, the checked-out branch, and confirm `git -C "$WT" rev-parse HEAD` equals `headRefOid`. If it doesn't, fetch again / fix before proceeding. `cd "$WT"`.
 
 ### 4b. Announce that the review has started (`post=auto` only)
-Apply `a_r_l_pr_review`'s **Review-started announcement** verbatim. Compactly: before any code is read, post ONE top-level comment so the author knows a review is underway (a teammate asked for this; a silent review looks like no review). Name the machine's agent identity if the global rules (`~/.claude/CLAUDE.md`) define one, and always name Claude Code alongside it; if no agent name is defined, post the same comment without one and never invent one.
+Apply `a_r_l_pr_review`'s **Review-started announcement** verbatim. Before any code is read, post ONE top-level comment so the author knows a review is underway. Read the machine identity from the active provider's global guidance (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`) when present, and name the actual runtime (`Claude Code`, `Codex`, or `AGY`). If no agent identity exists, use only the runtime label and never invent a name.
 
 ```bash
 HEAD_SHA="$(gh pr view <N> --json headRefOid --jq '.headRefOid[0:7]')"
@@ -69,7 +69,7 @@ ALREADY="$(gh api "repos/{OWNER}/{REPO}/issues/<N>/comments" \
   --jq "[.[] | select(.body | test(\"Review started\"; \"i\")) | select(.body | contains(\"$HEAD_SHA\"))] | length")"
 
 if [ "$ALREADY" = "0" ]; then
-  gh api "repos/{OWNER}/{REPO}/issues/<N>/comments" -f body="🔍 Review started by **<AGENT-NAME>** (Claude Code) on \`$HEAD_SHA\`.
+  gh api "repos/{OWNER}/{REPO}/issues/<N>/comments" -f body="🔍 Review started by **<AGENT-NAME-IF-ANY>** (<RUNTIME>) on \`$HEAD_SHA\`.
 Anything that needs action will land as inline comments; a clean pass posts nothing."
 fi
 ```
@@ -81,8 +81,8 @@ fi
 - This runs even on the `a_c_review_pr` path where steps 2 and 4 are skipped, since the worktree already exists there.
 
 ### 5. Pick the reviewer and run it (from inside the worktree)
-- `reviewer=auto`: if `"$REPO_PATH/.claude/skills/review-pr/SKILL.md"` exists → use the **project** reviewer: `/review-pr <N>`. Else → use the **global** reviewer: `global-pr-reviewer <PR-URL>`. (`global-pr-reviewer` is installed globally and is itself project-aware, so it is a safe fallback; it must never be re-created — per this repo's rules `aa-*` skills belong to the upstream framework, not here.)
-- If the project reviewer's skill is present on disk but not invocable in this session, fall back to the global reviewer rather than failing.
+- `reviewer=auto`: look for the project's `review-pr` skill in the active provider's project skill paths (`.claude/skills`, `.agents/skills`, or `.gemini/skills`) and invoke it with the provider-native skill mechanism. If none is invocable, delegate the review to `a_sag_code_reviewer`.
+- If a project reviewer exists on disk but is not invocable in this session, use `a_sag_code_reviewer` rather than failing.
 - The reviewer reads the full source from **this worktree** (that's why the head-branch checkout matters) and runs `gh pr diff <N>` (head-vs-base) itself. It emits a categorized **draft** (path under the reviewer's reviews root). Do not compute the diff or pick a base yourself.
 
 ### 6. Post — `post=auto` (default) or `draft`

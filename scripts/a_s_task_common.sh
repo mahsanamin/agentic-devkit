@@ -409,15 +409,30 @@ a_task_zellij_tab_name() {
     printf '%s' "$ticket"
 }
 
-# Return 0 if a zellij session named $1 is currently listed. Matches the first
-# whitespace-delimited field so an "(EXITED ...)" suffix can't hide a name.
+# Echo the state of zellij session $1: running | exited | absent.
+#
+# Read the listing with `-n` (no formatting), NOT `-ns`: the short form strips the
+# "(EXITED - attach to resurrect)" suffix, which made a DEAD session look alive.
+# That mattered because `zellij --session <dead> action ...` prints "Session not
+# found" and STILL EXITS 0, so callers reported success having created nothing.
+a_task_zellij_state() {
+    local line name
+    while IFS= read -r line; do
+        name="${line%% *}"
+        [ "$name" = "$1" ] || continue
+        case "$line" in
+            *EXITED*) printf 'exited';  return 0 ;;
+            *)        printf 'running'; return 0 ;;
+        esac
+    done < <(zellij list-sessions -n 2>/dev/null)
+    printf 'absent'
+}
+
+# Return 0 if a zellij session named $1 is ALIVE right now. A session that has
+# exited (resurrectable but dead) is deliberately NOT "have": nothing can be
+# driven in it until a_c_zellij_tab brings it back.
 a_task_zellij_have() {
-    local s
-    while IFS= read -r s; do
-        s="${s%% *}"
-        [ "$s" = "$1" ] && return 0
-    done < <(zellij list-sessions -ns 2>/dev/null)
-    return 1
+    [ "$(a_task_zellij_state "$1")" = "running" ]
 }
 
 # Return 0 if session $1 already has a tab whose name is exactly $2. Used to keep
@@ -428,6 +443,43 @@ a_task_zellij_tab_exists() {
         [ "$t" = "$2" ] && return 0
     done < <(zellij --session "$1" action query-tab-names 2>/dev/null)
     return 1
+}
+
+# Print the environment-hygiene preamble every generated launcher needs, on stdout,
+# for the caller to write into the launcher script.
+#
+# WHY THIS EXISTS. A launcher is executed by the zellij SERVER, and that server
+# inherits the environment of whatever first created the session. When a routine
+# creates it, the routine's environment is then handed to every pane in that
+# session, for as long as it lives. Measured on a real session created by tether
+# (which runs under `uv run` from launchd):
+#
+#   TERM         not set at all   (a normal session had xterm-256color)
+#   VIRTUAL_ENV  /…/ustaad/.venv  (tether's Python virtualenv, still active)
+#   UV, UV_RUN_RECURSION_DEPTH    also inherited
+#
+# So a Claude session started from a button ran with no terminal type and inside
+# tether's virtualenv. A TUI program with no TERM is in a degraded state before it
+# starts, and a coding session has no business inheriting the transport's Python
+# environment. Fix it at the launcher, which covers every caller (tether, cron,
+# launchd) rather than one routine.
+#
+# a_c_zellij_tab carries a copy of this block for the launcher it builds from
+# --cmd; it is standalone by design and does not source this library. Keep the two
+# in step.
+a_task_emit_env_hygiene() {
+    printf '# --- environment hygiene (see a_task_emit_env_hygiene for why) ---\n'
+    # Drop a leaked virtualenv from PATH before unsetting the marker.
+    printf 'if [ -n "${VIRTUAL_ENV:-}" ]; then\n'
+    printf '    PATH="$(printf %%s "$PATH" | tr : "\\n" | grep -vxF "$VIRTUAL_ENV/bin" | paste -sd: -)"\n'
+    printf '    export PATH\n'
+    printf 'fi\n'
+    printf 'unset VIRTUAL_ENV UV UV_RUN_RECURSION_DEPTH PYTHONHOME PYTHONPATH\n'
+    # Not `${TERM:-...}`: TERM is often SET to a value a full-screen program cannot
+    # use. Observed both "unset" (server started from launchd) and "dumb" (inherited
+    # from a non-interactive caller), and dumb is as useless to a TUI as no TERM.
+    printf 'case "${TERM:-}" in ""|dumb|unknown) export TERM=xterm-256color ;; esac\n'
+    printf 'export LANG="${LANG:-en_US.UTF-8}"\n'
 }
 
 # Write a throwaway launcher script that runs a command (the a_c_claude_remote
@@ -446,6 +498,7 @@ a_task_zellij_make_launcher() {
         # Keep the trailing interactive shell from hanging on oh-my-zsh's
         # "Would you like to update? [Y/n]" prompt in an unattended tab.
         printf 'export DISABLE_AUTO_UPDATE=true DISABLE_UPDATE_PROMPT=true\n'
+        a_task_emit_env_hygiene
         printf 'bash %s\n' "$(printf '%q ' "$@")"
         printf 'cd %q 2>/dev/null\n' "$wt"
         printf 'exec "${SHELL:-/bin/zsh}" -i\n'
@@ -461,8 +514,14 @@ a_task_zellij_make_launcher() {
 # for free. We deliberately do NOT call `go-to-tab-name` here: that action blocks
 # indefinitely on a session with no attached client (the common case when we are
 # about to attach, or when the target session is detached) - the caller focuses
-# an existing tab only when it is the current, attached session. Returns 2 if
-# zellij is not installed.
+# an existing tab only when it is the current, attached session.
+#
+# RETURN STATUS IS MEANINGFUL and callers must branch on it: 0 = the tab exists
+# (and runs the launcher when one was given), 2 = zellij or the opener is missing,
+# anything else = a_c_zellij_tab's own failure code (4 = the session would not
+# start, 5 = the tab was not created). This used to `return 0` unconditionally,
+# which is how a dead target session turned into a cheerful "✓ Tab ready" with no
+# tab and no Claude running anywhere.
 a_task_zellij_setup() {
     local session="$1" tab="$2" cwd="$3" launcher="${4:-}"
     command -v zellij >/dev/null 2>&1 || return 2
@@ -480,7 +539,42 @@ a_task_zellij_setup() {
     else
         bash "$zt" "$session" "$tab" --cwd "$cwd" --no-focus
     fi
-    return 0
+    return $?                    # pass the opener's verdict up; never fake success
+}
+
+# Return 0 only when a REAL terminal a human is looking at is on this process, so
+# it is safe to hand that terminal to a full-screen program (`zellij attach`).
+#
+# `[ -t 0 ] && [ -t 1 ]` IS NOT ENOUGH, and assuming it was cost us a whole round
+# of "the button still does nothing". A routine that runs commands through a pty
+# (tether does, so shell functions and colors work) passes the isatty test with no
+# human anywhere. Attaching there does three bad things at once: it paints the
+# entire zellij UI into the routine's captured output as escape-code soup, it
+# blocks the launcher script forever so the run never returns, and - worst - zellij
+# sizes a session to its smallest client, so the fresh session gets clamped to that
+# pty and is unusable when you later attach for real.
+#
+# The reliable tell is the WINDOW SIZE. os.openpty() and friends leave it unset, so
+# `stty size` reports "0 0", while every real terminal reports a usable size.
+#
+# Do NOT use `tput lines` / `tput cols` here: tput falls back to the terminfo
+# default and cheerfully reports 24x80 for a 0x0 pty, which is exactly the wrong
+# answer. Measured on this machine: under tether, isatty says yes on both stdin and
+# stdout, tput says 24x80, and `stty size` says "0 0".
+#
+# A_C_NO_ATTACH=1 forces "no" for any caller that already knows it is headless
+# (cron, launchd, a routine), so it never has to depend on the heuristic.
+a_task_can_attach() {
+    [ "${A_C_NO_ATTACH:-0}" = "1" ] && return 1
+    [ -t 0 ] && [ -t 1 ] || return 1
+    local size rows cols
+    size="$(stty size 2>/dev/null)" || return 1
+    rows="${size%% *}"; cols="${size##* }"
+    case "$rows" in ''|*[!0-9]*) return 1 ;; esac
+    case "$cols" in ''|*[!0-9]*) return 1 ;; esac
+    # A window too small to show anything is not a human terminal either, and
+    # attaching to it would clamp the session just as badly as a 0x0 pty.
+    [ "$rows" -ge 5 ] && [ "$cols" -ge 20 ]
 }
 
 # Best-effort: switch the attached client of session $1 to tab $2, WITHOUT

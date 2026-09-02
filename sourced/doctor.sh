@@ -169,19 +169,19 @@ a_c_workflow_doctor() {
     else
         _doc_ok "machine identity: $A_MACHINE_NAME"
     fi
-    if command -v a_c_claude_memory > /dev/null 2>&1; then
-        if a_c_claude_memory check > /dev/null 2>&1; then
-            _doc_ok "global memory in sync with its sources"
+    if command -v a_c_agent_memory > /dev/null 2>&1; then
+        if a_c_agent_memory check > /dev/null 2>&1; then
+            _doc_ok "Claude, Codex, and Gemini guidance is in sync with its sources"
         else
-            _doc_warn "global memory has drifted — run: a_c_claude_memory build"
+            _doc_warn "global agent guidance has drifted — run: a_c_agent_memory build"
         fi
     fi
     local unmanaged
-    unmanaged=$(find ~/.claude/skills ~/.claude/agents -mindepth 1 -maxdepth 1 ! -type l 2>/dev/null | wc -l | tr -d ' ')
+    unmanaged=$(find ~/.claude/skills ~/.claude/agents ~/.agents/skills ~/.gemini/config/skills -mindepth 1 -maxdepth 1 ! -type l 2>/dev/null | wc -l | tr -d ' ')
     if [ "${unmanaged:-0}" -gt 0 ]; then
-        _doc_warn "$unmanaged unmanaged (non-symlink) item(s) in ~/.claude — run a_sk_tame_claude"
+        _doc_warn "$unmanaged unmanaged agent asset(s) — inspect the provider skill directories"
     else
-        _doc_ok "every skill and agent in ~/.claude is a managed symlink"
+        _doc_ok "every installed provider asset is managed by the devkit"
     fi
 
     echo "─────────────────────────────────────────────────────────────"

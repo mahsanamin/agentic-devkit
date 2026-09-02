@@ -1,5 +1,6 @@
 ---
 name: a_sk_setup_claude
+providers: claude
 description: Install agentic-devkit into this machine's Claude Code setup, guided rather than blind. Detects what is already here, runs the installer, verifies every skill and agent link resolves, turns the global ~/.claude/CLAUDE.md into a generated file (via a_c_claude_memory) so Claude knows what it now has and how to spawn the agents, gives the machine a name and identity it can introduce itself with, and offers to add private overlays and a private brain. Use for "install the devkit", "set up my Claude", "hook this repo into my Claude Code", "wire agentic-devkit on this machine", "new laptop, get my Claude working", or when someone has just cloned or forked the repo and asks what to do next. Verifies instead of assuming, and never overwrites hand-written config. Local (needs the filesystem, git, and ~/.claude).
 ---
 

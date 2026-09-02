@@ -49,14 +49,99 @@ plist path, the log path, and the URL it is serving. The web agent uses `KeepAli
 so if Tailscale is not up yet at login it keeps retrying until the tailnet address
 exists.
 
+### Login versus boot (the gap, and how to close it)
+
+A **LaunchAgent starts at login, not at boot.** On a machine you sit at, that is the
+same thing in practice. On an always-on box it is not: an unattended reboot (a power
+cut, a remote `reboot`, a crash) leaves the dashboard down until somebody logs in.
+
+To start it at boot with nobody at the keyboard, install it as a system
+**LaunchDaemon** instead. This needs `sudo`:
+
+```bash
+sudo a_c_claude_sessions --install-boot-daemon        # port 8787
+sudo a_c_claude_sessions --install-boot-daemon 9000   # another port
+sudo a_c_claude_sessions --uninstall-boot-daemon
+```
+
+What that does, and why each part is needed:
+
+- Writes `/Library/LaunchDaemons/com.ahsan.claude-sessions-web.plist`, owned
+  `root:wheel` and mode `644`. launchd refuses a daemon plist that is group or world
+  writable, so the installer sets this itself.
+- Sets `UserName` to **your** account, not root. The dashboard reads session
+  transcripts under `~/.claude/projects`, so running as root would find nothing, and
+  anything it wrote would land root-owned.
+- Sets `HOME` explicitly in `EnvironmentVariables`. A daemon inherits no user
+  environment, so without this the script would look for `~/.claude` in the wrong
+  place.
+- **Retires the login agent** rather than leaving both installed. Two copies would
+  race for the same port and one would fail to bind, thrashing under `KeepAlive`. The
+  old plist is renamed to `...plist.replaced-by-boot-daemon`, so the change is
+  reversible and visible.
+- Keeps `KeepAlive`, so binding before Tailscale is up at boot just retries.
+
+Check it after a reboot:
+
+```bash
+sudo launchctl print system/com.ahsan.claude-sessions-web | head -20
+```
+
+**One case where boot-level start buys nothing:** if FileVault is **on**, the data
+volume stays locked until somebody unlocks it at the login screen, so no daemon can
+read `~/.claude` before that. There the LaunchAgent is the honest answer. Check with
+`fdesetup status`. The other route to the same outcome is enabling automatic login,
+which starts every LaunchAgent you have, at the cost of macOS storing your password
+weakly obfuscated in `/etc/kcpassword`.
+
+## How a session is named
+
+A session is named after the **work it belongs to**, not after the first half
+sentence you happened to type. The label is `<key> · <repo> · <what it is>`:
+
+```
+PROJ-142 · billing-service · monthly invoice rollup
+PR #1458 · acme/webapp · Review this pull request
+my_setup · Improve session naming with ticket and PR detection
+```
+
+The key is worked out from what is already on disk, in this order:
+
+1. **Ticket key in the git branch or the worktree directory** (`feature/proj-142-...`
+   gives `PROJ-142`). This is the common case, because the worktree helper names both
+   the branch and the directory after the ticket.
+2. **A pull request**: a `review-pr-<N>` branch, or a GitHub PR URL in the session's
+   **first** prompt (this is what PR-review sessions look like, since they run on
+   `main` in the primary clone).
+3. **A ticket named in the first prompt**, but only in a deliberate reference: a
+   `.../browse/PROJ-142` link, a pasted branch name, or "ticket PROJ-142". A transcript
+   is full of ticket-shaped strings that are not this session's ticket (rule examples
+   in `CLAUDE.md`, keys quoted inside a reviewed diff), so loose matches are ignored.
+4. **Nothing**, and the label falls back to repo plus the ai title or first prompt.
+
+If there is a key but no title, the branch slug fills in the "what it is" part
+(`story-PROJ-142-invoice-rollup` gives `invoice rollup`). A summary of just "continue"
+is replaced the same way, since that is exactly how a session resumed after a crash
+tends to start.
+
+Two things follow from deriving the key rather than storing it:
+
+- It works **retroactively** on every transcript already on disk, including sessions
+  that died when the machine crashed. Nothing has to be recorded while a session runs.
+- The key is searchable, weighted as heavily as a session id, so
+  `a_c_claude_sessions --find PROJ-142` or `--find 1458` lands on the right session
+  instead of ranking on fuzzy prompt text. `--json` also carries `label`, `key`,
+  `key_kind` (`ticket` or `pr`) and `key_ref` (the repo) as separate fields.
+
 ## Using the web dashboard
 
 The page (`--serve`) fetches fresh data in the background, so it stays current
 without reloading and without losing your place:
 
-- **Search box** at the top filters live as you type. It matches across session
-  name, project, full directory path, git branch, the "doing" text, and session
-  id. Space-separated words are all required (AND), e.g. `myrepo redis`.
+- **Search box** at the top filters live as you type. It matches across the label,
+  the ticket key or PR number, project, full directory path, git branch, the "doing"
+  text, and session id. Space-separated words are all required (AND), e.g.
+  `myrepo redis` or just `proj-142`.
 - **Click any row** to expand full detail: session name, session id, the full
   working directory, git branch, state, model, permission mode, PIDs, the first
   prompt (how it started), the last prompt (what it is doing, untruncated), the

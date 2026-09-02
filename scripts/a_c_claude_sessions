@@ -17,17 +17,28 @@ Make it survive reboots (portable - reads THIS machine's paths at install time,
 so it works the same on any Mac that has the my_setup repo set up):
 
   --install-web-agent [PORT]   generate + load a launchd agent that serves the
-                               dashboard on the tailnet at boot (default 8787)
+                               dashboard on the tailnet at LOGIN (default 8787)
   --install-mdnest-agent       launchd agent refreshing the mdnest note every 10 min
   --uninstall-web-agent / --uninstall-mdnest-agent   remove them
+
+  --install-boot-daemon [PORT] needs sudo. A system LaunchDaemon that starts at
+                               BOOT, before any login, so an unattended reboot
+                               (power cut, remote reboot) brings the dashboard
+                               back with nobody at the keyboard. Runs as your
+                               user, and retires the login agent so the two
+                               never clash on the port.
+  --uninstall-boot-daemon      needs sudo. Remove it
 
 It also searches EVERY session transcript on disk, live or already closed, so a
 session you closed by mistake can be found again and resumed:
 
-  --find QUERY   rank all sessions by how well they match QUERY (repo name, task,
-                 title, branch, session id) and print the exact `claude --resume`
-                 command for each match. Newest activity breaks ties.
+  --find QUERY   rank all sessions by how well they match QUERY (ticket key, PR
+                 number, repo name, task, title, branch, session id) and print the
+                 exact `claude --resume` command for each match. Newest activity
+                 breaks ties.
   --all          list every session on disk (live + closed), newest first.
+  --since W      only sessions active within a window (36h, 2d, 90m); shows all
+                 of them and lifts the scan cap
   --limit N      cap the transcript scan to the N most-recently-active sessions
                  (default 600; use 0 for no cap). Search is head+tail only, so
                  even large transcripts are cheap to scan.
@@ -46,7 +57,12 @@ How it works
    project directory that matches the cwd.
 4. Read each session .jsonl for its ai title, its last prompt (what it is doing),
    its first prompt (why it exists), git branch, and last-activity time.
-5. Order by last-activity time, newest on top, and render.
+5. Name the session after the work it belongs to: a ticket key from the branch or
+   worktree dir, else a PR (a review-pr-N branch or a PR URL in the first prompt),
+   else a ticket named in the first prompt. The label is "<key> · <repo> · <what>",
+   and the key is weighted like a session id when searching, so `--find PROJ-142`
+   or `--find 1452` lands exactly. Derived from disk, so it works on old sessions.
+6. Order by last-activity time, newest on top, and render.
 
 Read-only. Never writes to any repo. Only --write-mdnest touches mdnest.
 """
@@ -54,7 +70,10 @@ Read-only. Never writes to any repo. Only --write-mdnest touches mdnest.
 import argparse
 import json
 import os
+import pwd
 import re
+import shutil
+import sqlite3
 import signal
 import subprocess
 import sys
@@ -284,6 +303,9 @@ def read_session_meta(session_file):
         "git_branch": None,
         "model": None,
         "mtime": None,
+        "last_ts": None,
+        "custom_title": None,
+        "agent_name": None,
     }
     try:
         meta["mtime"] = os.path.getmtime(session_file)
@@ -300,8 +322,15 @@ def read_session_meta(session_file):
                 except json.JSONDecodeError:
                     continue
                 t = d.get("type")
+                ts = _epoch_from_iso(d.get("timestamp"))
+                if ts and ts > (meta.get("last_ts") or 0):
+                    meta["last_ts"] = ts
                 if t == "ai-title":
                     meta["ai_title"] = d.get("aiTitle") or meta["ai_title"]
+                elif t == "custom-title":
+                    meta["custom_title"] = d.get("customTitle") or meta["custom_title"]
+                elif t == "agent-name":
+                    meta["agent_name"] = d.get("agentName") or meta["agent_name"]
                 elif t == "last-prompt":
                     meta["last_prompt"] = d.get("lastPrompt") or meta["last_prompt"]
                 if d.get("cwd"):
@@ -321,6 +350,172 @@ def read_session_meta(session_file):
     except OSError:
         pass
     return meta
+
+
+# --------------------------------------------------------------------------- #
+# Session key + label: name a session after the work it belongs to.
+#
+# A session is far easier to find again (especially after a crash, when every
+# window is gone and only transcripts survive) if its row says "PROJ-142" or
+# "PR #1452" instead of the first half-sentence you happened to type. The key is
+# DERIVED from what is already on disk, so it works retroactively on every old
+# transcript and needs nothing from the session itself.
+#
+# Priority: ticket in the branch / worktree dir, then a PR (review-pr-N branch or
+# a PR URL in the FIRST prompt), then a ticket named in the first prompt, then
+# nothing. Branch and directory are trusted; free prompt text is not, because a
+# transcript is full of ticket-shaped strings that are not this session's ticket
+# (rule examples in CLAUDE.md, keys quoted inside a reviewed diff), so a ticket
+# from a prompt counts only when it appears in a deliberate reference.
+# --------------------------------------------------------------------------- #
+_TICKET_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{2,10})-(\d{1,6})(?![A-Za-z0-9])")
+# Prefixes that look like a ticket key but never are.
+_TICKET_STOP = {"PR", "UTF", "ISO", "SHA", "RFC", "IPV", "HTTP", "HTTPS", "SSH",
+                "REVIEW", "RELEASE", "PART", "V", "VER", "TOP", "NO"}
+_REVIEW_PR_RE = re.compile(r"(?:^|[/-])review-pr-(\d{1,6})\b")
+_PR_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d{1,6})")
+_TICKET_CTX_RES = (
+    # A Jira link: .../browse/PROJ-142
+    re.compile(r"/browse/([A-Za-z]{2,10}-\d{1,6})(?![A-Za-z0-9])"),
+    # A branch name pasted into the prompt: feature/proj-142-agency-priced-lines
+    re.compile(r"(?:feature|fix|bugfix|hotfix|chore|story|task)/[\w.]*?"
+               r"([A-Za-z]{2,10}-\d{1,6})(?![A-Za-z0-9])"),
+    # Named outright: "ticket PROJ-142", "jira PROJ-142"
+    re.compile(r"\b(?:ticket|issue|jira|card)\s+(?:key\s+)?([A-Za-z]{2,10}-\d{1,6})"
+               r"(?![A-Za-z0-9])", re.I),
+)
+
+
+def _norm_ticket(prefix, num):
+    prefix = prefix.upper()
+    if prefix in _TICKET_STOP:
+        return None
+    return f"{prefix}-{num}"
+
+
+def _ticket_from_ref(text):
+    """A ticket key out of a branch name or directory name (trusted source)."""
+    if not text:
+        return None
+    for m in _TICKET_RE.finditer(text):
+        key = _norm_ticket(m.group(1), m.group(2))
+        if key:
+            return key
+    return None
+
+
+def _ticket_from_prompt(text):
+    """A ticket key out of prompt text, only from a deliberate reference."""
+    if not text:
+        return None
+    for rx in _TICKET_CTX_RES:
+        m = rx.search(text)
+        if m:
+            pre, _, num = m.group(1).partition("-")
+            key = _norm_ticket(pre, num)
+            if key:
+                return key
+    return None
+
+
+_UUIDISH_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-", re.I)
+
+
+def _repo_name(cwd):
+    """Just the repository name.
+
+    A worktree lives at <root>/WorkTrees/<repo>/<branch-dir>, so the repo is the
+    component right after the WorkTrees folder, not the directory you are in.
+    """
+    if not cwd:
+        return None
+    parts = [p for p in cwd.strip("/").split("/") if p]
+    if not parts:
+        return None
+    name = parts[-1]
+    for i, comp in enumerate(parts[:-1]):
+        if comp.lower() in ("worktrees", "worktree"):
+            name = parts[i + 1]
+            break
+    name = name.lstrip(".")
+    # A throwaway isolation worktree is named by uuid; that is not a repo name.
+    if not name or _UUIDISH_RE.match(name):
+        return None
+    return name
+
+
+def session_key(meta):
+    """What work this session belongs to: {kind, key, ref} or None.
+
+    kind is "ticket" or "pr"; key is the display key ("PROJ-142" / "PR #1452");
+    ref is the repo it belongs to.
+    """
+    branch = meta.get("git_branch") or ""
+    base = os.path.basename((meta.get("cwd") or "").rstrip("/"))
+    repo = _repo_name(meta.get("cwd"))
+
+    ticket = _ticket_from_ref(branch) or _ticket_from_ref(base)
+    if ticket:
+        return {"kind": "ticket", "key": ticket, "ref": repo}
+
+    m = _REVIEW_PR_RE.search(branch) or _REVIEW_PR_RE.search(base)
+    if m:
+        return {"kind": "pr", "key": f"PR #{m.group(1)}", "ref": repo}
+
+    first = meta.get("first_prompt")
+    m = _PR_URL_RE.search(first or "")
+    if m:
+        return {"kind": "pr", "key": f"PR #{m.group(2)}", "ref": m.group(1)}
+
+    ticket = _ticket_from_prompt(first)
+    if ticket:
+        return {"kind": "ticket", "key": ticket, "ref": repo}
+    return None
+
+
+_FILLER_SUMMARIES = {"continue", "go on", "carry on", "resume", "next", "ok", "yes",
+                     "proceed", "keep going", "continue please"}
+_BRANCH_PREFIX_RE = re.compile(r"^(?:feature|fix|bugfix|hotfix|chore|story|task)[/-]", re.I)
+
+
+def _slug_summary(meta, key):
+    """A readable summary out of the branch slug: story-PROJ-142-invoice-rollup -> invoice rollup."""
+    for src in (meta.get("git_branch"), os.path.basename((meta.get("cwd") or "").rstrip("/"))):
+        if not src:
+            continue
+        text = _BRANCH_PREFIX_RE.sub("", src.split("/")[-1])
+        if key:
+            text = re.sub(re.escape(key["key"].replace("PR #", "review-pr-")), "", text,
+                          flags=re.I)
+            text = re.sub(re.escape(key["key"]), "", text, flags=re.I)
+        text = " ".join(re.split(r"[-_.]+", text)).strip()
+        if len(text) >= 3:
+            return text
+    return None
+
+
+def session_label(meta, name, key=None):
+    """The display name: "<key> · <repo> · <summary>", dropping whatever is absent."""
+    parts = []
+    if key:
+        parts.append(key["key"])
+    repo = (key or {}).get("ref") or _repo_name(meta.get("cwd"))
+    if repo and repo not in parts:
+        parts.append(repo)
+    # A raw URL in the label is wasted width; the key already says which PR it is.
+    summary = " ".join(re.sub(r"https?://\S+", "", name or "").split()).rstrip(":,- ")
+    summary = _short(summary, 52) if len(summary) >= 3 else _short(name, 52)
+    # "continue" tells you nothing, and it is exactly how a session resumed after a
+    # crash starts. The branch slug says more.
+    if summary and summary.lower().strip(".!") in _FILLER_SUMMARIES:
+        summary = _slug_summary(meta, key) or summary
+    # `name` falls back to a session-id stub when the transcript captured no title
+    # and no prompt; that is noise next to a real key, so drop it.
+    if summary and summary == (meta.get("session_id") or "")[:8]:
+        summary = _slug_summary(meta, key)
+    if summary and summary.lower() not in [p.lower() for p in parts]:
+        parts.append(summary)
+    return " · ".join(parts) or (meta.get("session_id") or "unknown")[:8]
 
 
 def build_sessions():
@@ -361,7 +556,7 @@ def build_sessions():
     records = list(sessions.values())
     for rec in records:
         meta = rec["meta"]
-        mt = meta.get("mtime") or 0
+        mt = meta.get("last_ts") or meta.get("mtime") or 0
         rec["last_active"] = mt
         rec["active_now"] = (time.time() - mt) <= ACTIVE_WINDOW_SECS if mt else False
         # Best short name: ai title, else remote-control name, else prompt, else id.
@@ -372,9 +567,11 @@ def build_sessions():
         # "What it is doing": last prompt, then argv prompt, then first prompt.
         rec["doing"] = meta.get("last_prompt") or prompt or meta.get("first_prompt")
         rec["name"] = (
-            meta.get("ai_title") or rc or _short(prompt) or _short(meta.get("first_prompt"))
+            _best_title(meta) or rc or _short(prompt) or _short(meta.get("first_prompt"))
             or (meta.get("session_id") or "unknown")[:8]
         )
+        rec["key"] = session_key(meta)
+        rec["label"] = session_label(meta, rec["name"], rec["key"])
     records.sort(key=lambda r: r["last_active"], reverse=True)
     return records
 
@@ -387,14 +584,54 @@ HEAD_LINES = 80          # title / first prompt / cwd / branch live near the top
 TAIL_BYTES = 96 * 1024   # last prompt / recent activity live at the very end
 
 
+def _best_title(meta):
+    """The name a human would recognise: what they typed beats what was generated."""
+    return (meta.get("custom_title") or meta.get("ai_title")
+            or meta.get("agent_name"))
+
+
+def _epoch_from_iso(value):
+    """Epoch seconds from a transcript ISO-8601 timestamp, or None."""
+    if not value or not isinstance(value, str):
+        return None
+    txt = value.strip()
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(txt).timestamp()
+    except ValueError:
+        return None
+
+
+def _parse_window(text):
+    """'36h' / '2d' / '90m' / '45s' / bare number (hours) -> seconds, or None."""
+    if not text:
+        return None
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhdw]?)\s*", str(text).lower())
+    if not m:
+        return None
+    n = float(m.group(1))
+    unit = m.group(2) or "h"
+    return n * {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
+
+
 def _apply_records(meta, records):
     """Fold a list of decoded transcript records into a meta dict, in order."""
     for d in records:
         if not isinstance(d, dict):
             continue
         t = d.get("type")
+        ts = _epoch_from_iso(d.get("timestamp"))
+        if ts and ts > (meta.get("last_ts") or 0):
+            meta["last_ts"] = ts
         if t == "ai-title":
             meta["ai_title"] = d.get("aiTitle") or meta["ai_title"]
+        elif t == "custom-title":
+            # A title the USER typed. Last one wins (they can rename mid-session),
+            # and it outranks the generated ai-title everywhere a name is shown.
+            meta["custom_title"] = d.get("customTitle") or meta["custom_title"]
+        elif t == "agent-name":
+            meta["agent_name"] = d.get("agentName") or meta["agent_name"]
         elif t == "last-prompt":
             meta["last_prompt"] = d.get("lastPrompt") or meta["last_prompt"]
         if d.get("cwd"):
@@ -420,7 +657,8 @@ def read_session_meta_fast(session_file):
         "file": session_file,
         "ai_title": None, "last_prompt": None, "first_prompt": None,
         "recent_user": None, "cwd": None, "git_branch": None,
-        "model": None, "mtime": None,
+        "model": None, "mtime": None, "last_ts": None,
+        "custom_title": None, "agent_name": None,
     }
     try:
         meta["mtime"] = os.path.getmtime(session_file)
@@ -482,10 +720,20 @@ def _live_session_map():
     return live
 
 
-def _score(meta, tokens):
+def _score(meta, tokens, key=None, qnorm=None):
     """Relevance of a session's metadata to the query tokens. Higher = better."""
     if not tokens:
         return 0
+    keytxt = " ".join(filter(None, [(key or {}).get("key"),
+                                    (key or {}).get("ref")])).lower()
+    bonus = 0
+    if qnorm and key:
+        # The whole query IS this session's key ("PROJ-142", "PR #1458", "1458").
+        # Decide it here, before token scoring: "pr" on its own is a weak, common
+        # token that would otherwise drown the number that actually identifies it.
+        knorm = re.sub(r"[^a-z0-9]", "", key["key"].lower())
+        if qnorm == knorm or (qnorm.isdigit() and knorm == "pr" + qnorm):
+            bonus = 30
     title = (meta.get("ai_title") or "").lower()
     proj = (_repo_label(meta.get("cwd")) or "").lower()
     branch = (meta.get("git_branch") or "").lower()
@@ -508,11 +756,13 @@ def _score(meta, tokens):
             score += 2
         if tok in sid:
             score += 8   # a pasted id fragment is a strong signal
+        if keytxt and tok in keytxt:
+            score += 8   # a ticket key or PR number is just as exact
     # Whole-query phrase bonus.
     phrase = " ".join(tokens)
     if phrase and (phrase in title or phrase in prompts):
         score += 4
-    return score
+    return score + bonus
 
 
 def _resume_cmd(meta):
@@ -525,34 +775,51 @@ def _resume_cmd(meta):
     return f"claude --resume {sid}"
 
 
-def search_sessions(query, limit=600):
-    """Rank EVERY session on disk against query. Returns records newest/best first."""
+def search_sessions(query, limit=600, since=None):
+    """Rank EVERY session on disk against query. Returns records newest/best first.
+
+    `since` is a window in seconds; only sessions whose LAST TRANSCRIPT ENTRY falls
+    inside it are returned.
+    """
     idx = _session_index()
     files = list(idx.values())
-    # Newest first, then cap the scan so huge histories stay cheap.
+    # Order the scan by file mtime. mtime is not the session's real last activity
+    # (other tooling touches these files long after the session ended, which is why
+    # last_active is read from the transcript instead), but it only ever moves
+    # FORWARD, so mtime >= true last activity for every file. That makes this a safe
+    # superset ordering for the scan cap: a genuinely recent session can never be
+    # pushed out of the window by it.
     files.sort(key=lambda fp: os.path.getmtime(fp) if os.path.exists(fp) else 0,
                reverse=True)
     if limit and limit > 0:
         files = files[:limit]
     live = _live_session_map()
     tokens = [t for t in re.split(r"\s+", (query or "").strip().lower()) if t]
+    qnorm = re.sub(r"[^a-z0-9]", "", (query or "").lower())
 
     out = []
     for fp in files:
         meta = read_session_meta_fast(fp)
         sid = meta.get("session_id")
+        key = session_key(meta)
         rec = {
             "meta": meta,
-            "score": _score(meta, tokens),
+            "key": key,
+            "score": _score(meta, tokens, key, qnorm),
             "live": sid in live,
             "pids": live.get(sid, []),
-            "last_active": meta.get("mtime") or 0,
+            "last_active": meta.get("last_ts") or meta.get("mtime") or 0,
             "resume": _resume_cmd(meta),
         }
-        rec["name"] = (meta.get("ai_title") or _short(meta.get("first_prompt"))
+        rec["name"] = (_best_title(meta) or _short(meta.get("first_prompt"))
                        or (sid or "unknown")[:8])
+        rec["label"] = session_label(meta, rec["name"], key)
         rec["doing"] = meta.get("last_prompt") or meta.get("first_prompt")
         out.append(rec)
+
+    if since:
+        cutoff = time.time() - since
+        out = [r for r in out if r["last_active"] >= cutoff]
 
     if tokens:
         out = [r for r in out if r["score"] > 0]
@@ -584,9 +851,10 @@ def _repo_label(cwd):
     if not cwd:
         return "?"
     base = os.path.basename(cwd.rstrip("/"))
-    parent = os.path.basename(os.path.dirname(cwd.rstrip("/")))
-    if parent in ("WorkTrees", "worktrees"):
-        return f"{os.path.basename(os.path.dirname(os.path.dirname(cwd.rstrip('/'))))} / {base}"
+    repo = _repo_name(cwd)
+    if repo and repo != base:
+        # A worktree: name the repo it belongs to, then the worktree dir.
+        return f"{repo} / {base}"
     return base
 
 
@@ -627,7 +895,11 @@ def render_markdown(records):
     if top:
         lines.append("## Running right now (top)")
         lines.append("")
-        lines.append(f"- **Session:** {top['name']}")
+        lines.append(f"- **Session:** {top.get('label') or top['name']}")
+        if top.get("key"):
+            kind = "Ticket" if top["key"]["kind"] == "ticket" else "Pull request"
+            lines.append(f"- **{kind}:** `{top['key']['key']}`"
+                         + (f" ({top['key']['ref']})" if top["key"].get("ref") else ""))
         lines.append(f"- **Session ID:** `{top['meta'].get('session_id') or 'n/a'}`")
         lines.append(f"- **Where:** {_repo_label(top['meta'].get('cwd'))}"
                      + (f"  (`{top['meta'].get('git_branch')}`)" if top['meta'].get('git_branch') else ""))
@@ -655,7 +927,7 @@ def render_markdown(records):
         cwd = (m.get("cwd") or "unknown").replace("|", "│")
         lines.append(
             f"| {i} | {_ago(r['last_active'])} | {state} | "
-            f"{_clean_cell(r['name'], 50)} | {_clean_cell(proj, 48)} | "
+            f"{_clean_cell(r.get('label') or r['name'], 72)} | {_clean_cell(proj, 48)} | "
             f"`{cwd}` | {_clean_cell(r.get('doing'), 90)} | `{sid}` |"
         )
     lines.append("")
@@ -682,7 +954,11 @@ def render_json(records):
         m = r["meta"]
         out.append({
             "session_id": m.get("session_id"),
+            "label": r.get("label") or r["name"],
             "name": r["name"],
+            "key": (r.get("key") or {}).get("key"),
+            "key_kind": (r.get("key") or {}).get("kind"),
+            "key_ref": (r.get("key") or {}).get("ref"),
             "doing": r.get("doing"),
             "first_prompt": m.get("first_prompt"),
             "cwd": m.get("cwd"),
@@ -702,15 +978,31 @@ def render_json(records):
                        "kill_enabled": _ALLOW_KILL, "sessions": out}, indent=2)
 
 
-def render_search_markdown(records, query, limit, shown=12):
+def _window_human(secs):
+    if not secs:
+        return None
+    if secs % 86400 == 0:
+        return f"{int(secs // 86400)}d"
+    if secs % 3600 == 0:
+        return f"{int(secs // 3600)}h"
+    return f"{int(secs // 60)}m"
+
+
+def render_search_markdown(records, query, limit, shown=12, since=None):
     lines = []
     title = f'sessions matching "{query}"' if query else "all sessions (newest first)"
+    if since:
+        title += f" - active in the last {_window_human(since)}"
     lines.append(f"# Claude Code - {title}")
     lines.append("")
     scanned = "no cap" if not limit else f"newest {limit}"
-    lines.append(f"_Updated {_now_str()}. {len(records)} match(es), showing top "
-                 f"{min(shown, len(records))}. Scanned {scanned} sessions on disk "
-                 "(live + closed)._")
+    if shown and shown > 0:
+        howmany = f"showing top {min(shown, len(records))}"
+    else:
+        howmany = "showing all"
+    lines.append(f"_Updated {_now_str()}. {len(records)} match(es), {howmany}. "
+                 f"Scanned {scanned} sessions on disk (live + closed). "
+                 "Last active is read from the transcript, not the file timestamp._")
     lines.append("")
     if not records:
         lines.append("No session matched. Try fewer / different words, a repo name, "
@@ -718,13 +1010,36 @@ def render_search_markdown(records, query, limit, shown=12):
         lines.append("")
         return "\n".join(lines)
 
-    for i, r in enumerate(records[:shown], 1):
+    shortlist = records if not shown or shown <= 0 else records[:shown]
+
+    # A windowed or long listing is for scanning, so lead with a table whose first
+    # real column is the session NAME - that is what the user recognises, not the id.
+    if since or len(shortlist) > 6:
+        lines.append("| # | Session | Last active | State | Project / branch | Session ID |")
+        lines.append("|---|---------|-------------|-------|------------------|------------|")
+        for i, r in enumerate(shortlist, 1):
+            m = r["meta"]
+            state = "\U0001F7E2 running" if r["live"] else "⚪ closed"
+            proj = _repo_label(m.get("cwd"))
+            if m.get("git_branch"):
+                proj = f"{proj}<br/>`{m['git_branch']}`"
+            lines.append(
+                f"| {i} | {_clean_cell(r.get('name') or r.get('label'), 60)} | "
+                f"{_ago(r['last_active'])} | {state} | {_clean_cell(proj, 40)} | "
+                f"`{m.get('session_id') or 'n/a'}` |")
+        lines.append("")
+
+    for i, r in enumerate(shortlist, 1):
         m = r["meta"]
         state = "\U0001F7E2 still running" if r["live"] else "⚪ closed"
-        lines.append(f"## {i}. {r['name']}")
+        lines.append(f"## {i}. {r.get('label') or r['name']}")
         lines.append("")
         lines.append(f"- **State:** {state}, last active {_ago(r['last_active'])}"
                      + (f" (pid {', '.join(map(str, r['pids']))})" if r["live"] else ""))
+        if r.get("key"):
+            kind = "Ticket" if r["key"]["kind"] == "ticket" else "Pull request"
+            lines.append(f"- **{kind}:** `{r['key']['key']}`"
+                         + (f" ({r['key']['ref']})" if r["key"].get("ref") else ""))
         lines.append(f"- **Project:** {_repo_label(m.get('cwd'))}"
                      + (f"  (`{m.get('git_branch')}`)" if m.get("git_branch") else ""))
         lines.append(f"- **Session ID:** `{m.get('session_id') or 'n/a'}`")
@@ -741,13 +1056,17 @@ def render_search_markdown(records, query, limit, shown=12):
     return "\n".join(lines)
 
 
-def render_search_json(records, query, limit):
+def render_search_json(records, query, limit, since=None):
     out = []
     for r in records:
         m = r["meta"]
         out.append({
             "session_id": m.get("session_id"),
+            "label": r.get("label") or r["name"],
             "name": r["name"],
+            "key": (r.get("key") or {}).get("key"),
+            "key_kind": (r.get("key") or {}).get("kind"),
+            "key_ref": (r.get("key") or {}).get("ref"),
             "score": r["score"],
             "live": r["live"],
             "pids": r["pids"],
@@ -762,6 +1081,7 @@ def render_search_json(records, query, limit):
         })
     return json.dumps({
         "generated": _now_str(), "query": query, "scan_limit": limit,
+        "since_seconds": since, "since_human": _window_human(since),
         "count": len(out), "sessions": out,
     }, indent=2)
 
@@ -807,7 +1127,10 @@ tr.row.open{background:#1b2230}
 .num{color:#6e7681;width:34px}
 .dot{width:24px}
 .ago{color:#8b949e;white-space:nowrap;width:92px}
-.name{font-weight:600;color:#58a6ff;max-width:240px}
+.name{font-weight:600;color:#58a6ff;max-width:300px}
+.key{display:inline-block;margin-right:7px;padding:1px 7px;border-radius:5px;
+   background:#1f3a63;border:1px solid #2f5896;color:#9ecbff;
+   font-family:ui-monospace,monospace;font-size:11px;white-space:nowrap}
 .caret{color:#6e7681;font-size:10px;margin-right:5px}
 .proj{color:#d29922;font-size:12px;max-width:230px}
 .branch{display:block;color:#6e7681;font-family:ui-monospace,monospace;font-size:11px}
@@ -839,7 +1162,7 @@ button.kill:disabled{opacity:.5;cursor:default}
 <header>
   <h1>Claude Code - Running Sessions</h1>
   <div class="sub" id="sub">loading&hellip;</div>
-  <input id="q" type="search" placeholder="Search name, project, directory, branch, doing, session id&hellip;" autocomplete="off">
+  <input id="q" type="search" placeholder="Search ticket key, PR number, project, directory, branch, doing, session id&hellip;" autocomplete="off">
   <span class="hint">click a row for full detail &middot; newest on top</span>
 </header>
 <div class="wrap">
@@ -857,7 +1180,7 @@ var KILL_ENABLED = false;
 function esc(s){ s = (s==null?'':String(s));
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function key(s){ return s.session_id || ('pids:'+(s.pids||[]).join(',')); }
-function haystack(s){ return [s.name,s.project,s.cwd,s.git_branch,s.doing,s.first_prompt,
+function haystack(s){ return [s.label,s.key,s.key_ref,s.name,s.project,s.cwd,s.git_branch,s.doing,s.first_prompt,
   s.session_id,(s.pids||[]).join(' '),s.remote_control,s.model].join('  ').toLowerCase(); }
 function matches(s,q){ if(!q) return true;
   var h = haystack(s);
@@ -866,7 +1189,9 @@ function detailHTML(s){
   var rows = [];
   function add(k,v,mono){ if(v==null||v==='') return;
     rows.push('<div class="drow"><div class="dk">'+esc(k)+'</div><div class="dv'+(mono?' mono':'')+'">'+esc(v)+'</div></div>'); }
-  add('Session', s.name);
+  add('Session', s.label || s.name);
+  add(s.key_kind === 'pr' ? 'Pull request' : 'Ticket',
+      s.key ? (s.key + (s.key_ref ? ' · ' + s.key_ref : '')) : '');
   add('Session ID', s.session_id || 'n/a (no transcript yet)', true);
   add('Directory', s.cwd || 'unknown', true);
   add('Git branch', s.git_branch, true);
@@ -908,7 +1233,9 @@ function render(){
       + '<td class="num">'+(i+1)+'</td>'
       + '<td class="dot">'+(s.active_now?'🟢':'⚪')+'</td>'
       + '<td class="ago">'+esc(s.last_active_human)+'</td>'
-      + '<td class="name"><span class="caret">'+(isOpen?'▼':'▶')+'</span>'+esc(s.name)+'</td>'
+      + '<td class="name"><span class="caret">'+(isOpen?'▼':'▶')+'</span>'
+      + (s.key ? '<span class="key">'+esc(s.key)+'</span>' : '')
+      + esc(s.key ? (s.label||'').slice(s.key.length+3) : (s.label||s.name))+'</td>'
       + '<td class="proj">'+esc(s.project||'?')+branch+'<span class="path">'+esc(s.cwd||'unknown')+'</span></td>'
       + '<td class="doing">'+doing+'</td>'
       + '<td class="sid">'+esc(s.session_id||'n/a')+'</td></tr>';
@@ -1113,6 +1440,237 @@ def _json_feed(ttl=4):
         return body
 
 
+# --------------------------------------------------------------------------- #
+# Full-text search index over what YOU typed in every session.
+#
+# The point of this index is to make searching your own history something you do
+# yourself, instantly, instead of asking an assistant to grep for you and paying
+# tokens for it. It covers ALL sessions on disk, not just the running ones.
+#
+# Only USER prompts are indexed, deliberately. Assistant replies and tool output
+# are the overwhelming bulk of a transcript (hundreds of MB across a history this
+# size) and searching them mostly returns your own words quoted back at you. What
+# you actually remember is what you typed.
+#
+# Indexing is incremental: each session records how many bytes were already read,
+# so a refresh only parses what was appended since. The first build is the only
+# expensive one.
+# --------------------------------------------------------------------------- #
+INDEX_DB = os.path.expanduser("~/.claude/.cache/session-search.db")
+
+# Per session. Generous enough to hold a long conversation's prompts, bounded so
+# one runaway session cannot dominate the index.
+MAX_PROMPT_CHARS = 200_000
+
+
+def _index_connect():
+    os.makedirs(os.path.dirname(INDEX_DB), exist_ok=True)
+    conn = sqlite3.connect(INDEX_DB, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            cwd TEXT, project TEXT, branch TEXT, name TEXT,
+            key TEXT, key_kind TEXT,
+            last_active REAL, offset INTEGER DEFAULT 0, size INTEGER DEFAULT 0,
+            prompts TEXT DEFAULT '')""")
+    conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts
+            USING fts5(session_id UNINDEXED, name, project, branch, prompts,
+                       tokenize='porter unicode61')""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_last_active "
+                 "ON sessions(last_active DESC)")
+    conn.commit()
+    return conn
+
+
+def _user_prompts_from(text):
+    """The human-typed lines out of a chunk of transcript."""
+    out = []
+    for rec in _iter_index_records(text):
+        if rec.get("type") != "user" or rec.get("isMeta"):
+            continue
+        content = (rec.get("message") or {}).get("content")
+        txt = _text_from_content(content)
+        if not txt:
+            continue
+        txt = txt.strip()
+        # Tool results and injected context arrive as "user" records too. They are
+        # machine text, not something the person typed, so they do not belong here.
+        if not txt or txt.startswith("<"):
+            continue
+        out.append(txt)
+    return out
+
+
+def _iter_index_records(text):
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+
+def index_sessions(progress=False):
+    """Refresh the search index. Returns (indexed, skipped, total)."""
+    conn = _index_connect()
+    known = {row[0]: (row[1], row[2]) for row in
+             conn.execute("SELECT session_id, offset, size FROM sessions")}
+    files = _session_index()
+    indexed = skipped = 0
+    total = len(files)
+
+    for n, (sid, path) in enumerate(sorted(files.items()), 1):
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        prev_offset, prev_size = known.get(sid, (0, -1))
+        if size == prev_size:
+            skipped += 1
+            continue
+        # A shrunken file is not the file we indexed before; start it over.
+        start = prev_offset if size > prev_size else 0
+
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                raw = fh.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if start > 0 and "\n" in raw:
+            raw = raw.split("\n", 1)[1]
+
+        meta = read_session_meta_fast(path)
+        key = session_key(meta) or {}
+        new_text = "\n".join(_user_prompts_from(raw))
+
+        row = conn.execute("SELECT prompts FROM sessions WHERE session_id = ?",
+                           (sid,)).fetchone()
+        prompts = ((row[0] + "\n" + new_text) if row and start > 0 else new_text)
+        if len(prompts) > MAX_PROMPT_CHARS:
+            # Keep the most recent end of a very long session.
+            prompts = prompts[-MAX_PROMPT_CHARS:]
+
+        name = (_best_title(meta) or _short(meta.get("first_prompt"))
+                or (sid or "unknown")[:8])
+        project = _repo_label(meta.get("cwd")) or ""
+        last_active = meta.get("last_ts") or meta.get("mtime") or 0
+
+        conn.execute("""INSERT INTO sessions
+                (session_id, cwd, project, branch, name, key, key_kind,
+                 last_active, offset, size, prompts)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                 cwd=excluded.cwd, project=excluded.project, branch=excluded.branch,
+                 name=excluded.name, key=excluded.key, key_kind=excluded.key_kind,
+                 last_active=excluded.last_active, offset=excluded.offset,
+                 size=excluded.size, prompts=excluded.prompts""",
+            (sid, meta.get("cwd") or "", project, meta.get("git_branch") or "",
+             name, key.get("key") or "", key.get("kind") or "",
+             last_active, size, size, prompts))
+        conn.execute("DELETE FROM sessions_fts WHERE session_id = ?", (sid,))
+        conn.execute("INSERT INTO sessions_fts (session_id, name, project, branch, prompts) "
+                     "VALUES (?,?,?,?,?)", (sid, name, project,
+                                            meta.get("git_branch") or "", prompts))
+        indexed += 1
+        if progress and indexed % 25 == 0:
+            print(f"  indexed {indexed} (seen {n}/{total})", file=sys.stderr)
+
+    conn.commit()
+    conn.close()
+    return indexed, skipped, total
+
+
+def _fts_query(query):
+    """User words -> an FTS5 query. Quoted so punctuation cannot be syntax."""
+    words = [w for w in re.split(r"\s+", (query or "").strip()) if w]
+    if not words:
+        return None
+    return " AND ".join('"' + w.replace('"', '""') + '"*' for w in words)
+
+
+def search_index(query, limit=40, since=None):
+    """Sessions whose prompts match. Empty query = most recent, newest first."""
+    if not os.path.exists(INDEX_DB):
+        return None
+    conn = _index_connect()
+    where, params = [], []
+    if since:
+        where.append("s.last_active >= ?")
+        params.append(time.time() - since)
+
+    match = _fts_query(query)
+    if match:
+        sql = ("SELECT s.session_id, s.name, s.project, s.branch, s.cwd, "
+               "s.last_active, s.key, snippet(sessions_fts, 4, '[', ']', ' … ', 12) "
+               "FROM sessions_fts f JOIN sessions s ON s.session_id = f.session_id "
+               "WHERE sessions_fts MATCH ?")
+        params.insert(0, match)
+        if where:
+            sql += " AND " + " AND ".join(where)
+    else:
+        sql = ("SELECT s.session_id, s.name, s.project, s.branch, s.cwd, "
+               "s.last_active, s.key, '' FROM sessions s")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY s.last_active DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        conn.close()
+        return []
+    conn.close()
+
+    live = _live_session_map()
+    out = []
+    for sid, name, project, branch, cwd, last_active, key, snip in rows:
+        out.append({
+            "session_id": sid, "name": name, "project": project,
+            "branch": branch, "cwd": cwd, "key": key or None,
+            "last_active_epoch": last_active,
+            "last_active_human": _ago(last_active),
+            "live": sid in live,
+            "match": (snip or "").replace("\n", " ").strip(),
+            "resume_command": _resume_cmd({"session_id": sid, "cwd": cwd}),
+        })
+    return out
+
+
+def render_index_markdown(rows, query, since=None):
+    lines = []
+    what = f'you typed matching "{query}"' if query else "your newest sessions"
+    if since:
+        what += f" (last {_window_human(since)})"
+    lines.append(f"# Claude Code - {what}")
+    lines.append("")
+    if not rows:
+        lines.append("Nothing matched. Try one distinctive word; matching is "
+                     "prefix-based and every word must appear.")
+        return "\n".join(lines)
+    lines.append(f"_{len(rows)} session(s). Searching only what YOU typed._")
+    lines.append("")
+    lines.append("| # | Session | Last active | State | Project | Match |")
+    lines.append("|---|---------|-------------|-------|---------|-------|")
+    for i, r in enumerate(rows, 1):
+        state = "\U0001F7E2 running" if r["live"] else "⚪ closed"
+        lines.append(
+            f"| {i} | {_clean_cell(r['name'], 46)} | {r['last_active_human']} | "
+            f"{state} | {_clean_cell(r['project'], 28)} | "
+            f"{_clean_cell(r['match'] or '-', 70)} |")
+    lines.append("")
+    lines.append("Resume any of them:")
+    lines.append("")
+    lines.append("```bash")
+    for r in rows[:5]:
+        lines.append(r["resume_command"] or "")
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def serve(host, port, refresh, allow_kill=False):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -1269,18 +1827,32 @@ def _launchd_path_env():
     return ":".join(out)
 
 
-def _plist_xml(label, args, keepalive, start_interval, logfile):
+def _plist_xml(label, args, keepalive, start_interval, logfile,
+               username=None, home=None):
+    """Render a launchd job.
+
+    username/home are for a system LaunchDaemon: it starts at boot with no user
+    session, so it must be told which user to run as, and HOME must be explicit
+    (a daemon inherits none, and this script reads ~/.claude/projects).
+    """
     def esc(s):
         return (str(s).replace("&", "&amp;").replace("<", "&lt;")
                 .replace(">", "&gt;"))
     arg_xml = "\n".join(f"        <string>{esc(a)}</string>" for a in args)
     sched = ("    <key>KeepAlive</key>\n    <true/>\n" if keepalive else
              f"    <key>StartInterval</key>\n    <integer>{start_interval}</integer>\n")
+    env = [f"        <key>PATH</key>\n        <string>{esc(_launchd_path_env())}</string>"]
+    if home:
+        env.append(f"        <key>HOME</key>\n        <string>{esc(home)}</string>")
+    who = ""
+    if username:
+        who = (f"    <key>UserName</key>\n    <string>{esc(username)}</string>\n"
+               f"    <key>GroupName</key>\n    <string>staff</string>\n")
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Generated by `a_c_claude_sessions --install-*-agent` on this machine.
-     Do not hand-copy to another machine; run the install command there instead
-     (paths below are specific to this host). -->
+<!-- Generated by `a_c_claude_sessions --install-*-agent` / `--install-boot-daemon`
+     on this machine. Do not hand-copy to another machine; run the install command
+     there instead (paths below are specific to this host). -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
@@ -1291,10 +1863,9 @@ def _plist_xml(label, args, keepalive, start_interval, logfile):
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>PATH</key>
-        <string>{esc(_launchd_path_env())}</string>
+{chr(10).join(env)}
     </dict>
-    <key>RunAtLoad</key>
+{who}    <key>RunAtLoad</key>
     <true/>
 {sched}    <key>StandardOutPath</key>
     <string>{esc(logfile)}</string>
@@ -1349,6 +1920,159 @@ def uninstall_agent(kind):
 
 
 # --------------------------------------------------------------------------- #
+# Boot-level install (LaunchDaemon)
+#
+# A LaunchAgent starts at LOGIN. On an always-on machine that is not the same as
+# "starts when the machine starts": an unattended reboot (power cut, remote
+# `reboot`) leaves the dashboard down until somebody logs in. A LaunchDaemon in
+# /Library/LaunchDaemons starts at BOOT, with no user session, so it closes that
+# gap. It needs root to install, runs as the named user (not root, so the
+# transcripts under that user's ~/.claude are readable and nothing is created
+# root-owned), and it replaces the LaunchAgent rather than joining it, because
+# two copies would fight over the same port.
+#
+# Note: on a machine with FileVault ON the data volume is locked until somebody
+# unlocks it at the login screen, so no daemon can read ~/.claude before that.
+# There, boot-level start buys nothing and the LaunchAgent is the honest answer.
+# --------------------------------------------------------------------------- #
+LAUNCH_DAEMONS_DIR = "/Library/LaunchDaemons"
+
+
+def _boot_target_user():
+    """(name, home, uid) of the human a boot daemon should run as, or (None,)*3.
+
+    Prefers SUDO_USER (the person who typed `sudo`), then the console owner, so
+    `sudo a_c_claude_sessions --install-boot-daemon` does the obvious thing.
+    """
+    candidates = [os.environ.get("SUDO_USER") or ""]
+    try:
+        candidates.append(pwd.getpwuid(os.stat("/dev/console").st_uid).pw_name)
+    except Exception:
+        pass
+    for name in candidates:
+        if not name or name == "root":
+            continue
+        try:
+            pw = pwd.getpwnam(name)
+        except KeyError:
+            continue
+        return (pw.pw_name, pw.pw_dir, pw.pw_uid)
+    return (None, None, None)
+
+
+def _retire_login_agent(label, uid, home):
+    """Unload the per-user LaunchAgent and move its plist aside.
+
+    Without this the agent would start a second copy at the next login and lose
+    the race for the port. The plist is kept (renamed) so the change is
+    reversible by hand, and so it is obvious what happened.
+    """
+    plist = os.path.join(home, "Library", "LaunchAgents", label + ".plist")
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"],
+                   capture_output=True, text=True)
+    if os.path.exists(plist):
+        aside = plist + ".replaced-by-boot-daemon"
+        try:
+            shutil.move(plist, aside)
+            print(f"  retired login agent: {aside}")
+        except OSError as e:
+            print(f"warning: could not move {plist} aside ({e}). Remove it by hand, "
+                  "or it will fight the daemon for the port at next login.",
+                  file=sys.stderr)
+    return plist
+
+
+def install_boot_daemon(port=8787, allow_kill=False):
+    label, args, keepalive, interval, _log = _agent_spec("web", port, allow_kill)
+    if os.geteuid() != 0:
+        script = os.path.realpath(__file__)
+        extra = " --allow-kill" if allow_kill else ""
+        print("error: installing a boot-level daemon needs root.\n\n"
+              f"  sudo {script} --install-boot-daemon {port}{extra}\n\n"
+              "(run it from your own shell, not a root shell, so the daemon can "
+              "tell which user's sessions to read)", file=sys.stderr)
+        return False
+    user, home, uid = _boot_target_user()
+    if not user:
+        print("error: could not work out which user to run as. Run it as "
+              "`sudo a_c_claude_sessions --install-boot-daemon` from that user's "
+              "shell so SUDO_USER is set.", file=sys.stderr)
+        return False
+    if not _tailscale_ip():
+        print("warning: no Tailscale IP on this machine yet. KeepAlive means the "
+              "daemon will retry until Tailscale is up, which is the expected "
+              "state early in boot.", file=sys.stderr)
+
+    # The script path must be readable at boot. Warn if it lives somewhere that
+    # may mount late (an external or network volume).
+    script = os.path.realpath(__file__)
+    if script.startswith("/Volumes/"):
+        print(f"note: the script lives on {script.split('/')[2]!r} under /Volumes. "
+              "That is fine for an internal APFS volume (it mounts at boot); a "
+              "removable or network volume would make the daemon retry until it "
+              "appears.", file=sys.stderr)
+
+    _retire_login_agent(label, uid, home)
+
+    logfile = os.path.join(home, "Library", "Logs",
+                           "a_c_claude_sessions_web.launchd.log")
+    os.makedirs(os.path.dirname(logfile), exist_ok=True)
+    dest = os.path.join(LAUNCH_DAEMONS_DIR, label + ".plist")
+    with open(dest, "w") as f:
+        f.write(_plist_xml(label, args, keepalive, interval, logfile,
+                           username=user, home=home))
+    # launchd refuses a daemon plist that is not root-owned and not
+    # group/world writable.
+    os.chown(dest, 0, 0)
+    os.chmod(dest, 0o644)
+
+    subprocess.run(["launchctl", "bootout", f"system/{label}"],
+                   capture_output=True, text=True)
+    r = subprocess.run(["launchctl", "bootstrap", "system", dest],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"launchctl bootstrap failed: {r.stderr or r.stdout}", file=sys.stderr)
+        return False
+    ip = _tailscale_ip()
+    print(f"installed + started {label} as a BOOT daemon")
+    print(f"  plist:  {dest}  (root:wheel 644)")
+    print(f"  runs as: {user}  (HOME={home})")
+    print(f"  script: {script}")
+    print(f"  log:    {logfile}")
+    print(f"  serving on {f'http://{ip}:{port}' if ip else f'(tailnet IP):{port}'}"
+          "  (tailnet only; JSON at /json)")
+    print(f"  kill endpoint: {'ENABLED' if allow_kill else 'disabled'}")
+    print("  starts at boot, with no login needed. Verify after a reboot with:")
+    print(f"    sudo launchctl print system/{label} | head -20")
+    return True
+
+
+def uninstall_boot_daemon():
+    label, *_ = _agent_spec("web", 8787)
+    if os.geteuid() != 0:
+        print(f"error: needs root.\n\n  sudo {os.path.realpath(__file__)} "
+              "--uninstall-boot-daemon", file=sys.stderr)
+        return False
+    dest = os.path.join(LAUNCH_DAEMONS_DIR, label + ".plist")
+    subprocess.run(["launchctl", "bootout", f"system/{label}"],
+                   capture_output=True, text=True)
+    existed = os.path.exists(dest)
+    try:
+        os.remove(dest)
+    except OSError:
+        pass
+    print(f"uninstalled boot daemon {label}" + ("" if existed else " (was not installed)"))
+    user, home, _uid = _boot_target_user()
+    if home:
+        aside = os.path.join(home, "Library", "LaunchAgents",
+                             label + ".plist.replaced-by-boot-daemon")
+        if os.path.exists(aside):
+            print(f"  the login agent is still parked at {aside}")
+            print("  restore login-time start with: a_c_claude_sessions --install-web-agent")
+    return True
+
+
+# --------------------------------------------------------------------------- #
 def main():
     ap = argparse.ArgumentParser(
         description="Live dashboard of Claude Code sessions running on this machine.")
@@ -1364,10 +2088,17 @@ def main():
                         "the dashboard on the tailnet at boot (default port 8787)")
     g.add_argument("--install-mdnest-agent", action="store_true",
                    help="generate + load a launchd agent that refreshes the mdnest note every 10 min")
+    g.add_argument("--install-boot-daemon", nargs="?", const=8787, type=int, metavar="PORT",
+                   help="needs sudo. Install a system LaunchDaemon that serves the "
+                        "dashboard at BOOT, before any login (a LaunchAgent only "
+                        "starts at login). Replaces the web agent so the two never "
+                        "clash on the port")
     g.add_argument("--uninstall-web-agent", action="store_true",
                    help="unload + remove the tailnet web launchd agent")
     g.add_argument("--uninstall-mdnest-agent", action="store_true",
                    help="unload + remove the mdnest-refresh launchd agent")
+    g.add_argument("--uninstall-boot-daemon", action="store_true",
+                   help="needs sudo. Stop + remove the boot-level LaunchDaemon")
     ap.add_argument("--bind", metavar="ADDR", default="127.0.0.1",
                     help="serve bind address (default 127.0.0.1 = this machine only; "
                          "give a tailnet IP to expose on Tailscale, or 0.0.0.0 for all)")
@@ -1381,10 +2112,21 @@ def main():
                          "resume command for each match, best/newest first")
     ap.add_argument("--all", action="store_true",
                     help="list every session on disk (live + closed), newest first")
-    ap.add_argument("--limit", type=int, default=600,
-                    help="cap the transcript scan to the N newest sessions (0 = no cap)")
-    ap.add_argument("--top", type=int, default=12,
-                    help="how many matches to show in --find/--all markdown (default 12)")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="cap the transcript scan to the N newest sessions "
+                         "(0 = no cap; default 600, or no cap when --since is used)")
+    ap.add_argument("--top", type=int, default=None,
+                    help="how many matches to show in --find/--all markdown "
+                         "(0 = all; default 12, or all when --since is used)")
+    ap.add_argument("--search", metavar="WORDS",
+                    help="search everything you TYPED across all sessions, using the "
+                         "local index (instant). Empty value lists the newest.")
+    ap.add_argument("--reindex", action="store_true",
+                    help="refresh the search index now (it also refreshes on demand)")
+    ap.add_argument("--since", metavar="WINDOW",
+                    help="only sessions whose last transcript entry is inside this "
+                         "window, e.g. 36h, 2d, 90m (a bare number means hours). "
+                         "Shows every session in the window and lifts the scan cap.")
     ap.add_argument("--refresh", type=int, default=10, help="web auto-refresh seconds (default 10)")
     args = ap.parse_args()
 
@@ -1392,10 +2134,15 @@ def main():
         sys.exit(0 if install_agent("web", args.install_web_agent, allow_kill=args.allow_kill) else 1)
     if args.install_mdnest_agent:
         sys.exit(0 if install_agent("mdnest") else 1)
+    if args.install_boot_daemon is not None:
+        sys.exit(0 if install_boot_daemon(args.install_boot_daemon,
+                                          allow_kill=args.allow_kill) else 1)
     if args.uninstall_web_agent:
         sys.exit(0 if uninstall_agent("web") else 1)
     if args.uninstall_mdnest_agent:
         sys.exit(0 if uninstall_agent("mdnest") else 1)
+    if args.uninstall_boot_daemon:
+        sys.exit(0 if uninstall_boot_daemon() else 1)
 
     if args.serve is not None:
         host = args.bind
@@ -1407,13 +2154,43 @@ def main():
                 sys.exit(1)
         serve(host, args.serve, args.refresh, allow_kill=args.allow_kill)
         return
+    if args.reindex:
+        indexed, skipped, total = index_sessions(progress=True)
+        print(f"indexed {indexed}, unchanged {skipped}, {total} session(s) on disk")
+        if args.search is None:
+            return
+
+    if args.search is not None:
+        since = _parse_window(args.since) if args.since else None
+        if args.since and since is None:
+            print(f"error: could not read --since {args.since!r}", file=sys.stderr)
+            sys.exit(1)
+        # Keep the index warm without the user having to think about it.
+        index_sessions()
+        rows = search_index(args.search, limit=(args.top or 40), since=since)
+        if args.json:
+            print(json.dumps({"query": args.search, "count": len(rows or []),
+                              "sessions": rows or []}, indent=2))
+        else:
+            print(render_index_markdown(rows or [], args.search, since))
+        return
+
     if args.find is not None or args.all:
         query = "" if args.all else args.find
-        records = search_sessions(query, limit=args.limit)
+        since = _parse_window(args.since) if args.since else None
+        if args.since and since is None:
+            print(f"error: could not read --since {args.since!r}; "
+                  "use a form like 36h, 2d or 90m", file=sys.stderr)
+            sys.exit(1)
+        # A window is an explicit "show me everything in here", so neither the scan
+        # cap nor the display cap may silently cut it. Both still honour an explicit flag.
+        limit = args.limit if args.limit is not None else (0 if since else 600)
+        top = args.top if args.top is not None else (0 if since else 12)
+        records = search_sessions(query, limit=limit, since=since)
         if args.json:
-            print(render_search_json(records, query, args.limit))
+            print(render_search_json(records, query, limit, since=since))
         else:
-            print(render_search_markdown(records, query, args.limit, shown=args.top))
+            print(render_search_markdown(records, query, limit, shown=top, since=since))
         return
     if args.write_mdnest is not None:
         records = build_sessions()

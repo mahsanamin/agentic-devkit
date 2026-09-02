@@ -13,29 +13,48 @@ export a_machine_type='m1'
 # Leave empty to skip org-specific loading
 export a_company_name=''
 
-# Your repos directories - used by cd_p and cd_w aliases
+# Your repos directories - used by the cd_p / cd_w / cd_g aliases.
+# Leave any of them empty to skip that alias.
 export a_dir_p_repos='/path/to/personal/repos'
 export a_dir_w_repos='/path/to/work/repos'
+# Global/shared repos - the ones that are neither personal nor work-specific
+# (this setup itself, shared tooling, dotfiles).
+export a_dir_g_repos='/path/to/global/repos'
 
 # Where this repo (agentic-devkit) is cloned
 export MY_WORKFLOW_DIR="${a_dir_p_repos}/agentic-devkit"
 
 ########################### Agentic Machine Identity ####
-# This machine's name, as Claude should introduce it. Pick something distinctive;
-# it does not have to match the hostname. Used by a_c_claude_memory to select the
-# machine profile at $A_CLAUDE_OVERLAY_DIR/machine/$A_MACHINE_NAME.md
+# This machine's name, as an agent should introduce it. Pick something distinctive;
+# it does not have to match the hostname. Used by a_c_agent_memory to select the
+# machine profile at $A_AGENT_OVERLAY_DIR/machine/$A_MACHINE_NAME.md
 export A_MACHINE_NAME=''
 
 # Private overlay repo: personal-only skills, this machine's identity + glossary.
 # Leave empty if you have no overlay - the memory build still works without it.
-export A_CLAUDE_OVERLAY_DIR=''
+export A_AGENT_OVERLAY_DIR=''
 
 # Private brain repo: durable knowledge (projects, decisions, people, setups).
 # Leave empty if you have no brain yet.
-export A_CLAUDE_BRAIN_DIR=''
+export A_AGENT_BRAIN_DIR=''
+
+# Backwards compatibility for older overlay scripts.
+export A_CLAUDE_OVERLAY_DIR="$A_AGENT_OVERLAY_DIR"
+export A_CLAUDE_BRAIN_DIR="$A_AGENT_BRAIN_DIR"
 
 # Optional: Google Drive path (uncomment and set if needed)
 # export a_dir_gd='/Users/YOUR_USER/Library/CloudStorage/GoogleDrive-YOU@EMAIL/My\ Drive'
+
+########################### Task Suite ####
+# Default zellij SESSION for every task start (a_c_task_start and the source
+# fronts: a_c_jira_task_start / a_c_github_issue_fix / a_c_mdnest_task_start).
+# Set it and each task opens as a tab in that session instead of taking over the
+# current terminal; the -z flag still overrides per-call. Leave it unset to stay
+# in the current terminal.
+# export A_C_TASK_ZELLIJ_SESSION='work'
+
+# Default Jira project key, so a bare ticket number resolves (123 -> PROJ-123).
+# export A_TASK_DEFAULT_KEY='PROJ'
 
 ########################### Load Generic Profile ####
 # This loads all shared aliases, exports, and utility commands

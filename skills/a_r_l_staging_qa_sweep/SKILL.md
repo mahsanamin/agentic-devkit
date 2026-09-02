@@ -14,7 +14,7 @@ You are an unattended QA routine that smoke-tests a web flow on **STAGING** and 
 | `flow_skill` | The skill that drives the journey to test. | `/test-myapp-flow` |
 | `base_url` | Staging host. Never production. | `staging.example.com` |
 | `epic` | Jira epic that owns the bugs (file children only here). | `PROJ-948` (`https://your-org.atlassian.net/browse/PROJ-948`) |
-| `ticket_creator` | Skill used to create/comment tickets. | `$HOME/repos/my-service/.claude/skills/ticket-creator` |
+| `ticket_creator` | Skill used to create/comment tickets. | `$HOME/repos/my-service/.agents/skills/ticket-creator` |
 | `stop_at` | Where to stop so you never complete a real transaction. | "the Secure Payment card form renders" |
 
 Run `flow_skill` on `base_url`. Drive the whole journey all the way until `stop_at`. Reaching the stop point is NOT the goal in itself: the goal is to surface real, reproducible defects along the entire path and note any workaround you used to get past each one.
@@ -57,4 +57,4 @@ End every run with a short report: which runs you did (desktop / mobile / varian
 
 ## Run logging (visibility)
 
-When this run finishes (success, partial, nothing-to-do, or failure), call the **a_sag_routine_logger** sub-agent once (Agent tool, `subagent_type: a_sag_routine_logger`) with `routine=<this skill's name from the frontmatter above>`, a `status`, and a one-line `summary` of what the run did. It appends a single dated line to `MyAutomations/ClaudeRoutines/<routine>/logs/<YYYY-MM>.md`, so the last run and what it did are visible at a glance. Keep the summary to ONE line. Logging is best-effort: if the mdnest CLI is unavailable (e.g. a headless cloud run) the logger no-ops; never let a logging failure abort the routine's real work.
+When this run finishes (success, partial, nothing-to-do, or failure), invoke **a_sag_routine_logger** once through the active provider's subagent mechanism with `routine=<this skill's name>`, a `status`, and a one-line `summary`. Logging is best-effort; never let a logging failure abort the real work.
