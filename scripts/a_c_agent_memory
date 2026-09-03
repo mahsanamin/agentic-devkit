@@ -62,10 +62,25 @@ target_for() {
   esac
 }
 
+runtime_for() {
+  case "$1" in
+    claude) echo "Claude Code|Anthropic" ;;
+    codex)  echo "Codex|OpenAI" ;;
+    gemini) echo "Gemini|Google" ;;
+  esac
+}
+
 rc=0
 for p in "${providers[@]}"; do
   target="$(target_for "$p")"
+  runtime="$(runtime_for "$p")"
+  runtime_name="${runtime%%|*}"
+  runtime_maker="${runtime#*|}"
   printf '\n==> %s (%s)\n' "$p" "$target"
-  CLAUDE_MEMORY_FILE="$target" "$ENGINE" ${args[@]+"${args[@]}"} || rc=$?
+  AGENT_RUNTIME_PROVIDER="$p" \
+    AGENT_RUNTIME_NAME="$runtime_name" \
+    AGENT_RUNTIME_MAKER="$runtime_maker" \
+    CLAUDE_MEMORY_FILE="$target" \
+    "$ENGINE" ${args[@]+"${args[@]}"} || rc=$?
 done
 exit "$rc"

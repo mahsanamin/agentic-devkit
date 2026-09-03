@@ -9,6 +9,17 @@ If you only remember one thing: **live agent assets are symlinks back into this 
 
 Everything here is deliberately generic: no company, client, or project specifics. Personal tooling and infrastructure references use neutral placeholders.
 
+## One setup, equal peers
+
+Claude Code, Codex, and Gemini/AGY are peers over the same canonical sources. A setup or update
+request is cross-provider by default regardless of which agent receives it. Install and verify
+every supported provider plus every configured overlay; narrow to one provider only when the user
+explicitly asks to leave the others untouched.
+
+`AGENTS.md` is the canonical repository guidance file. `CLAUDE.md` and `GEMINI.md` are imports
+only. Shared memory sources must describe the machine and policy without claiming a runtime
+provider; generated global files add the correct provider identity themselves.
+
 > **Work directly on `main` in this checkout - no feature branches, no worktree for this repo.** This is an adhoc, personal repo kept deliberately low-friction: edit, commit, and push straight to `main`. There is no `develop`, no feature-branch flow, and no PR step here; everything lands on `main`. This is intentional for a concrete reason: the live skills/agents are symlinks into THIS checkout, so a change made in a separate worktree does not go live until it is merged back and this checkout is updated. Editing here makes it live immediately. If a stray feature branch ever shows up, fold its wanted work into `main` and delete it.
 
 > **No AI attribution trailers on commits in this repo.** Leave off `Co-Authored-By` and generated-by lines, regardless of which agent performs the work.
@@ -69,7 +80,7 @@ a_c_skills list             # list skills available in this repo
 a_c_skills uninstall        # remove the symlinks this tool created
 ```
 
-Flags: `-n/--dry-run`, `-f/--force` (repoint a link aimed elsewhere). `install.sh` invokes this for both Claude and the shared `~/.agents/skills` directory. It auto-discovers any `skills/<dir>` containing a `SKILL.md`; divergent real directories are backed up before linking.
+Flags: `-n/--dry-run`, `-f/--force` (repoint a link aimed elsewhere). `install.sh` invokes this for both Claude and the shared `~/.agents/skills` directory. It auto-discovers any `skills/<dir>` containing a `SKILL.md`; divergent real directories are backed up before linking. Overlays reuse it with the provider-neutral `SKILLS_SRC` override; `CLAUDE_SKILLS_SRC` remains a compatibility alias.
 
 ### Agents installer: `a_c_agents`
 

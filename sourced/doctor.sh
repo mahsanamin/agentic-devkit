@@ -179,7 +179,7 @@ a_c_workflow_doctor() {
     local unmanaged
     unmanaged=$(find ~/.claude/skills ~/.claude/agents ~/.agents/skills ~/.gemini/config/skills -mindepth 1 -maxdepth 1 ! -type l 2>/dev/null | wc -l | tr -d ' ')
     if [ "${unmanaged:-0}" -gt 0 ]; then
-        _doc_warn "$unmanaged unmanaged agent asset(s) — inspect the provider skill directories"
+        echo "   i $unmanaged externally managed provider asset(s) left untouched (plugins/frameworks/workspaces)"
     else
         _doc_ok "every installed provider asset is managed by the devkit"
     fi

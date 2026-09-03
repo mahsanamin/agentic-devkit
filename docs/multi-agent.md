@@ -21,6 +21,15 @@ CLAUDE.md -> @AGENTS.md
 GEMINI.md -> @AGENTS.md
 ```
 
+Setup is cross-provider by default. The agent running `./install.sh` does not limit the result:
+Claude, Codex, and Google assets and configured overlays are installed together. `--provider`
+is an explicit operator override for intentionally partial installs.
+
+Global guidance shares policy and machine facts, but each rendered file receives a provider
+identity boundary. A Codex file identifies Codex/OpenAI, a Claude file identifies Claude
+Code/Anthropic, and a Gemini file identifies Gemini/Google. Shared sources must not hardcode one
+of those identities.
+
 ## Canonical agents and provider adapters
 
 Every agent is authored once under `agents/<name>.md`. Its body is the provider-neutral role and

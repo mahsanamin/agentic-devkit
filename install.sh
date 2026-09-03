@@ -191,6 +191,33 @@ link_agents() {
     fi
 }
 
+# Configured overlays are part of the same agent environment. Installing the
+# core from Claude, Codex, or Gemini must not leave another provider or an
+# overlay behind. Overlay installers receive the same explicit scope and flags.
+install_configured_overlays() {
+    local flags=() overlay seen=""
+    $DRY_RUN && flags+=(--dry-run)
+    $FORCE   && flags+=(--force)
+
+    for overlay in "${A_AGENT_OVERLAY_DIR:-}" "${A_AGENT_ORG_OVERLAY_DIR:-}"; do
+        [ -n "$overlay" ] || continue
+        [ -x "$overlay/install.sh" ] || continue
+        [ "$(cd -P "$overlay" 2>/dev/null && pwd)" != "$REPO_ROOT" ] || continue
+        case " $seen " in *" $overlay "*) continue ;; esac
+        seen="$seen $overlay"
+        step "Configured overlay ($(basename "$overlay"))"
+        AGENT_SKIP_MEMORY=1 "$overlay/install.sh" --provider "$PROVIDER" \
+            ${flags[@]+"${flags[@]}"}
+    done
+}
+
+memory_provider() {
+    case "$PROVIDER" in
+        agy|gemini|gemini-cli) echo gemini ;;
+        *) echo "$PROVIDER" ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # 3. Tell the user about the optional always-on bits.
 #
@@ -234,29 +261,23 @@ main() {
 
     $LINK_ONLY || wire_shell
     link_agents
+    install_configured_overlays
 
-    say "\n${GREEN}Done.${NC} ${DIM}Agent assets linked from $REPO_ROOT (provider: $PROVIDER).${NC}"
-
-    # Global memory. Two cases, and the difference matters:
-    #  - Already adopted (the markers are there): a pull can change memory/core-rules.md,
-    #    so rebuild, or the rules file silently goes stale. This is the whole point of
-    #    re-running install.sh after a pull.
-    #  - Not adopted yet: never rewrite a hand-written rules file behind someone's back.
-    #    Point at the command, which shows a diff first.
-    if ! $DRY_RUN && [ -x "$REPO_ROOT/scripts/a_c_agent_memory" ]; then
-        if grep -qs 'agentic-devkit: managed memory' "$HOME/.claude/CLAUDE.md" 2>/dev/null \
-            || grep -qs 'agentic-devkit: managed memory' "$HOME/.codex/AGENTS.md" 2>/dev/null \
-            || grep -qs 'agentic-devkit: managed memory' "$HOME/.gemini/GEMINI.md" 2>/dev/null; then
-            say ""
-            say "${BLUE}Global agent guidance${NC}"
-            "$REPO_ROOT/scripts/a_c_agent_memory" build --provider "$PROVIDER" 2>&1 | sed 's/^/  /'
-        elif [ -n "${A_MACHINE_NAME:-}" ]; then
-            say ""
-            say "${YELLOW}Your global agent guidance is not managed yet.${NC}"
-            say "    ${GREEN}a_c_agent_memory diff${NC}   ${DIM}see what it would add${NC}"
-            say "    ${GREEN}a_c_agent_memory build${NC}  ${DIM}adopt it (hand-written text is kept)${NC}"
+    # A setup run adopts or refreshes managed global guidance for the selected
+    # scope. The memory engine preserves all handwritten content outside its
+    # markers and refuses a rebuild that would silently drop configured sources.
+    if [ -x "$REPO_ROOT/scripts/a_c_agent_memory" ]; then
+        say ""
+        say "${BLUE}Global agent guidance${NC}"
+        if $DRY_RUN; then
+            MY_WORKFLOW_DIR="$REPO_ROOT" "$REPO_ROOT/scripts/a_c_agent_memory" build --dry-run \
+                --provider "$(memory_provider)" 2>&1 | sed 's/^/  /'
+        else
+            MY_WORKFLOW_DIR="$REPO_ROOT" "$REPO_ROOT/scripts/a_c_agent_memory" build \
+                --provider "$(memory_provider)" 2>&1 | sed 's/^/  /'
         fi
     fi
+    say "\n${GREEN}Done.${NC} ${DIM}Agent assets and guidance installed (provider: $PROVIDER).${NC}"
     if ! $DRY_RUN && has_provider claude; then
         suggest_extras
     fi

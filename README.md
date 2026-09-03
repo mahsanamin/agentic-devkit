@@ -74,15 +74,17 @@ git remote add upstream https://github.com/mahsanamin/agentic-devkit.git
 ## Install
 
 ```bash
-./install.sh        # shell + Claude, Codex, and Gemini/AGY assets
+./install.sh        # shell + Claude, Codex, Gemini/AGY, configured overlays, and guidance
 source ~/.zshrc     # activate it in this terminal
 
 # Optional: only one provider
 ./install.sh --provider codex
 ```
 
-That is the whole install. It is safe to re-run, it never overwrites your shell config, and it
-adds exactly one line to your shell rc. Then **restart your agent CLI** so it reloads its assets.
+That is the whole install. The default is deliberately cross-provider no matter which agent runs
+it: core assets, configured overlays, and generated global guidance are refreshed together. It is
+safe to re-run, preserves handwritten guidance, and never overwrites your shell config. Then
+**restart your agent CLIs** so they reload their assets.
 
 Check it worked:
 

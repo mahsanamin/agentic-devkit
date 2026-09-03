@@ -69,6 +69,8 @@ OVERLAY="${A_AGENT_OVERLAY_DIR:-${A_CLAUDE_OVERLAY_DIR:-}}"
 ORG_OVERLAY="${A_AGENT_ORG_OVERLAY_DIR:-}"
 BRAIN="${A_AGENT_BRAIN_DIR:-${A_CLAUDE_BRAIN_DIR:-}}"
 MACHINE="${A_MACHINE_NAME:-}"
+RUNTIME_NAME="${AGENT_RUNTIME_NAME:-Claude Code}"
+RUNTIME_MAKER="${AGENT_RUNTIME_MAKER:-Anthropic}"
 # The root repo, when there is one. It owns the paths and the rules that outlive this
 # toolkit, so when it is present this script points at it instead of restating them.
 # Optional by design: with A_ROOT_DIR unset everything below still renders standalone.
@@ -120,6 +122,15 @@ render_region() {
   echo "-->"
   echo ""
   echo "# Global guidance"
+  echo ""
+
+  echo "## Runtime identity"
+  echo ""
+  echo "This file is rendered for **$RUNTIME_NAME**, made by **$RUNTIME_MAKER**. The machine"
+  echo "name below identifies the configured agent environment; it does not replace the runtime"
+  echo "provider. When asked who you are, state both the machine identity and this runtime. Never"
+  echo "claim to be a different provider, and never copy another agent's provider or model name."
+  echo "Only name an exact model when the current runtime exposes it reliably."
   echo ""
 
   if [ -n "$ROOT_REPO" ]; then
@@ -207,7 +218,7 @@ render_region() {
     echo "missing brain must never block a session."
     echo ""
     echo "When a session produces something durable - a correction, a preference, a decision, a"
-    echo "repo or person Claude did not know - write it back with \`a_sk_teach_claude\`."
+    echo "repo or person the agent did not know - write it back with \`a_sk_teach_claude\`."
   fi
 
   echo "$END_MARK"
@@ -361,8 +372,10 @@ case "$CMD" in
     tmp="$(build_file)"
     if [ -f "$TARGET" ] && cmp -s "$tmp" "$TARGET"; then
       echo "${G}in sync${R} ${D}$TARGET${R}"
-    else
+    elif [ -f "$TARGET" ]; then
       diff -u "$TARGET" "$tmp" 2>/dev/null || true
+    else
+      diff -u /dev/null "$tmp" 2>/dev/null || true
     fi
     rm -f "$tmp"
     ;;
@@ -390,6 +403,7 @@ case "$CMD" in
       echo "         ${Y}does not exist yet${R}"
     fi
     echo "${B}machine${R}  ${MACHINE:-${Y}A_MACHINE_NAME unset${R}}"
+    echo "${B}runtime${R}  $RUNTIME_NAME ($RUNTIME_MAKER)"
     echo "${B}sources${R}"
     printf "  %-11s %s\n" "core" "$CORE"
     for pair in "machine:$MACHINE_FILE" "rules:$RULES_FILE" "glossary:$GLOSSARY_FILE" \

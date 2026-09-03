@@ -20,7 +20,8 @@
 #
 # With no [name...], the command applies to every skill in the repo.
 # Override the target dir with CLAUDE_SKILLS_DIR (defaults to ~/.claude/skills).
-# Override the SOURCE skills dir with CLAUDE_SKILLS_SRC (defaults to <repo>/skills)
+# Override the source skills dir with SKILLS_SRC (defaults to <repo>/skills).
+# CLAUDE_SKILLS_SRC remains a backwards-compatible alias.
 # so an overlay repo (e.g. a private dev kit) can reuse this installer instead of
 # shipping its own copy: CLAUDE_SKILLS_SRC=/path/to/other/skills a_c_skills install
 
@@ -40,7 +41,7 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 # CLAUDE_SKILLS_SRC lets an overlay repo point this installer at its own skills
 # dir, so the private dev kit reuses this tool rather than duplicating it.
-SKILLS_SRC="${CLAUDE_SKILLS_SRC:-$REPO_ROOT/skills}"
+SKILLS_SRC="${SKILLS_SRC:-${CLAUDE_SKILLS_SRC:-$REPO_ROOT/skills}}"
 TARGET_DIR="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 # Backups live OUTSIDE the skills dir so Claude Code never scans them as skills.
 BACKUP_DIR="${CLAUDE_SKILLS_BACKUP_DIR:-${TARGET_DIR%/}.backups}"
@@ -119,7 +120,8 @@ install_one() {
                 run ln -s "$want" "$target"
                 echo -e "  ${GREEN}linked${NC}    $name ${DIM}(replaced identical real dir)${NC}"
             else
-                local backup="$BACKUP_DIR/$name.$(date +%Y%m%d-%H%M%S)"
+                local backup
+                backup="$BACKUP_DIR/$name.$(date +%Y%m%d-%H%M%S)"
                 run mkdir -p "$BACKUP_DIR"
                 run mv "$target" "$backup"
                 run ln -s "$want" "$target"
@@ -194,7 +196,7 @@ main() {
     if [ "${#names[@]}" -eq 0 ]; then
         while read -r n; do [ -n "$n" ] && names+=("$n"); done < <(discover_skills)
     fi
-    if [ "${#names[@]}" -eq 0 ] && [ "$action" = install -o "$action" = uninstall ]; then
+    if [ "${#names[@]}" -eq 0 ] && { [ "$action" = install ] || [ "$action" = uninstall ]; }; then
         echo -e "${YELLOW}No skills found in $SKILLS_SRC${NC}"; exit 0
     fi
 

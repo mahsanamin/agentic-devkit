@@ -3,12 +3,23 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve the interpreter BEFORE HOME is redirected, and resolve it to the REAL binary rather
+# than a version-manager shim. A shim (asdf, pyenv) reads its data dir from $HOME, so under the
+# override it exits 126 with no message and the whole test dies silently. tomllib needs 3.11+,
+# so the system python on macOS is not a usable fallback.
+PYTHON_BIN="$(python3 -c 'import sys, tomllib; print(sys.executable)' 2>/dev/null || true)"
+if [ -z "$PYTHON_BIN" ]; then
+  echo "FAIL: need a python3 with tomllib (3.11+) to validate the generated TOML" >&2
+  exit 1
+fi
+
 TEST_HOME="$(mktemp -d)"
 trap 'rm -rf "$TEST_HOME"' EXIT
 
 export HOME="$TEST_HOME"
 export MY_WORKFLOW_DIR="$REPO_ROOT"
 export SHELL=/bin/bash
+unset A_AGENT_OVERLAY_DIR A_AGENT_ORG_OVERLAY_DIR
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -30,6 +41,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ ! -L "$HOME/.codex/agents/a_sag_implementer.toml" ] || fail "Codex adapter must not be a Claude symlink"
 [ -f "$HOME/.gemini/config/agents/a_sag_implementer.md" ] || fail "AGY subagent was not generated"
 [ -f "$HOME/.gemini/agents/a_sag_implementer.md" ] || fail "Gemini CLI subagent was not generated"
+[ -f "$HOME/.claude/CLAUDE.md" ] || fail "default install omitted Claude global guidance"
+[ -f "$HOME/.codex/AGENTS.md" ] || fail "default install omitted Codex global guidance"
+[ -f "$HOME/.gemini/GEMINI.md" ] || fail "default install omitted Gemini global guidance"
 
 grep -q 'model = "gpt-5.6"' "$HOME/.codex/agents/a_sag_implementer.toml" \
   || fail "Claude opus tier was not mapped to the Codex demanding tier"
@@ -47,7 +61,7 @@ grep -q '^subagent: true$' "$HOME/.gemini/config/agents/a_sag_searcher.md" \
   || fail "renderer dropped Markdown separators from the canonical agent body"
 
 # Every canonical definition must produce valid Codex TOML.
-python3 - "$HOME/.codex/agents" <<'PY'
+"$PYTHON_BIN" - "$HOME/.codex/agents" <<'PY'
 import pathlib
 import sys
 import tomllib
@@ -81,6 +95,21 @@ HOME="$ISOLATED_HOME" "$REPO_ROOT/install.sh" --link-only --provider codex >/dev
 [ ! -e "$ISOLATED_HOME/.claude/agents/a_sag_searcher.md" ] || fail "Codex-only install wrote Claude agents"
 [ ! -e "$ISOLATED_HOME/.gemini/config/agents/a_sag_searcher.md" ] || fail "Codex-only install wrote AGY agents"
 
+# The core installer includes configured overlays and passes the same provider
+# scope without letting each overlay rebuild global memory independently.
+FAKE_HOME="$TEST_HOME/with-overlay"
+FAKE_OVERLAY="$TEST_HOME/fake-overlay"
+mkdir -p "$FAKE_HOME" "$FAKE_OVERLAY"
+cat > "$FAKE_OVERLAY/install.sh" <<'SH'
+#!/bin/sh
+printf '%s|%s\n' "${AGENT_SKIP_MEMORY:-}" "$*" > "$HOME/overlay-call"
+SH
+chmod +x "$FAKE_OVERLAY/install.sh"
+A_AGENT_OVERLAY_DIR="$FAKE_OVERLAY" HOME="$FAKE_HOME" \
+  "$REPO_ROOT/install.sh" --link-only >/dev/null
+grep -q '^1|--provider all$' "$FAKE_HOME/overlay-call" \
+  || fail "configured overlay did not receive the all-provider install scope"
+
 # One source renders into native provider filenames and preserves handwritten text.
 mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.gemini"
 printf '%s\n' '# personal Claude note' > "$HOME/.claude/CLAUDE.md"
@@ -97,4 +126,13 @@ for target in \
 done
 
 "$REPO_ROOT/scripts/a_c_agent_memory" check >/dev/null
+
+grep -q 'rendered for \*\*Claude Code\*\*, made by \*\*Anthropic\*\*' "$HOME/.claude/CLAUDE.md" \
+  || fail "Claude global guidance has the wrong runtime identity"
+grep -q 'rendered for \*\*Codex\*\*, made by \*\*OpenAI\*\*' "$HOME/.codex/AGENTS.md" \
+  || fail "Codex global guidance has the wrong runtime identity"
+grep -q 'rendered for \*\*Gemini\*\*, made by \*\*Google\*\*' "$HOME/.gemini/GEMINI.md" \
+  || fail "Gemini global guidance has the wrong runtime identity"
+! grep -q 'rendered for \*\*Claude Code\*\*' "$HOME/.codex/AGENTS.md" \
+  || fail "Claude runtime identity leaked into Codex guidance"
 echo "ok: multi-agent install and guidance"
