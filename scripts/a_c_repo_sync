@@ -13,7 +13,9 @@
 #
 # Safety, in order of how much it matters:
 #   - never force-pushes, never rewrites history, never resolves a conflict
-#   - rebases with --autostash; on ANY conflict it aborts, restores, and reports
+#   - merges with --autostash (never rebases: these repos are written from several
+#     machines, and a rebase rewrites commits another one already pulled). On ANY
+#     conflict it aborts, restores, and reports
 #   - skips a repo mid-rebase/merge, on a detached HEAD, or with no upstream
 #   - a repo that fails does not stop the others
 #   - rebuilds the generated rules file when the pull changed a memory source
@@ -187,13 +189,16 @@ sync_one() {
   fi
 
   if [ "$(git -C "$repo" rev-list --count "HEAD..$upstream" 2>/dev/null || echo 0)" != "0" ]; then
-    if git -C "$repo" rebase --autostash --quiet "$upstream" 2>/dev/null; then
+    # Merge, not rebase. These repos are written from several machines, so a rebase would rewrite
+    # commits another box has already pulled, and the next sync there sees a diverged history it
+    # cannot fast-forward. A merge commit is the honest record of two machines having worked.
+    if git -C "$repo" merge --autostash --no-edit --quiet "$upstream" 2>/dev/null; then
       say "${G}pulled${R}   $name ${D}($branch)${R}"
     else
       # Do not attempt a resolution. Put the repo back exactly as it was and say so.
-      git -C "$repo" rebase --abort 2>/dev/null
+      git -C "$repo" merge --abort 2>/dev/null
       err "$name: pull conflicts with local work. Left untouched - resolve it by hand:"
-      err "  cd $repo && git pull --rebase"
+      err "  cd $repo && git pull --no-rebase"
       return 1
     fi
   fi
