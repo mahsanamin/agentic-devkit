@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+#
+# a_c_root_init - create a root instruction repo for an organisation.
+#
+# The root repo is the socket this devkit plugs into: it owns the paths and the rules
+# that outlive any toolkit, and this devkit reads its root.config. One per company. It is
+# the FIRST repo to create when you start somewhere new, because everything else is named
+# inside it.
+#
+# This copies the starter from templates/root-repo, fills in the organisation name, and
+# leaves you a repo to fill in. It never writes outside the target directory and never
+# overwrites an existing one.
+#
+# Usage:
+#   a_c_root_init <target-dir> --org "Acme" [--slug acme] [--remote <git-url>]
+#   a_c_root_init <target-dir> --org "Acme" --dry-run
+#
+# Then: fill in root.config, create root.local.config with MACHINE_NAME, and wire the
+# machine (docs/root-repo.md, or the a_sk_setup_agents skill).
+
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REPO_ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+TEMPLATE="$REPO_ROOT/templates/root-repo"
+
+if [ -t 1 ]; then
+  R=$'\033[0m'; B=$'\033[0;34m'; G=$'\033[0;32m'; Y=$'\033[0;33m'; RED=$'\033[0;31m'; D=$'\033[2m'
+else
+  R=""; B=""; G=""; Y=""; RED=""; D=""
+fi
+die() { echo "${RED}error:${R} $*" >&2; exit 1; }
+
+TARGET=""; ORG=""; SLUG=""; REMOTE=""; DRY_RUN=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --org)     ORG="${2:-}";    [ -n "$ORG" ]    || die "--org needs a value";    shift 2 ;;
+    --slug)    SLUG="${2:-}";   [ -n "$SLUG" ]   || die "--slug needs a value";   shift 2 ;;
+    --remote)  REMOTE="${2:-}"; [ -n "$REMOTE" ] || die "--remote needs a value"; shift 2 ;;
+    -n|--dry-run) DRY_RUN=1; shift ;;
+    -h|--help) sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) die "unknown flag: $1 (try --help)" ;;
+    *)  [ -z "$TARGET" ] || die "one target directory only"; TARGET="$1"; shift ;;
+  esac
+done
+
+[ -n "$TARGET" ] || die "need a target directory (try --help)"
+[ -n "$ORG" ]    || die "need --org, the organisation this root repo is for"
+[ -d "$TEMPLATE" ] || die "template missing: $TEMPLATE"
+[ -e "$TARGET" ] && die "$TARGET already exists. Refusing to write into it."
+
+# A slug is what filenames and shell variables use, so keep it boring.
+[ -n "$SLUG" ] || SLUG="$(printf '%s' "$ORG" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//;s/-*$//')"
+REPO_NAME="$(basename "$TARGET")"
+
+echo "${B}root repo${R} for ${G}$ORG${R} ${D}(slug: $SLUG)${R}"
+echo "  target   $TARGET"
+echo "  from     $TEMPLATE"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "${Y}dry run${R}, nothing written. Files that would be created:"
+  (cd "$TEMPLATE" && find . -type f | sed 's|^\./|    |' | sort)
+  exit 0
+fi
+
+mkdir -p "$TARGET"
+# -a keeps the dotfiles, above all .gitignore, which is what protects root.local.config.
+(cd "$TEMPLATE" && tar cf - .) | (cd "$TARGET" && tar xf -)
+
+# Substitute the placeholders. Values are plain text, and | is the delimiter because a
+# path would collide with /.
+while IFS= read -r f; do
+  sed -i.bak \
+    -e "s|{{ORG_NAME}}|$ORG|g" \
+    -e "s|{{ORG_SLUG}}|$SLUG|g" \
+    -e "s|{{ROOT_REPO_NAME}}|$REPO_NAME|g" \
+    "$f" && rm -f "$f.bak"
+done < <(find "$TARGET" -type f -name '*.md' -o -type f -name 'root.config')
+
+if [ ! -d "$TARGET/.git" ]; then
+  git -C "$TARGET" init -q
+  echo "  ${G}git init${R}   ${D}(no commit yet, and no identity set)${R}"
+fi
+[ -n "$REMOTE" ] && git -C "$TARGET" remote add origin "$REMOTE" && echo "  ${G}remote${R}    $REMOTE"
+
+echo "${G}created${R} $TARGET"
+echo
+echo "Next, in order:"
+echo "  1. Set this repo's git identity. There is deliberately no global one."
+echo "  2. Fill in root.config: the repo tiers, then each role you actually have."
+echo "     Leave a role empty when you do not have it. Empty is a normal state."
+echo "  3. Create root.local.config with MACHINE_NAME for this machine. It is gitignored."
+echo "  4. Put your approved AI agents in rules/boundary.md, with the date you decided."
+echo "  5. Wire the machine: $REPO_ROOT/docs/root-repo.md"
