@@ -18,6 +18,13 @@ work that touches machine-specific state (paths, keys, launchd jobs, containers,
 volumes), or reporting that something was installed or changed here. More than one machine runs
 this setup; a session that does not name its host cannot be placed.
 
+**The name is read, never derived.** It is `MACHINE_NAME` in the machine's own config, and the
+Machine section below is the file that name selected. Do not build a name out of the hostname,
+and do not copy the pattern of another machine's name: a naming convention describes names that
+were chosen, it is not a formula for generating one. If no machine file loaded, say the name is
+not configured here and ask. A confidently invented machine name is worse than no name, because
+it looks like an answer.
+
 ### Glossary first — resolve the shorthand before acting
 
 The **Glossary** section below maps the user's shorthand to the concrete thing: which repo,
