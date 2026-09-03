@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install.sh - bootstrap my_setup on this machine, in one command.
+# install.sh - bootstrap agentic-devkit on this machine, in one command.
 #
 #   ./install.sh              Wire shell + install Claude, Codex, and Gemini assets
 #   ./install.sh --provider X Install all, claude, codex, agy, gemini-cli, or gemini
@@ -132,7 +132,7 @@ wire_shell() {
     elif $DRY_RUN; then
         say "  ${DIM}would append${NC} to $rc: $src_line"
     else
-        printf '\n# my_setup\n%s\n' "$src_line" >> "$rc"
+        printf '\n# agentic-devkit\n%s\n' "$src_line" >> "$rc"
         say "  ${GREEN}wired${NC}     $rc ${DIM}-> sources $profile${NC}"
         say "  ${YELLOW}!${NC} run ${GREEN}source $rc${NC} (or open a new terminal) to activate this shell"
     fi
@@ -229,7 +229,7 @@ suggest_extras() {
 }
 
 main() {
-    say "${BLUE}my_setup install${NC} ${DIM}($REPO_ROOT)${NC}"
+    say "${BLUE}agentic-devkit install${NC} ${DIM}($REPO_ROOT)${NC}"
     $DRY_RUN && say "${YELLOW}(dry run - nothing will change)${NC}"
 
     $LINK_ONLY || wire_shell

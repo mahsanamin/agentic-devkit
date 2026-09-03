@@ -1,5 +1,5 @@
 #!/bin/bash
-# my_setup doctor: verifies this shell is correctly wired to MY_WORKFLOW_DIR
+# agentic-devkit doctor: verifies this shell is correctly wired to MY_WORKFLOW_DIR
 # and that loaded functions match the on-disk source (catches stale shells and
 # rogue clones).
 
@@ -11,7 +11,7 @@ a_c_workflow_doctor() {
     _doc_warn() { echo -e " ${YELLOW}!${NC} $1"; warn=$((warn+1)); }
     _doc_err()  { echo -e " ${RED}✗${NC} $1"; err=$((err+1)); }
 
-    echo -e "${BLUE}my_setup doctor${NC}"
+    echo -e "${BLUE}agentic-devkit doctor${NC}"
     echo "─────────────────────────────────────────────────────────────"
 
     # 1. MY_WORKFLOW_DIR set and valid

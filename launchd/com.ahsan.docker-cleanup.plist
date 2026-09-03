@@ -24,7 +24,7 @@
     <!-- The safe cleanup. No flags = safe mode. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Volumes/Work/Personal/repos/my_setup/scripts/a_c_docker_cleanup</string>
+        <string>/Volumes/Work/Personal/repos/agentic-devkit/scripts/a_c_docker_cleanup</string>
     </array>
 
     <!-- launchd starts with a bare PATH; give it docker + the usual dirs. -->

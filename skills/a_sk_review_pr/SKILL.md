@@ -11,7 +11,7 @@ One entry point: hand it a PR URL and it does the whole thing. It owns **getting
 
 ## What this reuses (do not duplicate)
 
-- **Repo resolution + cache:** the `a_s_resolve_repo` script (in `my_setup/scripts/`, on PATH). It turns a PR/repo reference into a local clone path via cache → `cd_w` workspace scan (match by git remote) → clone into `cd_w`. It is the single source of truth for "which local clone is this PR's repo" and for avoiding duplicate clones.
+- **Repo resolution + cache:** the `a_s_resolve_repo` script (in `agentic-devkit/scripts/`, on PATH). It turns a PR/repo reference into a local clone path via cache → `cd_w` workspace scan (match by git remote) → clone into `cd_w`. It is the single source of truth for "which local clone is this PR's repo" and for avoiding duplicate clones.
 - **The review engine:** the project's `review-pr` skill, or the global `global-pr-reviewer`. These produce the categorized review draft (diff, rules, reviewer agent, GitHub-style inline comments). This skill never re-implements the diff or the review.
 - **Review-started announcement, auto-post policy, self-verify guard, and teardown-safety rules:** identical to `a_r_l_pr_review` (`skills/a_r_l_pr_review/SKILL.md`). Read that skill's **Review-started announcement**, **Auto-post policy**, and **Teardown safety** sections and apply them verbatim — they are restated compactly below, not forked.
 

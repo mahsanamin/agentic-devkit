@@ -3,8 +3,8 @@
 **Stop re-explaining yourself to every coding agent. Put your terminal setup, reusable skills,
 and durable guidance in git — shared by Claude Code, Codex, and Gemini/AGY on every machine.**
 
-> The repo is called `agentic-devkit`. Some older paths and the variable `MY_WORKFLOW_DIR` still
-> say `my_setup`. Same thing.
+> The repo is called `agentic-devkit`, and so is its directory. The variable `MY_WORKFLOW_DIR`
+> still points at it, kept for the tooling that already reads that name.
 
 ## In plain language
 

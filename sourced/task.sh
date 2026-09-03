@@ -14,8 +14,8 @@
 #   a_c_task_finish  remove a finished task's worktree + branch (via
 #                    a_g_worktree_remove) and unregister it.
 #
-# These scripts live in the my_setup repo. Normally that repo is
-# $MY_WORKFLOW_DIR, but when it is loaded ALONGSIDE another my_setup checkout
+# These scripts live in the agentic-devkit repo. Normally that repo is
+# $MY_WORKFLOW_DIR, but when it is loaded ALONGSIDE another agentic-devkit checkout
 # (a transitional dual setup), the work-repo path is exported as
 # $A_C_WORKFLOW_DIR. Resolve that first, then fall back to MY_WORKFLOW_DIR.
 #

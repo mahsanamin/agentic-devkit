@@ -33,7 +33,7 @@ Provider directories hold **links or generated adapters, never independent sourc
 
 ```mermaid
 flowchart LR
-    subgraph repo["my_setup (in git, source of truth)"]
+    subgraph repo["agentic-devkit (in git, source of truth)"]
         SK["skills/&lt;name&gt;/SKILL.md"]
         AG["agents/&lt;name&gt;.md<br/>canonical agent definition"]
     end
@@ -53,7 +53,7 @@ flowchart LR
 
 When you edit, add, or remove an `a_*` skill or agent that is loaded globally, **you are editing this repo**:
 
-- Make the change in `my_setup/skills/` or `my_setup/agents/`, then commit it here.
+- Make the change in `agentic-devkit/skills/` or `agentic-devkit/agents/`, then commit it here.
 - Never hand-copy a skill/agent into a provider's global directory; never treat a generated adapter as an editable source.
 - To create, refresh, or repair an installed asset, use the installer. See below.
 
@@ -131,7 +131,7 @@ So: skill `a_sk_<name>`; routine `a_r_<name>` (cloud-capable) or `a_r_l_<name>` 
 ### Layout
 
 ```
-my_setup/
+agentic-devkit/
 ├── install.sh    # one-shot bootstrap: wire the shell (once) + link all skills & agents (idempotent)
 ├── shell/        # profile system: configs sample, generic.profile, org/machine profiles
 ├── sourced/      # functions sourced into the shell: git.sh, worktree.sh, process.sh, doctor.sh, task.sh

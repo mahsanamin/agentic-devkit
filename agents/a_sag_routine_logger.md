@@ -14,7 +14,7 @@ do not run the routine, judge it, or expand on the summary you are given.
 ## Operating context (read first)
 The routine that spawned you wins on conventions. Log lines are **plain text** (a
 date, a glyph, a short summary), never code fences, so they append safely. The mdnest
-safe-write rules live in the my_setup repo at `rules/mdnest.md`; this file is your
+safe-write rules live in the agentic-devkit repo at `rules/mdnest.md`; this file is your
 role and procedure. Prefer any path the caller hands you over the default.
 
 ## Where logs live

@@ -12,7 +12,7 @@ or "improve" the content. You are the hands, not the author.
 
 ## Operating context (read first)
 The project or session that spawned you wins on conventions. The canonical rules
-you enforce live in the my_setup repo at `rules/mdnest.md` (and are imported into
+you enforce live in the agentic-devkit repo at `rules/mdnest.md` (and are imported into
 global `~/.claude/CLAUDE.md`); this file is your role and procedure. If a path or
 command here differs from what the caller gives you, prefer the caller's values.
 

@@ -8,11 +8,13 @@
 # markers alone.
 #
 # Sources, in the order they are rendered:
+#   0. root      $A_ROOT_DIR/ROOT.md                          (the entry point, if present)
 #   1. core      $MY_WORKFLOW_DIR/memory/core-rules.md        (generic, public)
 #   2. machine   $A_AGENT_OVERLAY_DIR/machine/$A_MACHINE_NAME.md   (identity + role)
 #   3. rules     $A_AGENT_OVERLAY_DIR/machine/rules.md       (personal always-on rules)
 #   4. glossary  $A_AGENT_OVERLAY_DIR/machine/glossary.md    (shorthand -> what to do)
-#   5. pointers  generated here from the configured repo paths
+#   5. org       $A_AGENT_ORG_OVERLAY_DIR/machine/*          (work-only machine facts)
+#   6. pointers  the root repo when set, else generated from the repo paths
 #
 # Everything but (1) is optional: a machine with no overlay still gets a valid file.
 #
@@ -61,10 +63,17 @@ done
 [ -n "${MY_WORKFLOW_DIR:-}" ] || die "MY_WORKFLOW_DIR is not set. Source your profile first."
 CORE="$MY_WORKFLOW_DIR/memory/core-rules.md"
 [ -f "$CORE" ] || die "core rules missing: $CORE"
+STANDALONE="$MY_WORKFLOW_DIR/memory/core-rules-standalone.md"
 
 OVERLAY="${A_AGENT_OVERLAY_DIR:-${A_CLAUDE_OVERLAY_DIR:-}}"
+ORG_OVERLAY="${A_AGENT_ORG_OVERLAY_DIR:-}"
 BRAIN="${A_AGENT_BRAIN_DIR:-${A_CLAUDE_BRAIN_DIR:-}}"
 MACHINE="${A_MACHINE_NAME:-}"
+# The root repo, when there is one. It owns the paths and the rules that outlive this
+# toolkit, so when it is present this script points at it instead of restating them.
+# Optional by design: with A_ROOT_DIR unset everything below still renders standalone.
+ROOT_REPO="${A_ROOT_DIR:-}"
+[ -n "$ROOT_REPO" ] && [ -f "$ROOT_REPO/ROOT.md" ] || ROOT_REPO=""
 
 MACHINE_FILE=""
 RULES_FILE=""
@@ -73,6 +82,19 @@ if [ -n "$OVERLAY" ] && [ -d "$OVERLAY" ]; then
   [ -n "$MACHINE" ] && [ -f "$OVERLAY/machine/$MACHINE.md" ] && MACHINE_FILE="$OVERLAY/machine/$MACHINE.md"
   [ -f "$OVERLAY/machine/rules.md" ]    && RULES_FILE="$OVERLAY/machine/rules.md"
   [ -f "$OVERLAY/machine/glossary.md" ] && GLOSSARY_FILE="$OVERLAY/machine/glossary.md"
+fi
+
+# An org overlay is a SECOND private overlay for work-specific machine facts. It exists
+# because the personal overlay is shared and must stay free of company content, so a work
+# machine's identity cannot live there. Same three file names, rendered after the personal
+# ones so the work layer refines the personal one.
+ORG_MACHINE_FILE=""
+ORG_RULES_FILE=""
+ORG_GLOSSARY_FILE=""
+if [ -n "$ORG_OVERLAY" ] && [ -d "$ORG_OVERLAY" ]; then
+  [ -n "$MACHINE" ] && [ -f "$ORG_OVERLAY/machine/$MACHINE.md" ] && ORG_MACHINE_FILE="$ORG_OVERLAY/machine/$MACHINE.md"
+  [ -f "$ORG_OVERLAY/machine/rules.md" ]    && ORG_RULES_FILE="$ORG_OVERLAY/machine/rules.md"
+  [ -f "$ORG_OVERLAY/machine/glossary.md" ] && ORG_GLOSSARY_FILE="$ORG_OVERLAY/machine/glossary.md"
 fi
 
 # --- render the managed region -------------------------------------------------
@@ -87,12 +109,40 @@ render_region() {
   [ -n "$MACHINE_FILE" ]  && echo "  machine  $MACHINE_FILE"
   [ -n "$RULES_FILE" ]    && echo "  rules    $RULES_FILE"
   [ -n "$GLOSSARY_FILE" ] && echo "  glossary $GLOSSARY_FILE"
-  echo "  pointers generated from A_AGENT_OVERLAY_DIR / A_AGENT_BRAIN_DIR"
+  [ -n "$ORG_MACHINE_FILE" ]  && echo "  orgmachine  $ORG_MACHINE_FILE"
+  [ -n "$ORG_RULES_FILE" ]    && echo "  orgrules    $ORG_RULES_FILE"
+  [ -n "$ORG_GLOSSARY_FILE" ] && echo "  orgglossary $ORG_GLOSSARY_FILE"
+  if [ -n "$ROOT_REPO" ]; then
+    echo "  root     $ROOT_REPO/ROOT.md (owns the paths and the company rules)"
+  else
+    echo "  pointers generated from A_AGENT_OVERLAY_DIR / A_AGENT_BRAIN_DIR"
+  fi
   echo "-->"
   echo ""
   echo "# Global guidance"
   echo ""
+
+  if [ -n "$ROOT_REPO" ]; then
+    echo "## Start here: the root instructions"
+    echo ""
+    echo "One repo owns the rules for company work and every path this machine uses:"
+    echo "\`$ROOT_REPO\`. **Read its \`ROOT.md\` first**, then the one file it sends you to."
+    echo "Nothing below repeats those rules, so a rule fixed there is fixed everywhere."
+    echo ""
+    echo "@$ROOT_REPO/ROOT.md"
+    echo ""
+    echo "Paths live in \`$ROOT_REPO/root.config\`, and nowhere else. Need to know where a repo"
+    echo "sits on this machine, read that file. Moving a repo is a change there, not here."
+    echo ""
+  fi
+
   cat "$CORE"
+
+  # Rules a root repo owns when there is one. Rendered only when there is not.
+  if [ -z "$ROOT_REPO" ] && [ -f "$STANDALONE" ]; then
+    echo ""
+    cat "$STANDALONE"
+  fi
 
   if [ -n "$MACHINE_FILE" ]; then
     echo ""
@@ -106,8 +156,29 @@ render_region() {
     echo ""
     emit_source "$GLOSSARY_FILE"
   fi
+  if [ -n "$ORG_MACHINE_FILE" ]; then
+    echo ""
+    emit_source "$ORG_MACHINE_FILE"
+  fi
+  if [ -n "$ORG_RULES_FILE" ]; then
+    echo ""
+    emit_source "$ORG_RULES_FILE"
+  fi
+  if [ -n "$ORG_GLOSSARY_FILE" ]; then
+    echo ""
+    emit_source "$ORG_GLOSSARY_FILE"
+  fi
 
   echo ""
+  if [ -n "$ROOT_REPO" ]; then
+    echo "## Where things live"
+    echo ""
+    echo "\`$ROOT_REPO/root.config\` lists every repo and its path. This file does not"
+    echo "restate them, because two lists of paths drift and one of them is then wrong."
+    echo ""
+    echo "After a \`git pull\` in a toolkit repo, re-link with \`./install.sh\` in that repo, then"
+    echo "run \`a_c_agent_memory build\` if its memory sources changed."
+  else
   echo "## Where things live"
   echo ""
   echo "| Repo | Path | Holds |"
@@ -123,6 +194,7 @@ render_region() {
   echo "After a \`git pull\` in a devkit repo, re-link with \`./install.sh\` in that repo, then"
   echo "run \`a_c_agent_memory build\` if its memory sources changed. The model behind this"
   echo "layout: \`$MY_WORKFLOW_DIR/docs/managed-claude.md\`."
+  fi
 
   if [ -n "$BRAIN" ]; then
     echo ""
@@ -152,15 +224,19 @@ strip_frontmatter() {
 # resolve is a silently dead rule. So sources write tokens and we expand them here, per
 # machine, at build time.
 #
-#   {{DEVKIT}}   -> $MY_WORKFLOW_DIR        the public core repo
-#   {{OVERLAY}}  -> $A_AGENT_OVERLAY_DIR   the private overlay repo
-#   {{BRAIN}}    -> $A_AGENT_BRAIN_DIR     the private brain repo
+#   {{DEVKIT}}   -> $MY_WORKFLOW_DIR            the public core repo
+#   {{OVERLAY}}  -> $A_AGENT_OVERLAY_DIR       the private overlay repo
+#   {{ORG}}      -> $A_AGENT_ORG_OVERLAY_DIR   the org overlay repo
+#   {{ROOT}}     -> $A_ROOT_DIR                the root instruction repo
+#   {{BRAIN}}    -> $A_AGENT_BRAIN_DIR         the private brain repo
 #
 # `|` is the sed delimiter because every value is a path. An unset token expands to
 # nothing, which is visible in the built file rather than pretending to be a real path.
 expand_tokens() {
   sed -e "s|{{DEVKIT}}|$MY_WORKFLOW_DIR|g" \
       -e "s|{{OVERLAY}}|$OVERLAY|g" \
+      -e "s|{{ORG}}|$ORG_OVERLAY|g" \
+      -e "s|{{ROOT}}|$ROOT_REPO|g" \
       -e "s|{{BRAIN}}|$BRAIN|g"
 }
 
@@ -182,12 +258,12 @@ previous_sources() {
   awk -v b="$BEGIN_MARK" '
     $0==b {inr=1; next}
     inr && $0=="-->" {exit}
-    inr && ($1=="core"||$1=="machine"||$1=="rules"||$1=="glossary") && substr($2,1,1)=="/" {print $2}
+    inr && ($1=="core"||$1=="machine"||$1=="rules"||$1=="glossary"||$1=="orgmachine"||$1=="orgrules"||$1=="orgglossary") && substr($2,1,1)=="/" {print $2}
   ' "$TARGET"
 }
 
 guard_shrink() {
-  local current=" $CORE $MACHINE_FILE $RULES_FILE $GLOSSARY_FILE " lost=0 old
+  local current=" $CORE $MACHINE_FILE $RULES_FILE $GLOSSARY_FILE $ORG_MACHINE_FILE $ORG_RULES_FILE $ORG_GLOSSARY_FILE " lost=0 old
   while IFS= read -r old; do
     [ -n "$old" ] || continue
     case "$current" in *" $old "*) continue ;; esac
@@ -315,14 +391,17 @@ case "$CMD" in
     fi
     echo "${B}machine${R}  ${MACHINE:-${Y}A_MACHINE_NAME unset${R}}"
     echo "${B}sources${R}"
-    printf "  %-9s %s\n" "core" "$CORE"
-    for pair in "machine:$MACHINE_FILE" "rules:$RULES_FILE" "glossary:$GLOSSARY_FILE"; do
+    printf "  %-11s %s\n" "core" "$CORE"
+    for pair in "machine:$MACHINE_FILE" "rules:$RULES_FILE" "glossary:$GLOSSARY_FILE" \
+                "orgmachine:$ORG_MACHINE_FILE" "orgrules:$ORG_RULES_FILE" "orgglossary:$ORG_GLOSSARY_FILE"; do
       k="${pair%%:*}"; v="${pair#*:}"
-      if [ -n "$v" ]; then printf "  %-9s %s\n" "$k" "$v"
-      else printf "  %-9s ${D}(none)${R}\n" "$k"; fi
+      if [ -n "$v" ]; then printf "  %-11s %s\n" "$k" "$v"
+      else printf "  %-11s ${D}(none)${R}\n" "$k"; fi
     done
-    printf "  %-9s %s\n" "overlay" "${OVERLAY:-${D}(unset)${R}}"
-    printf "  %-9s %s\n" "brain" "${BRAIN:-${D}(unset)${R}}"
+    printf "  %-11s %s\n" "root" "${ROOT_REPO:-${D}(unset)${R}}"
+    printf "  %-11s %s\n" "overlay" "${OVERLAY:-${D}(unset)${R}}"
+    printf "  %-11s %s\n" "orgoverlay" "${ORG_OVERLAY:-${D}(unset)${R}}"
+    printf "  %-11s %s\n" "brain" "${BRAIN:-${D}(unset)${R}}"
     tmp="$(build_file)"
     if [ -f "$TARGET" ] && cmp -s "$tmp" "$TARGET"; then
       echo "${G}in sync${R}"

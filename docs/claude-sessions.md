@@ -6,7 +6,7 @@ and the last thing it was asked to do, newest activity on top. It can also searc
 every session on disk (live or closed) to recover one you closed.
 
 The whole thing is one script: `scripts/a_c_claude_sessions`. It is on PATH once
-the my_setup shell profile is sourced, so you run it by name from anywhere.
+the agentic-devkit shell profile is sourced, so you run it by name from anywhere.
 
 ## Run it once (no setup, nothing persistent)
 
@@ -28,7 +28,7 @@ a_c_claude_sessions --find "docker cleanup"   # find a session (live or closed) 
 ## Make it always-on (survives reboots)
 
 The launchd agents are **generated from this machine's own paths at install time**,
-so the same command works on any Mac that has the my_setup repo set up. Nothing is
+so the same command works on any Mac that has the agentic-devkit repo set up. Nothing is
 hardcoded to one machine (that is why there are no static plist files in the repo).
 
 ```bash
@@ -102,7 +102,7 @@ sentence you happened to type. The label is `<key> · <repo> · <what it is>`:
 ```
 PROJ-142 · billing-service · monthly invoice rollup
 PR #1458 · acme/webapp · Review this pull request
-my_setup · Improve session naming with ticket and PR detection
+agentic-devkit · Improve session naming with ticket and PR detection
 ```
 
 The key is worked out from what is already on disk, in this order:
@@ -196,7 +196,7 @@ a_c_claude_sessions --all                                 # every session, newes
 
 ## Taking it to another machine
 
-1. Get the my_setup repo on that machine and run `./install.sh` (see the repo
+1. Get the agentic-devkit repo on that machine and run `./install.sh` (see the repo
    README). That puts `scripts/` on PATH.
 2. `source ~/.zshrc` so `a_c_claude_sessions` resolves.
 3. For a one-off view: `a_c_claude_sessions --serve --tailscale`.
