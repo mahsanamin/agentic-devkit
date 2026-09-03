@@ -202,7 +202,9 @@ sync_one() {
   if [ "$before" != "$after" ]; then
     CHANGED=1
     # If the pull changed a memory source, the generated rules file is now stale.
-    if git -C "$repo" diff --name-only "$before" "$after" 2>/dev/null | grep -q '^machine/'; then
+    # Both trees that are composed INTO the generated file: the overlays' machine/ files and the
+    # core rules under memory/. Anything reached by an @import is read live and needs no rebuild.
+    if git -C "$repo" diff --name-only "$before" "$after" 2>/dev/null | grep -qE '^(machine|memory)/'; then
       MEMORY_TOUCHED=1
     fi
   fi
@@ -264,10 +266,19 @@ done
 # The rules file loads on every request, so a pulled change to machine/ must be applied
 # or this machine keeps running yesterday's rules.
 if [ "$MEMORY_TOUCHED" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
-  if command -v a_c_claude_memory >/dev/null 2>&1; then
+  # Every configured provider, not just one: the guidance is generated for Claude, Codex and
+  # Gemini from the same sources, so rebuilding one leaves the others running yesterday's rules
+  # with nothing to say so. a_c_agent_memory does all of them; the older single-provider command
+  # is the fallback for a machine that predates it.
+  if command -v a_c_agent_memory >/dev/null 2>&1; then
+    say "${D}a memory source changed upstream, rebuilding the guidance for every provider${R}"
+    a_c_agent_memory build >/dev/null 2>&1 \
+      && say "${G}rebuilt${R}  generated guidance (all providers)" \
+      || warn "a_c_agent_memory build failed, run it by hand"
+  elif command -v a_c_claude_memory >/dev/null 2>&1; then
     say "${D}a memory source changed upstream, rebuilding the rules file${R}"
     a_c_claude_memory build >/dev/null 2>&1 \
-      && say "${G}rebuilt${R}  ~/.claude/CLAUDE.md" \
+      && say "${G}rebuilt${R}  the generated rules file" \
       || warn "a_c_claude_memory build failed, run it by hand"
   fi
 fi
