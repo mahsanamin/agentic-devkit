@@ -68,6 +68,11 @@ STANDALONE="$MY_WORKFLOW_DIR/memory/core-rules-standalone.md"
 OVERLAY="${A_AGENT_OVERLAY_DIR:-${A_CLAUDE_OVERLAY_DIR:-}}"
 ORG_OVERLAY="${A_AGENT_ORG_OVERLAY_DIR:-}"
 BRAIN="${A_AGENT_BRAIN_DIR:-${A_CLAUDE_BRAIN_DIR:-}}"
+# The shared, company-wide brain. Separate from the private one because it answers a
+# different question: what a word means and who owns what, rather than what I am doing.
+# It is the most consulted repo in the setup, so it gets a path in the loaded file rather
+# than only a role name in the root repo's routing table.
+ORG_BRAIN="${A_AGENT_ORG_BRAIN_DIR:-}"
 MACHINE="${A_MACHINE_NAME:-}"
 RUNTIME_NAME="${AGENT_RUNTIME_NAME:-Claude Code}"
 RUNTIME_MAKER="${AGENT_RUNTIME_MAKER:-Anthropic}"
@@ -207,9 +212,25 @@ render_region() {
   echo "layout: \`$MY_WORKFLOW_DIR/docs/managed-claude.md\`."
   fi
 
+  if [ -n "$ORG_BRAIN" ]; then
+    echo ""
+    echo "## The shared brain - check it before you guess at a name"
+    echo ""
+    echo "Path: \`$ORG_BRAIN\`. **Read its \`AGENTS.md\` or \`CLAUDE.md\` entry point first**, it routes"
+    echo "you to exactly one file. This is the decoder ring for the organisation: what a codename"
+    echo "or acronym means, which repo owns a thing, which team to ask, which service serves a URL,"
+    echo "where the logs are."
+    echo ""
+    echo "Check it BEFORE answering from memory and before searching the code. An unfamiliar name"
+    echo "is the signal: guessing at one produces a confident wrong answer that nothing catches."
+    echo ""
+    echo "If the path is missing on this machine, skip it silently. A missing brain never blocks a"
+    echo "session."
+  fi
+
   if [ -n "$BRAIN" ]; then
     echo ""
-    echo "## The brain - check it before answering from memory"
+    echo "## My brain - check it before answering from memory"
     echo ""
     echo "Path: \`$BRAIN\`. **Read its \`AGENTS.md\` or \`CLAUDE.md\` entry point first** - it says which folder answers which"
     echo "kind of question, so you do not have to read or guess at the rest."
@@ -239,6 +260,7 @@ strip_frontmatter() {
 #   {{OVERLAY}}  -> $A_AGENT_OVERLAY_DIR       the private overlay repo
 #   {{ORG}}      -> $A_AGENT_ORG_OVERLAY_DIR   the org overlay repo
 #   {{ROOT}}     -> $A_ROOT_DIR                the root instruction repo
+#   {{ORGBRAIN}} -> $A_AGENT_ORG_BRAIN_DIR     the shared company brain repo
 #   {{BRAIN}}    -> $A_AGENT_BRAIN_DIR         the private brain repo
 #
 # `|` is the sed delimiter because every value is a path. An unset token expands to
@@ -248,6 +270,7 @@ expand_tokens() {
       -e "s|{{OVERLAY}}|$OVERLAY|g" \
       -e "s|{{ORG}}|$ORG_OVERLAY|g" \
       -e "s|{{ROOT}}|$ROOT_REPO|g" \
+      -e "s|{{ORGBRAIN}}|$ORG_BRAIN|g" \
       -e "s|{{BRAIN}}|$BRAIN|g"
 }
 
@@ -415,6 +438,7 @@ case "$CMD" in
     printf "  %-11s %s\n" "root" "${ROOT_REPO:-${D}(unset)${R}}"
     printf "  %-11s %s\n" "overlay" "${OVERLAY:-${D}(unset)${R}}"
     printf "  %-11s %s\n" "orgoverlay" "${ORG_OVERLAY:-${D}(unset)${R}}"
+    printf "  %-11s %s\n" "orgbrain" "${ORG_BRAIN:-${D}(unset)${R}}"
     printf "  %-11s %s\n" "brain" "${BRAIN:-${D}(unset)${R}}"
     tmp="$(build_file)"
     if [ -f "$TARGET" ] && cmp -s "$tmp" "$TARGET"; then

@@ -33,6 +33,7 @@ export A_PERSONAL_OVERLAY_DIR="${PRIVATE_DEVKIT_DIR:-}"
 # Sources for the generated global guidance (a_c_agent_memory reads these).
 export A_AGENT_OVERLAY_DIR="$A_PERSONAL_OVERLAY_DIR"
 export A_AGENT_ORG_OVERLAY_DIR="$A_ORG_OVERLAY_DIR"
+export A_AGENT_ORG_BRAIN_DIR="${ORG_BRAIN_DIR:-}"
 export A_AGENT_BRAIN_DIR="${PRIVATE_BRAIN_DIR:-}"
 export A_MACHINE_NAME="${MACHINE_NAME:-}"
 
