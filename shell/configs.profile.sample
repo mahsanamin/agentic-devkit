@@ -55,8 +55,10 @@ fi
 # Reads root.config when A_ROOT_DIR is set, maps roles to variable names, loads the
 # shared aliases and commands, and wires the org overlay. All of it in git.
 if [ -n "$A_ROOT_DIR" ] && [ -f "$A_ROOT_DIR/root.config" ]; then
-    source "$A_ROOT_DIR/root.config"
+    # local FIRST: every key in root.config is ${KEY:-default}, so a value set here survives
+    # and the paths derived from it follow. The other order expands them before the override.
     [ -f "$A_ROOT_DIR/root.local.config" ] && source "$A_ROOT_DIR/root.local.config"
+    source "$A_ROOT_DIR/root.config"
     source "${DEVKIT_DIR}/shell/bootstrap.profile"
 else
     source "${MY_WORKFLOW_DIR}/shell/bootstrap.profile"

@@ -18,8 +18,10 @@ ulimit -n 10240 2>/dev/null || true
 
 ########################### The root repo: paths and machine values ####
 if [ -n "${A_ROOT_DIR:-}" ] && [ -f "$A_ROOT_DIR/root.config" ]; then
-    source "$A_ROOT_DIR/root.config"
+    # local FIRST: every key in root.config is ${KEY:-default}, so a value set here survives
+    # and the paths derived from it follow. The other order expands them before the override.
     [ -f "$A_ROOT_DIR/root.local.config" ] && source "$A_ROOT_DIR/root.local.config"
+    source "$A_ROOT_DIR/root.config"
 fi
 
 ########################### Roles -> the variable names the tooling expects ####

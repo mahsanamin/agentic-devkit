@@ -81,8 +81,10 @@ One file stays outside git, because something has to know where the root repo is
 ```zsh
 export A_ROOT_DIR="/path/to/the/root/repo"
 if [ -f "$A_ROOT_DIR/root.config" ]; then
-    source "$A_ROOT_DIR/root.config"
+    # local FIRST: every key in root.config is ${KEY:-default}, so a value set here survives
+    # and the paths derived from it follow. The other order expands them before the override.
     [ -f "$A_ROOT_DIR/root.local.config" ] && source "$A_ROOT_DIR/root.local.config"
+    source "$A_ROOT_DIR/root.config"
     source "${DEVKIT_DIR}/shell/bootstrap.profile"
 fi
 ```
