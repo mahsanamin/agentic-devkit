@@ -58,9 +58,8 @@ variable names this devkit's scripts already use.
 | Key | Becomes | Used for |
 |---|---|---|
 | `MACHINE_NAME` | `A_MACHINE_NAME` | selects `machine/<name>.md` in an overlay |
-| `MACHINE_TYPE` | `a_machine_type` | with `ORG_SLUG`, selects `<slug>.<type>.profile` in the org overlay |
+| `MACHINE_TYPE` | `a_machine_type` | OS family, `macos` or `linux`. Empty is normal: derived from `uname`. With `ORG_SLUG`, selects `<slug>.<type>.profile` in the org overlay |
 | `ORG_SLUG` | `a_company_name` | the same |
-| `GDRIVE_DIR`, `GDRIVE_CHATS_DIR` | `a_dir_gd`, `a_dir_gc` | the `cd_gd` and `cd_gc` aliases |
 
 Machine values belong in `root.local.config`, which is gitignored, so one machine's values never
 land in the repo.

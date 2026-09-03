@@ -29,13 +29,6 @@ fi
 if [ -n "$a_dir_g_repos" ]; then
     alias cd_g="cd ${a_dir_g_repos}"
 fi
-# Optional cloud-drive directories. Quoted, because these paths usually contain spaces.
-if [ -n "$a_dir_gd" ]; then
-    alias cd_gd="cd \"${a_dir_gd}\""
-fi
-if [ -n "$a_dir_gc" ]; then
-    alias cd_gc="cd \"${a_dir_gc}\""
-fi
 alias cd_wf="cd ${MY_WORKFLOW_DIR}"
 
 ########################### Secrets & Keys ####

@@ -41,16 +41,24 @@ export A_MACHINE_NAME="${MACHINE_NAME:-}"
 
 # Machine and org identity, used to find the org shell profile below.
 export a_company_name="${ORG_SLUG:-${a_company_name:-}}"
-export a_machine_type="${MACHINE_TYPE:-${a_machine_type:-}}"
+# OS family, which is what the org profile below actually varies by. An explicit value still
+# wins; otherwise it is derived, so a machine can never carry a hand-typed value that stopped
+# being true when its OS changed.
+_a_mt="${MACHINE_TYPE:-${a_machine_type:-}}"
+if [ -z "$_a_mt" ]; then
+    case "$(uname -s)" in
+        Darwin) _a_mt="macos" ;;
+        Linux)  _a_mt="linux" ;;
+    esac
+fi
+export a_machine_type="$_a_mt"
+unset _a_mt
 
 # Repo tiers, which become the cd_p / cd_w / cd_g aliases in generic.profile.
 export a_dir_w_repos="${ORG_REPOS_DIR:-${a_dir_w_repos:-}}"
 export a_dir_p_repos="${PERSONAL_REPOS_DIR:-${a_dir_p_repos:-}}"
 export a_dir_g_repos="${GLOBAL_REPOS_DIR:-${a_dir_g_repos:-}}"
 
-# Optional machine directories. Empty is normal; the alias simply is not defined.
-export a_dir_gd="${GDRIVE_DIR:-${a_dir_gd:-}}"
-export a_dir_gc="${GDRIVE_CHATS_DIR:-${a_dir_gc:-}}"
 
 ########################### Shared aliases, exports and commands ####
 if [ -n "$MY_WORKFLOW_DIR" ] && [ -f "$MY_WORKFLOW_DIR/shell/generic.profile" ]; then

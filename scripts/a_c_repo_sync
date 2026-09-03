@@ -25,8 +25,15 @@
 #   a_c_repo_sync --pull-only     # pull only; never commit or push
 #   a_c_repo_sync -q              # quiet: only warnings and errors (for timers)
 #
-# Which repos, by default: $A_CLAUDE_OVERLAY_DIR and $A_CLAUDE_BRAIN_DIR. Override with
-# A_SYNC_REPOS as a colon-separated list of paths.
+# Which repos, by default: every repo the root instruction repo names in root.config that is
+# cloned here (the root repo itself, both brains, the core toolkit, both overlays, the agent
+# framework). They are all shared across machines, so they are all kept in step. On a machine
+# with no root repo it falls back to the overlay and the brain. Override with A_SYNC_REPOS as a
+# colon-separated list of paths.
+#
+# The commit half is skipped for a repo sitting on a non-default branch with local changes,
+# because that is work in progress, and it never passes --no-verify, because a pre-commit gate
+# is the only thing keeping company content out of the repos that must not have it.
 
 set -uo pipefail
 
@@ -64,13 +71,40 @@ if [ "${#ARGS[@]}" -gt 0 ]; then
 elif [ -n "${A_SYNC_REPOS:-}" ]; then
   IFS=':' read -r -a REPOS <<< "$A_SYNC_REPOS"
 else
-  [ -n "${A_CLAUDE_OVERLAY_DIR:-}" ] && REPOS+=("$A_CLAUDE_OVERLAY_DIR")
-  [ -n "${A_CLAUDE_BRAIN_DIR:-}" ]   && REPOS+=("$A_CLAUDE_BRAIN_DIR")
+  # With a root instruction repo, the set to keep in step is every repo it names: they are all
+  # shared across machines, and a stale one is how two boxes start disagreeing. The role
+  # variables are NOT exported into a child process (root.config assigns, it does not export),
+  # so read them here rather than hoping they are in the environment.
+  if [ -z "${A_ROOT_DIR:-}" ] && [ -f "$HOME/my_settings/a_configs.profile" ]; then
+    A_ROOT_DIR="$(sed -n 's/^export A_ROOT_DIR="\(.*\)"$/\1/p' "$HOME/my_settings/a_configs.profile" | head -1)"
+  fi
+  if [ -n "${A_ROOT_DIR:-}" ] && [ -f "$A_ROOT_DIR/root.config" ]; then
+    # local first: every key in root.config is ${KEY:-default}, so these win.
+    # shellcheck disable=SC1090,SC1091
+    [ -f "$A_ROOT_DIR/root.local.config" ] && . "$A_ROOT_DIR/root.local.config"
+    # shellcheck disable=SC1090,SC1091
+    . "$A_ROOT_DIR/root.config"
+    for _role_dir in "${ROOT_DIR:-}" "${ORG_BRAIN_DIR:-}" "${PRIVATE_BRAIN_DIR:-}" \
+                     "${DEVKIT_DIR:-}" "${ORG_DEVKIT_DIR:-}" "${PRIVATE_DEVKIT_DIR:-}" \
+                     "${AGENT_FRAMEWORK_DIR:-}"; do
+      # An empty role is normal: that repo is not wanted on this machine.
+      [ -n "$_role_dir" ] && [ -d "$_role_dir/.git" ] && REPOS+=("$_role_dir")
+    done
+    unset _role_dir
+  fi
+  # Standalone machine, or a root repo that named nothing here. A_CLAUDE_* is the older name.
+  if [ "${#REPOS[@]}" -eq 0 ]; then
+    for _d in "${A_AGENT_OVERLAY_DIR:-${A_CLAUDE_OVERLAY_DIR:-}}" \
+              "${A_AGENT_BRAIN_DIR:-${A_CLAUDE_BRAIN_DIR:-}}"; do
+      [ -n "$_d" ] && REPOS+=("$_d")
+    done
+    unset _d
+  fi
 fi
 
 if [ "${#REPOS[@]}" -eq 0 ]; then
-  err "nothing to sync: set A_CLAUDE_OVERLAY_DIR / A_CLAUDE_BRAIN_DIR in your profile,"
-  err "or pass repo paths, or set A_SYNC_REPOS."
+  err "nothing to sync: no root instruction repo (A_ROOT_DIR) and no overlay or brain"
+  err "configured. Pass repo paths, or set A_SYNC_REPOS."
   exit 2
 fi
 
@@ -168,22 +202,43 @@ sync_one() {
   if [ "$before" != "$after" ]; then
     CHANGED=1
     # If the pull changed a memory source, the generated rules file is now stale.
-    if git -C "$repo" diff --name-only "$before" "$after" 2>/dev/null | grep -q '^machine/'; then
+    # Both trees that are composed INTO the generated file: the overlays' machine/ files and the
+    # core rules under memory/. Anything reached by an @import is read live and needs no rebuild.
+    if git -C "$repo" diff --name-only "$before" "$after" 2>/dev/null | grep -qE '^(machine|memory)/'; then
       MEMORY_TOUCHED=1
     fi
   fi
 
   [ "$PULL_ONLY" -eq 1 ] && return 0
 
+  # The default set now covers every repo the root names, which includes ones where real feature
+  # work happens, not just the overlay and the brain. conduct.md keeps a main checkout on its
+  # default branch and clean, so local changes on any other branch mean someone is mid-change:
+  # pull it, but never sweep that into a sync commit nobody reviewed.
+  local default_branch
+  default_branch="$(git -C "$repo" symbolic-ref --short -q refs/remotes/origin/HEAD || true)"
+  default_branch="${default_branch#origin/}"
+  [ -n "$default_branch" ] || default_branch="main"
+  if [ -n "$(git -C "$repo" status --porcelain)" ] && [ "$branch" != "$default_branch" ]; then
+    warn "$name is on $branch with local changes: pulled, but not committed. Finish it yourself."
+    return 0
+  fi
+
   # --- commit whatever is local ---
   if [ -n "$(git -C "$repo" status --porcelain)" ]; then
     git -C "$repo" add -A
-    if git -C "$repo" commit --quiet --no-verify \
+    # Deliberately NOT --no-verify. Two of these repos must never receive company content and
+    # the only mechanical thing stopping that is their pre-commit gate; a sync that skipped it
+    # would push past the one check that matters. A refused commit is left for a human: the
+    # content is in the wrong repo, which is not something to retry around.
+    if git -C "$repo" commit --quiet \
         -m "sync: ${A_MACHINE_NAME:-$(hostname)} $(date -u '+%Y-%m-%d %H:%M:%S') UTC" 2>/dev/null; then
       say "${G}committed${R} $name ${D}(local changes)${R}"
       CHANGED=1
     else
-      warn "$name: nothing committed (empty change or hook refused)"
+      warn "$name: nothing committed (empty change, or a commit hook refused it)"
+      warn "$name: if the gate refused it, the change is in the wrong repo. Look, do not retry."
+      return 1
     fi
   fi
 
@@ -211,10 +266,19 @@ done
 # The rules file loads on every request, so a pulled change to machine/ must be applied
 # or this machine keeps running yesterday's rules.
 if [ "$MEMORY_TOUCHED" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
-  if command -v a_c_claude_memory >/dev/null 2>&1; then
+  # Every configured provider, not just one: the guidance is generated for Claude, Codex and
+  # Gemini from the same sources, so rebuilding one leaves the others running yesterday's rules
+  # with nothing to say so. a_c_agent_memory does all of them; the older single-provider command
+  # is the fallback for a machine that predates it.
+  if command -v a_c_agent_memory >/dev/null 2>&1; then
+    say "${D}a memory source changed upstream, rebuilding the guidance for every provider${R}"
+    a_c_agent_memory build >/dev/null 2>&1 \
+      && say "${G}rebuilt${R}  generated guidance (all providers)" \
+      || warn "a_c_agent_memory build failed, run it by hand"
+  elif command -v a_c_claude_memory >/dev/null 2>&1; then
     say "${D}a memory source changed upstream, rebuilding the rules file${R}"
     a_c_claude_memory build >/dev/null 2>&1 \
-      && say "${G}rebuilt${R}  ~/.claude/CLAUDE.md" \
+      && say "${G}rebuilt${R}  the generated rules file" \
       || warn "a_c_claude_memory build failed, run it by hand"
   fi
 fi
