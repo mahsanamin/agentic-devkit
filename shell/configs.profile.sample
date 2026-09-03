@@ -1,61 +1,63 @@
 #!/bin/zsh
 
-########################### Machine-Specific Configuration ####
-# Copy this file to ~/my_settings/configs.profile and customize.
-#
-# Then add to your ~/.zshrc (or ~/.bashrc):
+########################### The one file that is not in git ####
+# Copy to ~/my_settings/configs.profile, then add to ~/.zshrc (or ~/.bashrc):
 #   source ~/my_settings/configs.profile
+#
+# Keep it as small as it starts. Everything else lives in git:
+#   logic  -> agentic-devkit/shell/bootstrap.profile
+#   values -> your root repo's root.config, and root.local.config for this machine
+#
+# There are two ways to run. Pick one.
 
-# Machine type: 'm1' for Apple Silicon, 'i7' for Intel
-export a_machine_type='m1'
+########################### Mode 1: with a root instruction repo (preferred) ####
+# One repo owns every path on this machine. Set this and you are done: the machine
+# name, the repo tiers, the overlays and the brain all come from its root.config.
+export A_ROOT_DIR=''
 
-# Organization name (used to load org-specific profile from shell/<org>.<machine>.profile)
-# Leave empty to skip org-specific loading
-export a_company_name=''
+########################### Mode 2: standalone, no root repo ####
+# Only used when A_ROOT_DIR is empty. Set the values by hand instead.
+if [ -z "$A_ROOT_DIR" ]; then
+    # Machine type: 'm1' for Apple Silicon, 'i7' for Intel.
+    export a_machine_type='m1'
+    # Organization name. Loads <org>.<machine>.profile from your org overlay, if you have one.
+    export a_company_name=''
 
-# Your repos directories - used by the cd_p / cd_w / cd_g aliases.
-# Leave any of them empty to skip that alias.
-export a_dir_p_repos='/path/to/personal/repos'
-export a_dir_w_repos='/path/to/work/repos'
-# Global/shared repos - the ones that are neither personal nor work-specific
-# (this setup itself, shared tooling, dotfiles).
-export a_dir_g_repos='/path/to/global/repos'
+    # Repo tiers, which become the cd_p / cd_w / cd_g aliases. Empty skips that alias.
+    export a_dir_p_repos='/path/to/personal/repos'
+    export a_dir_w_repos='/path/to/work/repos'
+    export a_dir_g_repos='/path/to/global/repos'
 
-# Where this repo (agentic-devkit) is cloned
-export MY_WORKFLOW_DIR="${a_dir_p_repos}/agentic-devkit"
+    # Where this repo is cloned.
+    export MY_WORKFLOW_DIR="${a_dir_p_repos}/agentic-devkit"
 
-########################### Agentic Machine Identity ####
-# This machine's name, as an agent should introduce it. Pick something distinctive;
-# it does not have to match the hostname. Used by a_c_agent_memory to select the
-# machine profile at $A_AGENT_OVERLAY_DIR/machine/$A_MACHINE_NAME.md
-export A_MACHINE_NAME=''
+    # This machine's name, as an agent should introduce it. It does not have to match
+    # the hostname. Selects machine/$A_MACHINE_NAME.md in your overlay.
+    export A_MACHINE_NAME=''
 
-# Private overlay repo: personal-only skills, this machine's identity + glossary.
-# Leave empty if you have no overlay - the memory build still works without it.
-export A_AGENT_OVERLAY_DIR=''
+    # Optional overlays and brain. Empty is fine, the build still works without them.
+    export A_AGENT_OVERLAY_DIR=''
+    export A_AGENT_ORG_OVERLAY_DIR=''
+    export A_AGENT_BRAIN_DIR=''
 
-# Private brain repo: durable knowledge (projects, decisions, people, setups).
-# Leave empty if you have no brain yet.
-export A_AGENT_BRAIN_DIR=''
+    # Optional cloud drive, which becomes cd_gd and cd_gc.
+    export a_dir_gd=''
+    export a_dir_gc=''
+fi
 
-# Backwards compatibility for older overlay scripts.
-export A_CLAUDE_OVERLAY_DIR="$A_AGENT_OVERLAY_DIR"
-export A_CLAUDE_BRAIN_DIR="$A_AGENT_BRAIN_DIR"
-
-# Optional: Google Drive path (uncomment and set if needed)
-# export a_dir_gd='/Users/YOUR_USER/Library/CloudStorage/GoogleDrive-YOU@EMAIL/My\ Drive'
-
-########################### Task Suite ####
-# Default zellij SESSION for every task start (a_c_task_start and the source
-# fronts: a_c_jira_task_start / a_c_github_issue_fix / a_c_mdnest_task_start).
-# Set it and each task opens as a tab in that session instead of taking over the
-# current terminal; the -z flag still overrides per-call. Leave it unset to stay
-# in the current terminal.
+########################### Optional: task suite defaults ####
+# Default zellij session for every task start. Unset keeps tasks in this terminal.
 # export A_C_TASK_ZELLIJ_SESSION='work'
-
-# Default Jira project key, so a bare ticket number resolves (123 -> PROJ-123).
+# Default ticket project key, so a bare number resolves (123 -> PROJ-123).
 # export A_TASK_DEFAULT_KEY='PROJ'
 
-########################### Load Generic Profile ####
-# This loads all shared aliases, exports, and utility commands
-source "${MY_WORKFLOW_DIR}/shell/generic.profile"
+########################### Hand off to the devkit ####
+# Reads root.config when A_ROOT_DIR is set, maps roles to variable names, loads the
+# shared aliases and commands, and wires the org overlay. All of it in git.
+if [ -n "$A_ROOT_DIR" ] && [ -f "$A_ROOT_DIR/root.config" ]; then
+    source "$A_ROOT_DIR/root.config"
+    [ -f "$A_ROOT_DIR/root.local.config" ] && source "$A_ROOT_DIR/root.local.config"
+    source "${DEVKIT_DIR}/shell/bootstrap.profile"
+else
+    source "${MY_WORKFLOW_DIR}/shell/bootstrap.profile"
+fi

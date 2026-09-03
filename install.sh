@@ -119,7 +119,9 @@ wire_shell() {
         else
             mkdir -p "$HOME/my_settings"
             # Copy sample, then hard-set MY_WORKFLOW_DIR to the real path.
-            sed "s|^export MY_WORKFLOW_DIR=.*|export MY_WORKFLOW_DIR='$REPO_ROOT'|" \
+            # The line may be indented (it sits inside the standalone branch of the
+            # sample), so match leading whitespace and put it back.
+            sed "s|^\([[:space:]]*\)export MY_WORKFLOW_DIR=.*|\1export MY_WORKFLOW_DIR='$REPO_ROOT'|" \
                 "$REPO_ROOT/shell/configs.profile.sample" > "$profile"
             say "  ${GREEN}created${NC}   $profile ${DIM}(MY_WORKFLOW_DIR set; edit the rest to taste)${NC}"
         fi
