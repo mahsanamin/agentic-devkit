@@ -28,6 +28,10 @@ while [ -L "$SOURCE" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 ENGINE="$SCRIPT_DIR/a_c_claude_memory"
+# The wrapper owns the public core it renders. Do not let a stale shell value
+# redirect the engine to an old checkout after the devkit moves or is renamed.
+# A_AGENT_CORE_DIR remains available for isolated tests and packaged layouts.
+CORE_DIR="${A_AGENT_CORE_DIR:-$(cd -P "$SCRIPT_DIR/.." && pwd)}"
 
 provider="all"
 args=()
@@ -80,6 +84,7 @@ for p in "${providers[@]}"; do
   AGENT_RUNTIME_PROVIDER="$p" \
     AGENT_RUNTIME_NAME="$runtime_name" \
     AGENT_RUNTIME_MAKER="$runtime_maker" \
+    MY_WORKFLOW_DIR="$CORE_DIR" \
     CLAUDE_MEMORY_FILE="$target" \
     "$ENGINE" ${args[@]+"${args[@]}"} || rc=$?
 done

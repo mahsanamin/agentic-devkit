@@ -115,6 +115,10 @@ mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.gemini"
 printf '%s\n' '# personal Claude note' > "$HOME/.claude/CLAUDE.md"
 printf '%s\n' '# personal Codex note' > "$HOME/.codex/AGENTS.md"
 printf '%s\n' '# personal Gemini note' > "$HOME/.gemini/GEMINI.md"
+# A long-running agent can retain the checkout's old name after the shell
+# bootstrap is updated. The wrapper must render from the checkout it belongs to,
+# not from that stale inherited value.
+export MY_WORKFLOW_DIR="$TEST_HOME/checkout-that-no-longer-exists"
 "$REPO_ROOT/scripts/a_c_agent_memory" build >/dev/null
 
 for target in \
@@ -126,6 +130,8 @@ for target in \
 done
 
 "$REPO_ROOT/scripts/a_c_agent_memory" check >/dev/null
+grep -Fq "core     $REPO_ROOT/memory/core-rules.md" "$HOME/.codex/AGENTS.md" \
+  || fail "memory wrapper trusted a stale MY_WORKFLOW_DIR"
 
 grep -q 'rendered for \*\*Claude Code\*\*, made by \*\*Anthropic\*\*' "$HOME/.claude/CLAUDE.md" \
   || fail "Claude global guidance has the wrong runtime identity"
