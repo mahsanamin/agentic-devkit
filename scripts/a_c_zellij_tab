@@ -73,6 +73,11 @@ done
 
 command -v zellij >/dev/null 2>&1 || { echo "$prog: zellij not found on PATH" >&2; exit 3; }
 
+# This script's own directory, i.e. the toolkit's scripts/. Baked into any
+# launcher we generate so the tab can find a_c_* / a_g_* by name (see the block
+# in step 3 for why that is not automatic).
+_zt_scripts_dir="$(cd "$(dirname "$0")" && pwd)"
+
 # --- helpers (self-contained so any caller can use this without sourcing) -----
 
 # Echo the state of session $1: running | exited | absent.
@@ -216,6 +221,20 @@ else
             # (inherited from a non-interactive caller); dumb is as useless as none.
             printf 'case "${TERM:-}" in ""|dumb|unknown) export TERM=xterm-256color ;; esac\n'
             printf 'export LANG="${LANG:-en_US.UTF-8}"\n'
+            # Put this toolkit's scripts/ on PATH inside the tab. Those commands
+            # are reachable by bare name only because shell/generic.profile adds
+            # the directory, and that profile is an interactive-shell thing: the
+            # environment the zellij SERVER hands a pane has never seen it. So a
+            # --cmd (or any script it runs) failed with
+            # "a_c_claude_remote: not found" while the same command worked when
+            # typed by hand. Resolved from THIS script's location and baked in as
+            # a literal, because the launcher runs later with none of our
+            # variables set. Keep in step with a_task_emit_env_hygiene in
+            # a_s_task_common.sh, which carries the same block.
+            printf 'case ":$PATH:" in\n'
+            printf '    *:%s:*) ;;\n' "$_zt_scripts_dir"
+            printf '    *) PATH=%s:"$PATH"; export PATH ;;\n' "$_zt_scripts_dir"
+            printf 'esac\n'
             printf 'cd %q 2>/dev/null\n' "$cwd"
             printf '%s\n' "$cmd"
             printf 'exec "${SHELL:-/bin/zsh}" -i\n'

@@ -47,18 +47,36 @@ gh pr view <N> --json headRefName,baseRefName,headRefOid,state,isCrossRepository
 ```
 Record: `headRefName` (the branch the PR is from — what you check out), `baseRefName` (merge target the review compares against), `headRefOid` (the live head SHA, for the done-check), and `isCrossRepository` (fork PR?).
 
-### 4. Create a worktree on the PR's **head branch**, updated
-Worktrees live beside the main repo, matching the layout used everywhere else:
-`WT="$(dirname "$REPO_PATH")/WorkTrees/$(basename "$REPO_PATH")/<dir>"`.
+### 4. Create the worktree with `a_c_review_pr`, never by hand
+**Do not run `git worktree add` yourself, and do not write a launcher script.**
+`a_c_review_pr` already does the whole job: it resolves the repo, fetches, picks
+the right strategy for a same-repo vs a fork PR, verifies the checked-out HEAD
+against the live PR head, and tears the worktree down afterwards. Call it:
 
-- **Fetch latest first** so the branch is up to date: `git fetch origin`.
-- **Same-repo PR** (`isCrossRepository=false`) — check out the *actual* head branch so you can even push fixes, updated to the remote head:
-  - `LOCAL_BR="$headRefName"`, `WT=".../WorkTrees/<project>/${headRefName//\//-}"`.
-  - If `$headRefName` is already checked out in another worktree, reuse that worktree (`git worktree list`) and `git -C <wt> pull --ff-only` instead of creating a second one. Otherwise:
-    `git worktree add -B "$LOCAL_BR" "$WT" "origin/$headRefName"` (the `-B` resets it to the fresh remote head).
-- **Fork PR** (`isCrossRepository=true`) — you can't track a fork branch by name cleanly, so fetch the PR head ref (always present on the base repo) into a review branch:
-  - `git fetch origin "pull/$N/head"` then `LOCAL_BR="pr-$N-review"`, `git worktree add -b "$LOCAL_BR" "$WT" FETCH_HEAD`. Note in the report that fixes can't be pushed back to the fork from here.
-- **Verify before reviewing:** print the worktree path, the checked-out branch, and confirm `git -C "$WT" rev-parse HEAD` equals `headRefOid`. If it doesn't, fetch again / fix before proceeding. `cd "$WT"`.
+```bash
+"$MY_WORKFLOW_DIR/scripts/a_c_review_pr" <pr-url-or-number>
+```
+
+Use the absolute path as written. `scripts/` is only on `PATH` for an
+interactive shell, so a bare `a_c_review_pr` resolves when you type it and fails
+inside a launcher, a zellij pane, or a scheduled run.
+
+Two rules that exist because breaking them has cost real debugging time:
+
+- **Never hand-roll the worktree.** Duplicating the fetch-and-add logic here is
+  how a second, weaker implementation appears: the hand-rolled versions kept
+  missing the fork case, where the head branch does not exist on the base repo at
+  all and only `pull/<N>/head` works.
+- **Never write your own launcher script.** A generated `launch-pr<N>.sh` that
+  calls a devkit command by bare name dies with `a_c_claude_remote: not found`,
+  because nothing outside an interactive shell has `scripts/` on `PATH`. When a
+  session needs its own tab, call `a_c_zellij_tab` or `a_c_task_start`; both build
+  a launcher that sets `PATH` correctly.
+
+`a_c_review_pr` prints the worktree path and the branch it checked out. Read them
+from its output, `cd` there, and review. If it warns that HEAD does not match the
+PR head, stop and resolve that before reviewing: you would otherwise be reviewing
+a stale commit and reporting it as current.
 
 ### 4b. Announce that the review has started (`post=auto` only)
 Apply `a_r_l_pr_review`'s **Review-started announcement** verbatim. Before any code is read, post ONE top-level comment so the author knows a review is underway. Read the machine identity from the active provider's global guidance (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`) when present, and name the actual runtime (`Claude Code`, `Codex`, or `AGY`). If no agent identity exists, use only the runtime label and never invent a name.

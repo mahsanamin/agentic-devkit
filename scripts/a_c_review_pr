@@ -229,6 +229,13 @@ case "$LOCAL_BR" in
     *) git -C "$REPO_PATH" branch -D "$LOCAL_BR" 2>/dev/null || true ;;
 esac
 
+# THIS is the one place review worktrees are created. Two cases, and the fork
+# one is why hand-rolled copies keep breaking: on a fork PR the head branch does
+# not exist on the base repo at all, so `origin/<head_ref>` cannot be resolved
+# and only the `pull/<N>/head` ref works. a_sk_review_pr used to spell both cases
+# out for an agent to type by hand; it now calls this script instead. Do not add
+# a third implementation. (a_g_worktree_review also makes review worktrees, but
+# only from a branch or a same-repo PR, and it is sourced rather than executed.)
 echo "$prog: preparing worktree on $head_ref ..." >&2
 git fetch origin --quiet 2>/dev/null || true
 if [ "$is_fork" = true ]; then

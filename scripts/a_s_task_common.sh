@@ -513,6 +513,27 @@ a_task_emit_env_hygiene() {
     # from a non-interactive caller), and dumb is as useless to a TUI as no TERM.
     printf 'case "${TERM:-}" in ""|dumb|unknown) export TERM=xterm-256color ;; esac\n'
     printf 'export LANG="${LANG:-en_US.UTF-8}"\n'
+    # Put this toolkit's scripts/ on PATH. Everything in scripts/ (a_c_*, a_g_*,
+    # a_s_*) is only reachable by bare name because shell/generic.profile adds
+    # that directory, and the profile is an INTERACTIVE-shell thing: not in a
+    # login shell, not in a bare one, and above all not in the environment the
+    # zellij server hands to a pane. So a launcher, or anything a launcher runs,
+    # got "a_c_claude_remote: not found" while the very same command worked when
+    # typed by hand. Baked in as a literal at generation time, since the launcher
+    # runs later, elsewhere, with none of our variables set.
+    printf 'case ":$PATH:" in\n'
+    printf '    *:%s:*) ;;\n' "$(a_task_scripts_dir)"
+    printf '    *) PATH=%s:"$PATH"; export PATH ;;\n' "$(a_task_scripts_dir)"
+    printf 'esac\n'
+}
+
+# Absolute path of this toolkit's scripts/ directory. Derived from this library's
+# own location, NOT from A_C_WORKFLOW_DIR/MY_WORKFLOW_DIR, so it is still right in
+# a context where the profile never ran and those variables are unset, which is
+# exactly the context that needs it.
+a_task_scripts_dir() {
+    local src="${BASH_SOURCE[0]:-${(%):-%x}}"
+    printf '%s' "$(cd "$(dirname "$src")" && pwd)"
 }
 
 # Write a throwaway launcher script that runs a command (the a_c_claude_remote
