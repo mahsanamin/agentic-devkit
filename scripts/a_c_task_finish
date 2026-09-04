@@ -27,8 +27,13 @@ _a_c_task_finish_main() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             -v|--verify|-f|--force|--keep-remote) passthru+=("$1") ;;
+            # -y/--yes/--auto are aliases for --force. a_c_task_start spells its
+            # own confirmation skip -y, so reaching for -y here is the obvious
+            # move and used to fail with "Unknown flag: -y", sending you to the
+            # help to learn this one command calls it -f.
+            -y|--yes|--auto) passthru+=(--force) ;;
             -h|--help)
-                echo "Usage: a_c_task_finish [<ticket-or-branch>] [-v|--verify] [-f|--force] [--keep-remote]"
+                echo "Usage: a_c_task_finish [<ticket-or-branch>] [-v|--verify] [-f|--force|-y] [--keep-remote]"
                 return 0 ;;
             -*) echo -e "${A_T_RED}Unknown flag: $1${A_T_NC}"; return 1 ;;
             *)  key="$1" ;;

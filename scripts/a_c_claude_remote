@@ -128,6 +128,25 @@ fi
 # goes last (with no name, or with the name right after it) so the optional-value
 # flag never swallows the prompt.
 cmd=(claude)
+# --name/-n sets the SESSION's display name, which is what the peer registry
+# (~/.claude/sessions/<pid>.json) publishes and what another session must use to
+# address this one. Without it the name auto-derives from the directory, e.g. a
+# tab called "PROJ-123" would answer to "feature-proj-123-add-login-44" instead,
+# so a caller that named the tab still could not message the session it started.
+# Setting both from one value keeps the tab, Remote Control and the peer name
+# identical by construction. An explicit -n/--name via -- wins, since the caller
+# asked for it deliberately.
+# Length-guard the loop: under `set -u` on bash 3.2 (macOS), expanding an empty
+# array with "${a[@]}" is an unbound-variable error, not an empty list.
+_cr_has_claude_name=0
+if [[ ${#passthrough[@]} -gt 0 ]]; then
+    for _cr_a in "${passthrough[@]}"; do
+        case "$_cr_a" in -n|--name|--name=*) _cr_has_claude_name=1 ;; esac
+    done
+fi
+if [[ -n "$name" && $_cr_has_claude_name -eq 0 ]]; then
+    cmd+=(-n "$name")
+fi
 [[ -n "$prompt" ]] && cmd+=("$prompt")
 [[ ${#passthrough[@]} -gt 0 ]] && cmd+=("${passthrough[@]}")
 cmd+=(--remote-control)
