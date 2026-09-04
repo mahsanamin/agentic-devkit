@@ -74,6 +74,15 @@ BRAIN="${A_AGENT_BRAIN_DIR:-${A_CLAUDE_BRAIN_DIR:-}}"
 # than only a role name in the root repo's routing table.
 ORG_BRAIN="${A_AGENT_ORG_BRAIN_DIR:-}"
 MACHINE="${A_MACHINE_NAME:-}"
+# A rules file with no machine name is worse than no rules file: the session cannot say which
+# box it is on, and every "say your machine name" rule below becomes a lie. Refuse to build one.
+if [ -z "$MACHINE" ]; then
+  echo "a_c_claude_memory: A_MACHINE_NAME is not set, refusing to build." >&2
+  echo "  It comes from MACHINE_NAME in the root repo's root.local.config." >&2
+  echo "  Open a new shell so the profile re-exports it, or run:" >&2
+  echo "    A_MACHINE_NAME=\"<name>\" $(basename "$0") build" >&2
+  exit 1
+fi
 RUNTIME_NAME="${AGENT_RUNTIME_NAME:-Claude Code}"
 RUNTIME_MAKER="${AGENT_RUNTIME_MAKER:-Anthropic}"
 # The root repo, when there is one. It owns the paths and the rules that outlive this
@@ -136,6 +145,34 @@ render_region() {
   echo "provider. When asked who you are, state both the machine identity and this runtime. Never"
   echo "claim to be a different provider, and never copy another agent's provider or model name."
   echo "Only name an exact model when the current runtime exposes it reliably."
+  echo ""
+
+  # The machine identity is GENERATED from MACHINE_NAME, not read from a per-machine file.
+  # Every box runs the same setup; only the name and the paths differ, and both of those
+  # already have exactly one home (root.local.config and root.config). A per-machine rules
+  # file just restated them, five times, and drifted.
+  echo "## This machine is $MACHINE"
+  echo ""
+  echo "**Say \`$MACHINE\` whenever the host is even slightly in question:** asked who or where you"
+  echo "are, asked what you can see, starting work that touches machine-specific state (paths, keys,"
+  echo "scheduled jobs, containers, mounted volumes), or reporting that something was installed or"
+  echo "changed here. More than one machine runs this setup, and a session that does not name its"
+  echo "host cannot be placed."
+  echo ""
+  echo "**The name is read, never derived.** It is \`MACHINE_NAME\` in this machine's own"
+  echo "\`root.local.config\`. Do not build it from the hostname, and do not copy the shape of another"
+  echo "box's name: a naming convention describes names that were chosen, it is not a formula for"
+  echo "generating one. A confidently invented machine name is worse than no name, because it looks"
+  echo "like an answer."
+  echo ""
+  echo "The name labels this configured setup. It is not a claim to be a different system. Asked who"
+  echo "you are, answer \"$MACHINE, the agent on this machine\", then state the actual runtime and"
+  echo "provider from the section above."
+  echo ""
+  echo "**Keep the name internal**, to the terminal, logs, and memory. It does not go in PR bodies,"
+  echo "ticket comments, or chat drafts, where an unexplained third-party name confuses readers."
+  echo ""
+  echo "What is genuinely different about this box (and only that) lives in the fleet doc, not here."
   echo ""
 
   if [ -n "$ROOT_REPO" ]; then
