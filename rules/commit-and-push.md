@@ -28,9 +28,12 @@ of "done".
 
 ## The hard gates (these, and nothing else, stop a push)
 
-- **Never commit or push on `main` / `master` / the default branch**, except in the personal
-  single-maintainer repos where committing on the default branch is the norm. Everywhere else,
-  branch or worktree first, always.
+- **Never commit or push on `main` / `master` / the default branch**, except in an adhoc
+  single-maintainer repo that declares itself push-to-default in its own root `AGENTS.md` /
+  `CLAUDE.md`. That declaration is the authorization — do not infer the exception from a repo
+  looking personal, and do not carry a list of such repos here, because the list would rot on
+  every machine that has not pulled. This repo is one of them. Everywhere else, branch or
+  worktree first, always. Recorded 2026-09-04.
 - **Merging a PR is the user's call, never automatic.** Open the PR, let CI and review comments
   land, then hand it over.
 - **Force-push is gated separately.** `--force`, `-f`, and a `+refspec` push are never allowed
