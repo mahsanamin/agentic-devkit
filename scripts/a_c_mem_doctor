@@ -444,7 +444,7 @@ if [ "$RECLAIM" -eq 1 ]; then
     if [ -z "$RECLAIMABLE" ]; then
         log "  ${DIM}nothing to do${NC}"
     else
-        for pid in $(printf '%s\n' "$RECLAIMABLE" | awk '{print $3}'); do
+        for pid in $(printf '%s\n' "$RECLAIMABLE" | awk '{print $1}'); do
             [ -n "$pid" ] || continue
             desc=$(ps -o command= -p "$pid" 2>/dev/null | awk "$AWKLIB"'{ print label($0) }')
             [ -n "$desc" ] || continue
