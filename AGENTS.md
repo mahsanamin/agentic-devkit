@@ -7,7 +7,7 @@ My personal, generic developer setup. This repo wears two hats:
 
 If you only remember one thing: **live agent assets are symlinks back into this repo. Edit them here, commit them here.** See "The source-of-truth model" below.
 
-Everything here is deliberately generic: no company, client, or project specifics. Personal tooling and infrastructure references use neutral placeholders.
+**This repo is public on GitHub.** Pushing here publishes, so everything is deliberately generic: no employer, client, or project specifics - no internal repo, host, service, team, or ticket names, no internal URLs, and nothing that identifies where the work is done. Personal tooling and infrastructure references use neutral placeholders. That is a disclosure boundary, not a style preference; when a rule needs a private repo as its example, describe the shape instead of naming it.
 
 ## One setup, equal peers
 
