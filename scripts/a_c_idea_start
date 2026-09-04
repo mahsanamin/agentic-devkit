@@ -22,14 +22,21 @@
 #       --no-zellij         run in the current terminal, no zellij.        [default: off]
 #   -s, --safe              gentler posture: --permission-mode acceptEdits (auto-accepts
 #                           edits, still asks before bash/other tools).     [default: off]
-#   -y, --yolo              full auto (no prompts at all). This is ALREADY the default for
-#                           an idea sandbox, so -y is just an explicit alias.
+#   -y, --yolo              NO permission checks at all
+#                           (--dangerously-skip-permissions).              [default: off]
+#                           Needs bypass accepted on this machine once, else the
+#                           session opens a confirmation dialog and waits.
 #   -n, --dry-run           print the plan and exit; no side effects.      [default: off]
 #   -h, --help              show this help
 #
-# Permission posture DEFAULT: full auto (--dangerously-skip-permissions). A fresh
-# idea dir is your own empty greenfield sandbox, so Claude runs edits AND commands
-# with no gating. Use -s/--safe for the gentler acceptEdits posture.
+# Permission posture DEFAULT: --permission-mode auto (whatever
+# a_task_permission_mode resolves to). It runs edits AND commands without ever
+# stopping to ask, so an unattended idea session keeps going, while a genuinely
+# risky action is refused and the refusal goes to the model instead of blocking.
+# It is NOT --dangerously-skip-permissions: bypass has to be accepted once per
+# machine by a human, and until it is, the session opens a "Bypass Permissions
+# mode on?" dialog and waits, which is the opposite of unattended. Use -y/--yolo
+# for real bypass, or -s/--safe for the stricter acceptEdits posture.
 #
 # The idea dir root is $A_C_IDEAS_DIR, else <cd_w>/ideas (default
 # $HOME/repos/ideas). Anything after `--` is passed to claude and
@@ -44,16 +51,21 @@ prog="${0##*/}"
 here="$(cd "$(dirname "$0")" && pwd)"
 
 _tool() { if [ -x "$here/$1" ]; then printf '%s' "$here/$1"; else printf '%s' "$1"; fi; }
+
+# Load the shared helpers early, just for a_task_permission_mode(); the zellij
+# helpers are loaded again further down where they are used. Best-effort: if the
+# library is missing we fall back to a literal mode below.
+. "$here/a_s_task_common.sh" 2>/dev/null || true
 CLAUDE_REMOTE="$(_tool a_c_claude_remote)"
 
 usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 
-safe_mode=0; dry=0; no_zellij=0; zellij_session="${A_C_IDEAS_ZELLIJ_SESSION:-ideas}"
+safe_mode=0; yolo_mode=0; dry=0; no_zellij=0; zellij_session="${A_C_IDEAS_ZELLIJ_SESSION:-ideas}"
 idea=""; prompt=""; tab_arg=""; passthrough=(); after_ddash=0
 while [ "$#" -gt 0 ]; do
     if [ "$after_ddash" -eq 1 ]; then passthrough+=("$1"); shift; continue; fi
     case "$1" in
-        -y|--yolo)    : ;;    # full auto is already the default; kept as an explicit alias
+        -y|--yolo)    yolo_mode=1 ;;   # explicit: NO permission checks at all
         -s|--safe)    safe_mode=1 ;;
         -z|--zellij)  zellij_session="${2:-}"; shift ;;
         -t|--tab)     tab_arg="${2:-}"; shift ;;
@@ -81,9 +93,15 @@ tab="$(_sanitize "${tab_arg:-$idea}")"; [ -n "$tab" ] || tab="$safe"
 IDEAS_ROOT="${A_C_IDEAS_DIR:-${a_dir_w_repos:-$HOME/repos}/ideas}"
 IDEA_DIR="$IDEAS_ROOT/$safe"
 
-# Permission posture. Default is full auto (--dangerously-skip-permissions) for
-# a greenfield idea sandbox; -s/--safe steps down to acceptEdits; a permission
-# flag passed via `-- ...` overrides both.
+# Permission posture. Default is the same non-waiting mode the task flow uses (auto, via
+# a_task_permission_mode): it never stops to ask, so an unattended idea session
+# keeps going. It is deliberately NOT --dangerously-skip-permissions any more.
+# Bypass looks like the most convenient choice and is the opposite: on a machine
+# where the human has never accepted bypass, claude opens a machine-wide
+# "Bypass Permissions mode on?" confirmation and WAITS for a keypress, so the
+# tab that was supposed to run unattended just sits there. -y/--yolo still asks
+# for bypass explicitly, -s/--safe steps down to acceptEdits, and a permission
+# flag passed via `-- ...` overrides all of it.
 has_perm=0
 for a in ${passthrough[@]+"${passthrough[@]}"}; do
     case "$a" in --permission-mode|--permission-mode=*|--dangerously-skip-permissions|--bare) has_perm=1 ;; esac
@@ -91,7 +109,10 @@ done
 cr_extra=()
 if [ "$has_perm" -eq 1 ]; then :
 elif [ "$safe_mode" -eq 1 ]; then cr_extra+=(--permission-mode acceptEdits)
-else cr_extra+=(--dangerously-skip-permissions); fi
+elif [ "$yolo_mode" -eq 1 ]; then cr_extra+=(--dangerously-skip-permissions)
+elif command -v a_task_permission_mode >/dev/null 2>&1; then
+    cr_extra+=(--permission-mode "$(a_task_permission_mode)")
+else cr_extra+=(--permission-mode acceptEdits); fi
 [ "${#passthrough[@]}" -gt 0 ] && cr_extra+=("${passthrough[@]}")
 
 # Zellij decision: default ON when installed (opt out with --no-zellij).

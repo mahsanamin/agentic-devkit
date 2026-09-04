@@ -88,7 +88,16 @@ while [ "$#" -gt 0 ]; do
         -r|--repo)    repo="${2:-}"; shift ;;
         -z|--zellij)  zellij="${2:-}"; shift ;;
         -p|--prompt)  prompt="${2:-}"; shift ;;
-        -y|--yolo)    yolo=1 ;;
+        # -y/--yes/--auto: "do not stop and ask me". It does NOT mean bypass any
+        # more. a_c_task_start spells its own confirmation skip -y, and the
+        # engine now launches in a non-waiting mode anyway, so this is a no-op
+        # here. It used to map to --dangerously-skip-permissions, which is the
+        # opposite of harmless: on a machine that has never accepted bypass,
+        # claude opens a machine-wide confirmation dialog and waits for a
+        # keypress, so typing -y for "do not ask me" produced a session asking
+        # something far scarier. Bypass now needs the long --yolo.
+        -y|--yes|--auto) : ;;
+        --yolo)       yolo=1 ;;
         --fresh)      fresh=1 ;;
         -n|--dry-run) dry=1 ;;
         --)           ddash=1 ;;

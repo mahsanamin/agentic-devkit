@@ -154,6 +154,42 @@ cmd+=(--remote-control)
 
 cd "$dir"
 
+# Unattended launch: pre-authorize this dir so Claude honors the requested mode
+# instead of stalling on / downgrading at its trust + bypass gates. Seed the
+# global bypass acceptance only when the launch actually asks for bypass.
+want_bypass=0
+for a in ${passthrough[@]+"${passthrough[@]}"}; do
+    case "$a" in
+        --dangerously-skip-permissions) want_bypass=1 ;;
+        bypassPermissions|--permission-mode=bypassPermissions) want_bypass=1 ;;
+    esac
+done
+
+# A bypass launch stalls on a dialog we deliberately refuse to auto-accept.
+# _authorize_dir sets bypassPermissionsModeAccepted for THIS project only; the
+# machine-wide switch is a human decision. Until a human has made it, claude
+# opens "Bypass Permissions mode on?" and waits for a keypress, so an unattended
+# tab hangs with no clue why. Say so before launching rather than leaving someone
+# to find a silently waiting tab later. Advisory only: never blocks the launch.
+if [ "$want_bypass" -eq 1 ] && command -v python3 >/dev/null 2>&1; then
+    _cr_machine_ok="$(A_CJ="${A_CLAUDE_JSON:-$HOME/.claude.json}" python3 - <<'PY2' 2>/dev/null || true
+import json, os
+try:
+    with open(os.environ["A_CJ"]) as f:
+        print("yes" if json.load(f).get("bypassPermissionsModeAccepted") is True else "no")
+except Exception:
+    print("unknown")
+PY2
+)"
+    if [ "$_cr_machine_ok" = "no" ]; then
+        printf '%s: WARNING: this launch asks for --dangerously-skip-permissions, but bypass\n' "$prog" >&2
+        printf '  has never been accepted on this machine, so the session will OPEN A CONFIRMATION\n' >&2
+        printf '  DIALOG AND WAIT instead of running unattended.\n' >&2
+        printf '  Either accept it once by hand:  claude --dangerously-skip-permissions\n' >&2
+        printf '  or drop the bypass and let it run in auto mode, which does not wait.\n' >&2
+    fi
+fi
+
 if [[ $dry_run -eq 1 ]]; then
     printf '%s: would run in %s:\n  ' "$prog" "$PWD"
     printf '%q ' "${cmd[@]}"
@@ -166,17 +202,7 @@ if ! command -v claude >/dev/null 2>&1; then
     exit 127
 fi
 
-# Unattended launch: pre-authorize this dir so Claude honors the requested mode
-# instead of stalling on / downgrading at its trust + bypass gates. Seed the
-# global bypass acceptance only when the launch actually asks for bypass.
-want_bypass=0
-for a in ${passthrough[@]+"${passthrough[@]}"}; do
-    case "$a" in
-        --dangerously-skip-permissions) want_bypass=1 ;;
-        bypassPermissions|--permission-mode=bypassPermissions) want_bypass=1 ;;
-    esac
-done
-_authorize_dir "$PWD" "$want_bypass"
+_authorize_dir "$PWD" "$want_bypass"   # want_bypass computed above
 
 printf '%s: launching in %s\n' "$prog" "$PWD" >&2
 exec "${cmd[@]}"
