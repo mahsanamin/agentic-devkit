@@ -33,11 +33,17 @@ export A_ORG_OVERLAY_DIR="${ORG_DEVKIT_DIR:-}"
 export A_PERSONAL_OVERLAY_DIR="${PRIVATE_DEVKIT_DIR:-}"
 
 # Sources for the generated global guidance (a_c_agent_memory reads these).
-export A_AGENT_OVERLAY_DIR="$A_PERSONAL_OVERLAY_DIR"
-export A_AGENT_ORG_OVERLAY_DIR="$A_ORG_OVERLAY_DIR"
-export A_AGENT_ORG_BRAIN_DIR="${ORG_BRAIN_DIR:-}"
-export A_AGENT_BRAIN_DIR="${PRIVATE_BRAIN_DIR:-}"
-export A_MACHINE_NAME="${MACHINE_NAME:-}"
+#
+# Each one falls back to whatever the profile already exported, the same shape as
+# MY_WORKFLOW_DIR and a_company_name above. Without the fallback these lines blank a
+# standalone machine's values: there is no root.config to supply the right side, so
+# ${ROLE:-} expands to empty and overwrites what configs.profile set by hand. That made
+# Mode 2 in shell/configs.profile.sample impossible to use, A_MACHINE_NAME included.
+export A_AGENT_OVERLAY_DIR="${A_PERSONAL_OVERLAY_DIR:-${A_AGENT_OVERLAY_DIR:-}}"
+export A_AGENT_ORG_OVERLAY_DIR="${A_ORG_OVERLAY_DIR:-${A_AGENT_ORG_OVERLAY_DIR:-}}"
+export A_AGENT_ORG_BRAIN_DIR="${ORG_BRAIN_DIR:-${A_AGENT_ORG_BRAIN_DIR:-}}"
+export A_AGENT_BRAIN_DIR="${PRIVATE_BRAIN_DIR:-${A_AGENT_BRAIN_DIR:-}}"
+export A_MACHINE_NAME="${MACHINE_NAME:-${A_MACHINE_NAME:-}}"
 
 # Machine and org identity, used to find the org shell profile below.
 export a_company_name="${ORG_SLUG:-${a_company_name:-}}"
