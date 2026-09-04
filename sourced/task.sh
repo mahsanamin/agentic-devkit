@@ -21,28 +21,45 @@
 #
 # State: a small registry at ${A_TASK_HOME:-~/.a_tasks}/tasks.tsv.
 
-_a_c_task_base() { printf '%s' "${A_C_WORKFLOW_DIR:-$MY_WORKFLOW_DIR}"; }
+# Each wrapper below resolves the repo path INLINE and calls no shared helper,
+# which looks like needless repetition and is not. An agent session (Claude Code,
+# Codex) does not source this file: it runs in a snapshot of the interactive
+# shell, and that snapshot captured the four public functions below WITHOUT the
+# private helper they used to call. The result was the worst possible failure
+# shape - the command appeared to exist, then died with
+# "command not found: _a_c_task_base" followed by a path with the repo dir
+# missing, so the agent concluded the toolkit was absent and improvised raw
+# git worktree commands instead. Four self-sufficient functions cannot break
+# that way. Do not factor the repeated line back out into a helper.
 
 a_c_task_start() {
-    local s; s="$(_a_c_task_base)/scripts/a_c_task_start"
-    [ -f "$s" ] || { echo "Error: a_c_task_start not found at $s (set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR)"; return 1; }
+    local base="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
+    [ -n "$base" ] || { echo "Error: a_c_task_start: neither A_C_WORKFLOW_DIR nor MY_WORKFLOW_DIR is set; source your shell profile." >&2; return 1; }
+    local s="$base/scripts/a_c_task_start"
+    [ -f "$s" ] || { echo "Error: a_c_task_start: no script at $s (is $base the agentic-devkit checkout?)" >&2; return 1; }
     source "$s" "$@"
 }
 
 a_c_task_resume() {
-    local s; s="$(_a_c_task_base)/scripts/a_c_task_resume"
-    [ -f "$s" ] || { echo "Error: a_c_task_resume not found at $s (set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR)"; return 1; }
+    local base="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
+    [ -n "$base" ] || { echo "Error: a_c_task_resume: neither A_C_WORKFLOW_DIR nor MY_WORKFLOW_DIR is set; source your shell profile." >&2; return 1; }
+    local s="$base/scripts/a_c_task_resume"
+    [ -f "$s" ] || { echo "Error: a_c_task_resume: no script at $s (is $base the agentic-devkit checkout?)" >&2; return 1; }
     source "$s" "$@"
 }
 
 a_c_task_list() {
-    local s; s="$(_a_c_task_base)/scripts/a_c_task_list"
-    [ -f "$s" ] || { echo "Error: a_c_task_list not found at $s (set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR)"; return 1; }
+    local base="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
+    [ -n "$base" ] || { echo "Error: a_c_task_list: neither A_C_WORKFLOW_DIR nor MY_WORKFLOW_DIR is set; source your shell profile." >&2; return 1; }
+    local s="$base/scripts/a_c_task_list"
+    [ -f "$s" ] || { echo "Error: a_c_task_list: no script at $s (is $base the agentic-devkit checkout?)" >&2; return 1; }
     source "$s" "$@"
 }
 
 a_c_task_finish() {
-    local s; s="$(_a_c_task_base)/scripts/a_c_task_finish"
-    [ -f "$s" ] || { echo "Error: a_c_task_finish not found at $s (set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR)"; return 1; }
+    local base="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
+    [ -n "$base" ] || { echo "Error: a_c_task_finish: neither A_C_WORKFLOW_DIR nor MY_WORKFLOW_DIR is set; source your shell profile." >&2; return 1; }
+    local s="$base/scripts/a_c_task_finish"
+    [ -f "$s" ] || { echo "Error: a_c_task_finish: no script at $s (is $base the agentic-devkit checkout?)" >&2; return 1; }
     source "$s" "$@"
 }
