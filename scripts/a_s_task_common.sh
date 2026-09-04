@@ -390,6 +390,39 @@ a_task_wt_ab() {
     else printf '%s↑ %s↓' "$ahead" "$behind"; fi
 }
 
+# ------------------------------------------------ claude permission mode ---
+# The permission mode a launched Claude session starts in. ONE definition; the
+# fronts (jira / mdnest / github) deliberately pass no mode of their own so this
+# is the only place it is decided.
+#
+# Default is "auto": the session keeps moving on its own. The old default,
+# acceptEdits, auto-accepted file edits but STILL STOPPED and asked before
+# running any command, so an unattended session sat on an invisible approval
+# prompt at the first test run and never finished. In auto mode a genuinely
+# risky action is refused and the refusal is handed back to the model, so the
+# session is told "no" and carries on rather than waiting for a human who is not
+# watching.
+#
+# Override per machine or per run with A_TASK_PERMISSION_MODE, e.g.
+#   A_TASK_PERMISSION_MODE=acceptEdits a_c_task_start ...
+#
+# "auto" is not present in older claude builds, and an unrecognised mode makes
+# claude abort at startup, which would break every task on a machine that has
+# not updated. So ask the installed binary what it accepts and fall back to the
+# previous default rather than failing.
+a_task_permission_mode() {
+    if [ -n "${A_TASK_PERMISSION_MODE:-}" ]; then
+        printf '%s' "$A_TASK_PERMISSION_MODE"
+        return 0
+    fi
+    if command -v claude >/dev/null 2>&1 &&
+       claude --help 2>/dev/null | grep -q '"auto"'; then
+        printf 'auto'
+    else
+        printf 'acceptEdits'
+    fi
+}
+
 # ---------------------------------------------------- zellij integration ---
 # Helpers for a_c_task_start's optional -z/--zellij flag: drop the new task into
 # a named zellij session (creating the session if it is not running) under a tab

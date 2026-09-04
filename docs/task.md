@@ -92,8 +92,28 @@ Claude is told to read first. Requires an authenticated `gh` (`gh auth status`).
 `-c` makes `a_c_task_start` hand the new worktree to `scripts/a_c_claude_remote`,
 which launches an interactive Claude Code session there with Remote Control
 already on (so you can drive it from the app). The session is named after the
-ticket, and it defaults to `--permission-mode acceptEdits` so a remote-driven
-session is not blocked waiting for terminal approvals.
+ticket (both the Remote Control name and the session's own `--name`, so the tab,
+the app and the peer registry all show the same string and another session can
+address it by ticket id).
+
+It defaults to `--permission-mode auto`, so an unattended session never sits on
+an approval prompt. In auto mode a genuinely risky action is refused and the
+refusal is handed to the model, which then carries on; nothing waits for a human.
+The old default, `acceptEdits`, auto-accepted file edits but still stopped and
+asked before running any command, so a session left alone would park itself at
+its first test run and never finish.
+
+Two knobs:
+
+- `A_TASK_PERMISSION_MODE=<mode>` changes the default, per run or per machine.
+- `--bypass` removes permission checks entirely
+  (`--dangerously-skip-permissions`).
+
+On a machine whose `claude` is too old to know `auto`, the default falls back to
+`acceptEdits` rather than failing at startup, because an unrecognised mode aborts
+the session. The mode is decided in exactly one place, `a_task_permission_mode`
+in `scripts/a_s_task_common.sh`; the `jira` / `mdnest` / `github` fronts pass no
+mode of their own.
 
 ```bash
 # create the worktree AND drop into a remote-controlled Claude session
@@ -112,7 +132,7 @@ replaced; when you exit Claude, control returns to your shell — still inside t
 worktree. `a_c_claude_remote` is also usable on its own and from other scripts:
 
 ```bash
-a_c_claude_remote ~/Repos/foo "fix the build" -- --permission-mode acceptEdits
+a_c_claude_remote ~/Repos/foo "fix the build" -- --permission-mode acceptEdits  # pause before commands
 a_c_claude_remote -N -n demo ~/Repos/foo "hi"   # -N prints the command, no launch
 ```
 

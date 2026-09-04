@@ -112,9 +112,11 @@ args=(-t "$ticket" -y -c -p "$prompt")
 args+=(--)
 if [ "$yolo" -eq 1 ]; then
     args+=(--dangerously-skip-permissions)
-else
-    args+=(--permission-mode acceptEdits)
 fi
+# No permission mode otherwise: a_c_task_start decides it in ONE place (see
+# a_task_permission_mode). This front used to pass acceptEdits, which silently
+# overrode the engine's default and parked the session on an approval prompt
+# before its first command.
 [ "${#passthrough[@]}" -gt 0 ] && args+=("${passthrough[@]}")
 
 if [ "$dry" -eq 1 ]; then
