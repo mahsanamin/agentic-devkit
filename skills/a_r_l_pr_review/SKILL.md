@@ -118,13 +118,21 @@ Post a drafted comment ONLY if it is marked **Action: Post** by the review and i
 
 NEVER auto-post: praise, style nits, "consider X", trade-off / internal notes, or anything the author doesn't need to act on. Those stay in the draft file.
 
+**History guard (runs before the self-verify guard).** Fetch this routine's own previous reviews on the PR (`gh api repos/{owner}/{repo}/pulls/<N>/reviews`, filtered to the posting account), then apply three limits. All three exist for one reason: a stream of individually correct findings looks like a working reviewer from every angle except the round count, and nothing else in this routine counts.
+
+- **Delta only.** On a re-review a candidate must sit in the diff between the sha of my last review and the current head. Anything outside that range was reviewable at that review and was not raised, so raising it now costs the author a round and tells them nothing new.
+- **Class count.** Group my previously posted findings by class: same file plus same shape ("X is missing from list Y", "case Z is not handled", "the number in A contradicts the number in B"). Judge by shape, not by wording, since each round is phrased differently. If a candidate is the THIRD of its class, do not post it as an instance. Post ONE comment instead: "Third finding of this class ({the earlier comment ids}). Instances will not close it. The approach needs to change: {one sentence naming the alternative}." Never post a fourth instance of any class on one PR.
+- **Round cap.** If this is my third or later review on the PR and I am about to post another bar-clearing finding, do not post it. Post one summary instead: what was fixed across the rounds, which class keeps recurring, and that the PR's shape is now a human's call. Mark the PR `ROUND CAP` in the run report and drop it from this routine's `mine` set until a human puts it back.
+
+Two things that read like permission to keep going lift none of the three. **Green CI** is green on every round of this kind of exchange, so a passing run carries no information about whether to continue. **An author who accepts every finding** is not converging either: one who accepts all of them and one who accepts none reach the same round count.
+
 **Self-verify guard before each post (cheap, keeps false positives off the PR):** confirm the concrete code path the comment claims, confirm it's NEW code (not pre-existing/unchanged), and dedup against the PR's existing comments (`gh api repos/{owner}/{repo}/pulls/<N>/comments` + `.../issues/<N>/comments`) so you never repost something already there. Drop any candidate that fails the guard; note it in the report rather than posting a shaky comment.
 
 ## Auto-approve policy (`post=auto`)
 
 After the post step, decide whether to **approve** the PR. Approve **only when ALL** of the following hold; if any one fails, do **not** approve — post any bar-clearing comments as usual and **stop**, leaving the call to a human and saying why in the report.
 
-1. **Nothing to raise.** This review posted **zero** bar-clearing comments (no Bug/Error, Security, or Missing), you have **no open correctness-affecting Question**, and there is **no unresolved question or blocking thread from another reviewer** on the PR. A prior review whose only point was a nit that a later commit already fixed does **not** block (verify the fix is actually in the current head).
+1. **Nothing to raise.** This review posted **zero** bar-clearing comments (no Bug/Error, Security, or Missing), you have **no open correctness-affecting Question**, and there is **no unresolved question or blocking thread from another reviewer** on the PR. A prior review whose only point was a nit that a later commit already fixed does **not** block (verify the fix is actually in the current head). A candidate suppressed by the History guard's class count does not block approval by itself, but the summary comment that replaces it does: withhold approval while any History-guard summary is open, since it asks a question nobody has answered yet.
 2. **No automated review pending or unhappy.** Check `gh pr checks <N>`: CodeRabbit has **finished** (not "review in progress") and is not requesting changes; SonarQube's quality gate (if the repo runs one) has **completed and passed**; and required CI checks are **green** (none pending or red). If any required check is still running or failing, do **not** approve — stop and report it.
 3. **Confidence is high.** The change is small/clear enough that you verified it end to end and have no material doubt.
 
