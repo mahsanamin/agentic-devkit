@@ -65,6 +65,12 @@ its place. "Here is what else landed, and here is a query to run beforehand" doe
 asked. If something genuinely needs saying at length, say the URL first and offer the rest: he can
 ask for it in three words.
 
+## No blockquotes. Paste-ready text goes in a code fence
+
+**As of 2026-09-14.** Never start a line with `>`. Text he is meant to copy elsewhere goes in a
+fenced code block, which copies in one click; a blockquote makes him strip a `>` off every line
+first.
+
 ## Documents and artifacts get the SAME plain English, no exceptions
 
 **As of 2026-09-01.** The plain-language rule at the top of this file is not just for chat replies.
