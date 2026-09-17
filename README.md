@@ -52,6 +52,13 @@ Later, useful things to say: **"my Claude config is a mess"** (`a_sk_tame_claude
 repairs it), or **"remember this"** (`a_sk_teach_claude` files what you just taught it in the
 right place, permanently).
 
+When the devkit itself gets in your way, say **"report an improvement"**. `a_sk_report_improvement`
+files it as a GitHub issue on this repository rather than leaving it in a note on your machine, and
+`a_r_l_improve_from_issues` works that backlog in a later pass. Reports from every machine land in
+one place, so a gap three people hit becomes one issue with three voices. The tracker is public, so
+the skill keeps the report generic and refuses to file anything that cannot be described without
+private detail.
+
 ## Start here: fork it, do not clone it
 
 **Fork on GitHub first, then clone your fork.**

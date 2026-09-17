@@ -78,11 +78,17 @@ Run the decision from `docs/managed-claude.md`:
 | A one-line behavior, generic to any machine | **`agentic-devkit/memory/core-rules.md`** | one or two lines under an existing heading |
 | A multi-step procedure, work-specific | **org overlay** | a new or edited skill/agent |
 | A multi-step procedure, generic | **agentic-devkit** | a new or edited skill/agent |
+| A devkit defect or gap you are NOT fixing now | **a devkit GitHub issue** | run `a_sk_report_improvement` |
 | Anything else | **nowhere** | say you dropped it, and why |
 
 **Never edit `~/.claude/CLAUDE.md` directly.** It is generated from the sources above; the next
 `a_c_agent_memory build` overwrites anything written into the managed regions. After writing to
 a source, run `a_c_agent_memory build` so the change is live in every configured agent, and say that you did.
+
+**Friction with the devkit itself is not a rule and not a brain fact.** If a skill misfired, a
+helper did not exist, or a documented name resolved to nothing, writing a personal note about it
+fixes it for one machine and leaves it broken for everyone else. That is an issue on the devkit:
+run `a_sk_report_improvement`, which is also where the next triage session will look for it.
 
 **The glossary row is the most under-used option.** If you picked the wrong tool this session
 and were corrected, that is not a rule and not a brain fact — it is a missing glossary row.
