@@ -85,6 +85,24 @@ final report.
 "Hand this over", "run these in parallel", and "keep an eye on them" are asking for sessions. Read
 them that way even when the work looks like something a subagent could carry.
 
+### A tab is `a_c_zellij_tab`, never hand-rolled zellij
+
+Anything that wants a tab calls **`a_c_zellij_tab`**, including "open a new tab", "give it its own
+tab", and every task-lane handover above. `a_c_task_start` and its fronts already do.
+
+```
+a_c_zellij_tab <session> <tab> --cwd <dir> --cmd '<command>'
+```
+
+Driving `zellij action` by hand fails two ways that look like the tool is broken rather than the
+caller. `write-chars` types into the pane that is **already focused**, not the tab just created, so
+the keystrokes land in whatever the user was looking at. And a bare `--layout` tab is not wrapped in
+the session's default template, so a layout holding only the command pane opens with no tab-bar and
+no status-bar: the tab appears unclickable and the other tabs vanish. The script bakes both plugin
+panes in and marks the command pane `focus=true`, and it also handles idempotent re-focus, an EXITED
+session, verifying the tab exists because `new-tab` exits 0 regardless, and the launcher's
+PATH/TERM/VIRTUAL_ENV. `a_c_zellij_fix` repairs a session already damaged this way.
+
 ### Devkit friction goes to the devkit's issues, not into a private note
 
 When the tooling itself is the problem, a skill that misfired, an agent that returned the wrong
