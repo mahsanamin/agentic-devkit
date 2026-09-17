@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# a_g_worktree_conclude, non-interactive entry point.
+# Concluding a worktree IS removing it with the merged-check on, so this defers to the
+# remove script rather than to the sourced alias: one implementation, and the flag is
+# visible to anyone reading the process list.
+exec "$(dirname "${BASH_SOURCE[0]}")/a_g_worktree_remove" --verify "$@"
