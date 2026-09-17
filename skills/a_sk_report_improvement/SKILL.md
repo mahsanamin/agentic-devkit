@@ -104,8 +104,13 @@ repo="${A_DEVKIT_ISSUE_REPO:-mahsanamin/agentic-devkit}"
 gh issue create --repo "$repo" \
   --title "<title>" \
   --body-file <path-to-the-body-you-wrote> \
-  --label improvement
+  --label bug          # or --label enhancement for a gap or an idea
 ```
+
+Use `bug` when something is broken and `enhancement` when something is missing. Those two exist on
+every GitHub repository from the day it is created, so this works on a fork with no setup. Any other
+label must already exist on the repo: a label `gh` has to invent is noise, and `gh issue create`
+fails outright on an unknown one, which loses the report you just wrote.
 
 A fork or a private mirror sets `A_DEVKIT_ISSUE_REPO` to its own slug; everyone else gets the
 upstream default and no configuration.
@@ -115,7 +120,10 @@ Rules for this step:
 - **Show the user the exact title and body, and get a yes, before the first `gh issue create` of a
   session.** Filing is outward-facing and public. Once they have approved the shape, further issues
   in the same session can go without asking again.
-- Add `--label` terms only if they already exist on the repo. A label `gh` has to create is noise.
+- **Say which account will post it**, from `gh auth status`, in that same confirmation. An issue
+  carries its author forever, and the account `gh` happens to be logged into is often not the one
+  the user would choose to associate with a public repository. This costs one line and prevents a
+  mistake that cannot be undone by editing the issue.
 - If `gh` is missing, unauthenticated, or the network is down, **do not lose the report**: write the
   body to `~/.claude/devkit-improvements/<date>-<slug>.md`, tell the user it is queued, and move on.
   A later run of this skill files anything queued there and deletes what it filed.

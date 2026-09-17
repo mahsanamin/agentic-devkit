@@ -1,6 +1,6 @@
 ---
 name: a_r_l_improve_from_issues
-description: Work the devkit's open improvement issues in one pass, in an isolated worktree, and close what ships. This is the consuming half of a_sk_report_improvement: that skill files friction as GitHub issues from wherever it was hit, this routine turns a batch of them into actual changes. Use when asked to triage the devkit backlog, improve the devkit from its issues, pick up reported improvements, do the devkit improvement round, or when a scheduled improvement run fires. Parameterized: pass limit (how many issues), label (default improvement), and mode (apply or dry-run). Triggers without the exact name: "go through the devkit issues", "what have people reported", "fix the reported improvements", "run the improvement round".
+description: Work the devkit's open improvement issues in one pass, in an isolated worktree, and close what ships. This is the consuming half of a_sk_report_improvement: that skill files friction as GitHub issues from wherever it was hit, this routine turns a batch of them into actual changes. Use when asked to triage the devkit backlog, improve the devkit from its issues, pick up reported improvements, do the devkit improvement round, or when a scheduled improvement run fires. Parameterized: pass limit (how many issues), label (optional filter, unset means every open issue), and mode (apply or dry-run). Triggers without the exact name: "go through the devkit issues", "what have people reported", "fix the reported improvements", "run the improvement round".
 ---
 
 # a_r_l_improve_from_issues, turn reported friction into changes
@@ -16,7 +16,9 @@ separate are often one cause, and fixing them independently produces two half-fi
 
 ```bash
 repo="${A_DEVKIT_ISSUE_REPO:-mahsanamin/agentic-devkit}"
-gh issue list --repo "$repo" --state open --label "${label:-improvement}" \
+# No label filter by default: reports arrive as `bug` or `enhancement`, and a
+# filter that guesses wrong returns an empty list that reads like an empty backlog.
+gh issue list --repo "$repo" --state open ${label:+--label "$label"} \
   --limit "${limit:-20}" --json number,title,body,labels,comments,createdAt,url \
   > /tmp/devkit-issues.json
 jq -r '.[] | "#\(.number)  \(.title)"' /tmp/devkit-issues.json
