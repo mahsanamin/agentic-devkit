@@ -20,6 +20,8 @@ Produce two files (use the project's docs location; default `docs/`):
 ## Required CODEMAP sections
 
 1. **Top-level architecture** what services/apps exist, what they do, how they connect. Use a Mermaid diagram where it clarifies.
+   Lint any Mermaid you write (`a_s_mermaid_lint <file>`) before you finish: one stray `;` in a
+   sequence diagram blanks the whole diagram. Rules: `agentic-devkit/rules/mermaid.md`.
 2. **Module boundaries** for each top-level directory: purpose, public surface, key files, owners (if derivable from a CODEOWNERS file).
 3. **Entry points** for each deployable: how it starts, where the main loop lives.
 4. **Data flow** the 3-5 most important request/data paths, one paragraph each.

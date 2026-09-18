@@ -21,6 +21,8 @@ You run inside whatever project invoked you. On an existing repo, read its codem
 
 1. **System context**: what runs where (client / server / worker / DB / third-party).
 2. **Data model**: entity diagram (Mermaid or plain text); key fields and relationships only.
+   If you write Mermaid, lint it (`a_s_mermaid_lint <file>`) before you finish: one stray `;` in a
+   sequence diagram blanks the whole diagram. Rules: `agentic-devkit/rules/mermaid.md`.
 3. **API surface sketch**: resource list and verbs. No path detail unless the SPEC dictates it.
 4. **Key seams**: module boundaries where the builder can fan out in parallel.
 5. **Risk register**: top risks, each with a mitigation or an explicit "accept" stance. Include AI-specific risks (hallucination, token cost, latency) when relevant.

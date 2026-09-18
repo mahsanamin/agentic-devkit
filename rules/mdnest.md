@@ -81,22 +81,29 @@ saturated fills. Living palette: `@srv-ahsan-mini/mahsan_brain/MyProjects/mdNest
   all fine in mdnest (proven against existing notes).
 
 ### Mermaid syntax that breaks a whole diagram (avoid these)
-Two failure modes have actually bitten us. Each kills the ENTIRE diagram, not one line.
+Canonical, verified, and longer: `agentic-devkit/rules/mermaid.md`. Lint any file with a
+diagram in it before writing: `a_s_mermaid_lint <file.md>`. The three failure modes that have
+actually bitten us, each of which kills the ENTIRE diagram, not one line:
 
 1. **Escaped backticks in the fence** (see the safe-write contract above): keep
    ```` ```mermaid ```` clean, never `` \` ``.
-2. **Unquoted edge labels that contain special characters.** The label between `|...|`
-   (and any text label on a link) MUST be wrapped in double quotes when it contains
-   anything beyond plain words and spaces, especially `@`, `(`, `)`, `:`, `#`, `&`, `;`,
-   `/`, `,`. A bare `@` in an edge label is parsed as special syntax and throws
-   `Parse error on line N ... got 'LINK_ID'`, blanking the diagram.
+2. **A semicolon in sequence-diagram text.** In a `sequenceDiagram`, `;` ends the statement
+   like a newline, so everything after it is parsed as a new statement and the diagram is
+   replaced by `Parse error on line N ... got 'NEWLINE'`. It applies to message text, `Note`
+   text, a `participant ... as` alias, and a `loop` / `alt` / `par` label. Write `#59;` where
+   you want a semicolon, or reword to avoid it.
+   - WRONG: `SRV-->>FE: Set-Cookie: id=C1; Domain=example.com`
+   - RIGHT: `SRV-->>FE: Set-Cookie: id=C1#59; Domain=example.com`
+3. **Unquoted flowchart labels that contain special characters.** In a `flowchart` / `graph`,
+   node text and the label between `|...|` break on `(`, `)`, `[`, `]`, `{`, `}`, `@`, and an
+   inner `"`. A bare `@` throws `Parse error ... got 'LINK_ID'` and blanks the diagram.
    - WRONG: `GC -->|@import pulls in| RULES`
    - RIGHT: `GC -->|"@import pulls in"| RULES`
-   - Habit: **always quote edge labels** (`A -->|"label"| B`), even plain ones. Node text
-     inside `["..."]` / `(["..."])` is already safe; the gap is the edge label.
+   - Habit: **always quote flowchart labels** (`A -->|"label"| B`), even plain ones.
 
-When in doubt, quote it. Quoting a label is always safe; leaving a special character
-unquoted is the gamble that breaks the render.
+**Quoting is a flowchart feature, not a general escape.** In a `sequenceDiagram` quotes are
+ordinary characters: they render as visible `"` marks and protect nothing, so a quoted message
+with a `;` in it still breaks. Never carry the quote-everything habit into a sequence diagram.
 
 ## Log unexpected mdnest problems
 Whenever mdnest behaves unexpectedly (an error, data loss, or inconsistent or surprising
