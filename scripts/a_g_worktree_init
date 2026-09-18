@@ -11,11 +11,14 @@ NC='\033[0m' # No Color
 
 # Default base branch
 BASE_BRANCH=""
+# Untracked, non-ignored files in the base checkout stay there unless asked for.
+COPY_UNTRACKED=""
 
 # Parse arguments
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -b|--base) BASE_BRANCH="$2"; shift ;;
+        --include-untracked) COPY_UNTRACKED="--include-untracked" ;;
         -h|--help)
             echo "Usage: a_g_worktree_init <branch-name> [-b|--base <branch>]"
             echo ""
@@ -33,6 +36,13 @@ while [[ "$#" -gt 0 ]]; do
             echo "  branch-name     Name of the branch (new or existing, local or remote)"
             echo ""
             echo "Options:"
+            echo "  --include-untracked"
+            echo "                  Also copy root dotfiles that are untracked AND not"
+            echo "                  ignored in the base checkout. Off by default: those are"
+            echo "                  loose files someone left in the main checkout, and a new"
+            echo "                  branch should not start with them. Ignored local config"
+            echo "                  (.env, .claude/settings.local.json) is copied either way;"
+            echo "                  uncommitted changes to tracked files never are."
             echo "  -b, --base      Base branch for NEW branches (skips the picker)."
             echo "                  When omitted and the branch is new, the script collects"
             echo "                  candidate bases: main/master, current non-main branch,"
@@ -66,6 +76,28 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     echo "Run this command from within a git repository"
     return 1
 fi
+
+# Load the copy rule. a_s_worktree_dotfiles.sh decides which of the main checkout's
+# root dotfiles belong in a new worktree; it lives beside this script. Look
+# script-relative first (BASH_SOURCE under bash, $0 when zsh sources this), then the
+# installed location. Missing helper means no copy at all, which is the safe default:
+# a worktree short of its .env is a one-line fix, a worktree full of someone else's
+# scratch files is not.
+a_s_load_dotfile_helper() {
+    local self="${BASH_SOURCE[0]:-$0}" dir cand
+    dir="$(cd -P "$(dirname "$self")" 2>/dev/null && pwd)"
+    for cand in "$dir/a_s_worktree_dotfiles.sh" \
+                "${MY_WORKFLOW_DIR:-$HOME/.claude}/scripts/a_s_worktree_dotfiles.sh"; do
+        if [ -f "$cand" ]; then
+            # shellcheck disable=SC1090
+            . "$cand"
+            return 0
+        fi
+    done
+    echo -e "${YELLOW}Local config not copied: a_s_worktree_dotfiles.sh was not found.${NC}"
+    echo "  Re-run the devkit installer so it sits beside this script."
+    return 1
+}
 
 # Get the current worktree's toplevel (still useful for some operations).
 GIT_ROOT=$(git rev-parse --show-toplevel)
@@ -315,21 +347,12 @@ if [ $? -eq 0 ]; then
     echo ""
     echo -e "${GREEN}✓ Worktree created successfully!${NC}"
 
-    # Copy dotfiles from the main repo to the new worktree. Iterate MAIN_ROOT so
-    # dotfiles are always copied FROM the main checkout, regardless of where the
-    # script was invoked (e.g. from inside another linked worktree).
-    DOTFILES_COPIED=0
-    for dotfile in "$MAIN_ROOT"/.*; do
-        basename="$(basename "$dotfile")"
-        # Skip ., .., .git, and any dotfile already present (tracked ones)
-        if [[ "$basename" == "." || "$basename" == ".." || "$basename" == ".git" ]]; then
-            continue
-        fi
-        cp -Rn "$dotfile" "$WORKTREE_PATH/"
-        DOTFILES_COPIED=$((DOTFILES_COPIED + 1))
-    done
-    if [ $DOTFILES_COPIED -gt 0 ]; then
-        echo -e "${GREEN}✓ Copied $DOTFILES_COPIED dotfile(s) to worktree${NC}"
+    # Hand the main checkout's local config to the new worktree. Always FROM
+    # MAIN_ROOT, regardless of where the script was invoked (e.g. from inside
+    # another linked worktree). a_s_worktree_dotfiles.sh owns what qualifies:
+    # ignored local config travels, untracked loose files do not.
+    if a_s_load_dotfile_helper; then
+        a_s_copy_local_dotfiles "$MAIN_ROOT" "$WORKTREE_PATH" "$COPY_UNTRACKED"
     fi
 
     echo ""
