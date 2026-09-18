@@ -86,7 +86,7 @@ checkout. What they copy is decided in
 | Tracked | Not copied. The checkout already produced it, at the branch's revision. |
 | Ignored (`.env`, `.envrc`, …) | Copied. This is what the copy exists for. |
 | Untracked and not ignored | **Left behind**, and named in the output. |
-| Tracked directory with ignored files inside (`.claude/`) | Only the ignored files inside are copied. |
+| Tracked directory with ignored files inside (`.claude/`) | Only the ignored files inside are copied. Anything untracked in there is left behind and named, same as at the root. |
 | Editor and build caches (`.gradle/`, `.idea/`, `.venv/`, …) | Skipped, whatever their git status. |
 
 The third row is the one worth knowing. A file that is untracked and not ignored is loose work

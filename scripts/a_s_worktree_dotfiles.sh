@@ -98,6 +98,20 @@ a_s_copy_local_dotfiles() {
                     copied=$((copied + 1))
                 fi
             done < <(git -C "$src" ls-files -z --others --ignored --exclude-standard -- "$name" 2>/dev/null | tr '\0' '\n')
+            # Untracked and not ignored inside that directory gets the same treatment as
+            # at the root, including being named. Silently dropping it is how someone
+            # loses a settings file in a project that never gitignored it.
+            while IFS= read -r member; do
+                [ -z "$member" ] && continue
+                a_s_wt_is_denied "$member" && continue
+                [ -e "$dest/$member" ] && continue
+                if [ "$include_untracked" = "--include-untracked" ]; then
+                    mkdir -p "$(dirname "$dest/$member")" 2>/dev/null || continue
+                    cp -R "$src/$member" "$dest/$member" 2>/dev/null && copied=$((copied + 1))
+                else
+                    left_behind+=("$member")
+                fi
+            done < <(git -C "$src" ls-files -z --others --exclude-standard -- "$name" 2>/dev/null | tr '\0' '\n')
             continue
         fi
 

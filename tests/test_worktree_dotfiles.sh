@@ -12,6 +12,7 @@
 # Falsification, since a fixture never seen failing is not evidence. Verified to FAIL
 # when, in a_s_worktree_dotfiles.sh:
 #   - the untracked branch copies instead of recording      (case: untracked stays)
+#   - a skipped file inside a tracked directory goes unnamed (case: nested skip is silent)
 #   - the check-ignore branch is dropped                    (cases: .env, .envrc)
 #   - the tracked branch copies the whole directory         (case: no junk inside .claude)
 #   - the partly-tracked recursion is removed               (case: settings.local.json)
@@ -104,6 +105,13 @@ case "$out" in
     *".my-scratch"*) ok "the skipped file is named in the output" ;;
     *)               bad "nothing told the user .my-scratch was left behind" ;;
 esac
+# The nested one has to be named too. A file skipped without a word is indistinguishable
+# from a copy that failed, and the project it belongs to is the one that never gitignored
+# its local settings.
+case "$out" in
+    *".claude/scratch-note.md"*) ok "the skipped file inside a tracked directory is named too" ;;
+    *)                           bad "the nested skip was silent" ;;
+esac
 
 echo "--- a modified tracked file never travels ---"
 echo "local edit" >> "$SRC/.github/workflows.yml"
@@ -120,6 +128,8 @@ git -C "$SRC" worktree add -q --detach "$DEST3" HEAD
 a_s_copy_local_dotfiles "$SRC" "$DEST3" --include-untracked >/dev/null 2>&1
 [ -f "$DEST3/.my-scratch" ] && ok "--include-untracked takes the loose files" \
                             || bad "--include-untracked did not copy .my-scratch"
+[ -f "$DEST3/.claude/scratch-note.md" ] && ok "--include-untracked reaches into tracked directories" \
+                                        || bad "--include-untracked skipped the nested loose file"
 [ -e "$DEST3/.gradle" ] && bad "--include-untracked also dragged in the cache denylist" \
                         || ok "--include-untracked still skips the cache denylist"
 
