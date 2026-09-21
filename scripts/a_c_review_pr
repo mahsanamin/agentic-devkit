@@ -6,8 +6,9 @@
 #
 #   1. Resolve the PR's repo to your LOCAL clone   (via a_s_resolve_repo:
 #      cache -> cd_w workspace scan -> clone; never a duplicate clone).
-#   2. Make a git worktree on the PR's HEAD branch, updated to the remote head
-#      (a throwaway checkout beside the repo; the main checkout is untouched).
+#   2. Make a git worktree at the PR's head commit, on a dedicated pr-<N>-review
+#      branch (a throwaway checkout beside the repo; your own checkout and your
+#      own branches are never touched, even when you review your own PR).
 #   3. Launch a Claude session IN that worktree that runs the review (project
 #      `review-pr` if present, else `global-pr-reviewer`) per the
 #      a_sk_review_pr policy: auto-post the bar-clearing comments (or draft
@@ -31,7 +32,9 @@
 #   -p, --post     auto (default) = post bar-clearing comments · draft = review only
 #   -y, --yolo     DANGEROUS: --dangerously-skip-permissions (no guardrails on
 #                  untrusted PR content). Only in a sandbox / for a PR you trust.
-#   -k, --keep     keep the worktree + branch afterwards (skip teardown)
+#   -k, --keep     keep the review worktree + branch afterwards. Also refuses to
+#                  clear an existing worktree at that path on the way in, so it
+#                  guards both ends rather than only the teardown (exit 6).
 #       --fresh    re-review from scratch: if a review of this PR is already set
 #                  up, tear it down (worktree + local branch, never the remote)
 #                  and recreate. Without it, a repeat call is IDEMPOTENT: it just
@@ -115,7 +118,14 @@ is_fork=false; printf '%s' "$pr_json" | grep -q '"isCrossRepository":[[:space:]]
 [ -n "$head_ref" ] || { echo "$prog: PR #$N has no head branch?" >&2; exit 1; }
 
 proj="$(basename "$REPO_PATH")"
-if [ "$is_fork" = true ]; then LOCAL_BR="pr-$N-review"; else LOCAL_BR="$head_ref"; fi
+# A review ALWAYS gets its own branch and its own path, fork or not. Using the
+# PR's own head branch for a same-repo PR resolved the review onto the author's
+# live worktree whenever they reviewed their own PR, which is a normal thing to
+# do. Two sessions then shared one checkout: a `git add` in one swept the
+# other's in-flight edits into its commit and pushed a diff that contradicted
+# its own message. a_r_l_pr_review already works this way ("never your own
+# working branch"); this brings the single-PR path in line with it.
+LOCAL_BR="pr-$N-review"
 WT="$(dirname "$REPO_PATH")/WorkTrees/$proj/${LOCAL_BR//\//-}"
 
 # Zellij: default ON when installed (opt out with --no-zellij). Each review lands
@@ -221,6 +231,23 @@ fi
 # Clear any leftover worktree first (no active review, or --fresh) so we never
 # review stale code, then create fresh.
 if [ -d "$WT" ]; then
+    # `git worktree remove --force` deletes untracked files with no warning and
+    # no backup, and untracked means nothing else holds a copy. Look before
+    # destroying. -k is honoured here too: it used to guard only the teardown,
+    # so passing it to protect a worktree protected it at the wrong end.
+    dirty="$(git -C "$WT" status --porcelain 2>/dev/null)"
+    if [ "$keep" -eq 1 ]; then
+        echo "$prog: -k given; refusing to clear the existing worktree at $WT" >&2
+        echo "  remove it yourself, or drop -k, or pass --fresh to redo the review" >&2
+        exit 6
+    fi
+    if [ -n "$dirty" ]; then
+        echo "$prog: REFUSING to clear $WT: it has uncommitted or untracked files." >&2
+        echo "$dirty" | sed 's/^/    /' >&2
+        echo "  Untracked files are not in git, so removing this worktree would" >&2
+        echo "  destroy them permanently. Commit, stash, or move them, then retry." >&2
+        exit 6
+    fi
     echo "$prog: clearing a leftover worktree at $WT (no active review) ..." >&2
     ( cd "$REPO_PATH" && git worktree remove --force "$WT" 2>/dev/null )
 fi
