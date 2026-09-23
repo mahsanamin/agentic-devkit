@@ -13,10 +13,10 @@
 # current task registry. Read-only.
 
 # Locate this repo's scripts. Prefer A_C_WORKFLOW_DIR (set when the work repo is
-# loaded alongside another my_setup checkout); fall back to MY_WORKFLOW_DIR.
+# loaded alongside another agentic-devkit checkout); fall back to MY_WORKFLOW_DIR.
 A_C_TASK_BASE="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}"
 if [ -z "$A_C_TASK_BASE" ]; then
-    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the my_setup repo."
+    echo "Error: set A_C_WORKFLOW_DIR or MY_WORKFLOW_DIR to the agentic-devkit repo."
     return 1 2>/dev/null || exit 1
 fi
 . "$A_C_TASK_BASE/scripts/a_s_task_common.sh"
