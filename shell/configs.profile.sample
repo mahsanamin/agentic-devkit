@@ -18,8 +18,8 @@ export A_ROOT_DIR=''
 ########################### Mode 2: standalone, no root repo ####
 # Only used when A_ROOT_DIR is empty. Set the values by hand instead.
 if [ -z "$A_ROOT_DIR" ]; then
-    # Machine type: 'm1' for Apple Silicon, 'i7' for Intel.
-    export a_machine_type='m1'
+    # OS family (macos, linux) and CPU (arm64, x64) are derived from `uname`. Set
+    # a_machine_type or a_machine_arch here only to force a different value.
     # Organization name. Loads <org>.<machine>.profile from your org overlay, if you have one.
     export a_company_name=''
 
