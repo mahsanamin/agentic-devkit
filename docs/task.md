@@ -35,7 +35,7 @@ flowchart LR
 
 | Command | What it does |
 |---|---|
-| `a_c_task_start [-r repo] [-t ticket] [-f feature] [-b base] [-c] [-p prompt] [-z session] [-y] [-- claude args]` | Pick a repo (the repo you're currently in is pinned first as `current =>`, then the most-recently-worked-in repos under `cd_w` ranked by last commit; or a name / full path), turn a Jira ticket into a branch `PROJ-123-feature-name`, create a worktree via `a_g_worktree_init`, cd in, and register the task. `-b` forks from that base branch (e.g. `main` or `story/PROJ-123-foo`) and skips `a_g_worktree_init`'s base picker; omit it to be prompted. Before creating anything it asks `Proceed? [Y/n]`; `-y` (or a non-interactive run) skips that (see "Confirmation & auto mode"). With `-r -t -f -b -y` set it runs with no prompts at all. `-c` then launches a Remote-Control Claude session in the new worktree (see below). `-z` opens the worktree in a named zellij session/tab instead of the current terminal (see below). |
+| `a_c_task_start [-r repo] [-t ticket] [-f feature] [-b base] [-c] [-p prompt] [-z session] [--prefix name] [--no-prefix] [-y] [--dry-run] [-- claude args]` | Pick a repo (the repo you're currently in is pinned first as `current =>`, then the most-recently-worked-in repos under `cd_w` ranked by last commit; or a name / full path), turn a Jira ticket into a branch `PROJ-123-feature-name`, create a worktree via `a_g_worktree_init`, cd in, and register the task. `-b` forks from that base branch (e.g. `main` or `story/PROJ-123-foo`) and skips `a_g_worktree_init`'s base picker; omit it to be prompted. Before creating anything it asks `Proceed? [Y/n]`; `-y` (or a non-interactive run) skips that (see "Confirmation & auto mode"). With `-r -t -f -b -y` set it runs with no prompts at all. `-c` then launches a Remote-Control Claude session in the new worktree (see below). `-z` opens the worktree in a named zellij session/tab instead of the current terminal (see below). The tab and the Claude session are both named `<prefix>-<ticket>`, e.g. `ios-abc-123` (see "Task name"). `--dry-run` prints the plan and the name and creates nothing. |
 | `a_c_task_resume [ticket\|branch]` | Jump back into an active task's worktree. No argument -> numbered menu with live dirty / ahead-behind state. |
 | `a_c_task_list` | Read-only table of all active tasks and their worktree state. |
 | `a_c_task_finish [ticket\|branch] [-v] [-f] [--keep-remote]` | Remove the worktree + branch via `a_g_worktree_remove` and drop the task from the registry. Flags pass straight through (`-v` verifies merged first). |
@@ -91,10 +91,10 @@ Claude is told to read first. Requires an authenticated `gh` (`gh auth status`).
 
 `-c` makes `a_c_task_start` hand the new worktree to `scripts/a_c_claude_remote`,
 which launches an interactive Claude Code session there with Remote Control
-already on (so you can drive it from the app). The session is named after the
-ticket (both the Remote Control name and the session's own `--name`, so the tab,
-the app and the peer registry all show the same string and another session can
-address it by ticket id).
+already on (so you can drive it from the app). The session gets the task name
+(see "Task name" below), both as the Remote Control name and as the session's own
+`--name`, so the zellij tab, the app and the peer registry all show the same
+string and another session can address it by that name.
 
 It defaults to `--permission-mode auto`, so an unattended session never sits on
 an approval prompt. In auto mode a genuinely risky action is refused and the
@@ -145,8 +145,8 @@ a_c_claude_remote -N -n demo ~/Repos/foo "hi"   # -N prints the command, no laun
 
 `-z <session>` lands the new task in a named [zellij](https://zellij.dev) session
 instead of the current terminal. If that session is not already running it is
-created (detached), then a tab named for the ticket + a short feature slug is
-added to it (e.g. `PROJ-123 add-login-page`). Re-running for the same task just
+created (detached), then a tab with the task name is added to it (e.g.
+`ios-abc-123`, see "Task name" below). Re-running for the same task just
 focuses that tab, it never piles up duplicates. The session name is yours to
 choose, so you can keep one session per area of work (here, `work`):
 
@@ -171,6 +171,53 @@ How it lands you there depends on where you run it from:
 `-z` is optional and composes with the rest: omit it for the normal in-terminal
 behaviour, add `-c`/`-p` to run Claude inside the tab. If `zellij` is not on
 `PATH`, `-z` is ignored with a notice and the command falls back to the terminal.
+
+## Task name
+
+The zellij tab and the Claude session share one name: a short project prefix and
+the ticket, lowercased. A ticket `ABC-123` in an iOS app repo becomes
+`ios-abc-123`, in an Android repo `android-abc-123`, in a backend repo
+`api-abc-123`. The ticket keeps its own project letters; the prefix only says
+which repo the work is in, so a tab bar with several tasks open is readable.
+
+The prefix is picked in this order:
+
+1. `--prefix <name>` on the command line. `--no-prefix` gives the bare ticket.
+2. An alias for the repo from `A_TASK_PREFIX_ALIASES`, a list of
+   `<repo-dir-name>=<alias>` pairs separated by spaces or commas. It is an
+   ordinary exported variable, so it goes wherever the machine's other values go:
+   an org overlay's shell profile, `configs.profile`, or `root.local.config`.
+   That keeps real repo names out of this repo. When a repo appears twice the
+   last pair wins, so a later layer can append an override:
+
+   ```bash
+   export A_TASK_PREFIX_ALIASES="${A_TASK_PREFIX_ALIASES:-} my-ios-app-swift=ios my-android-app=android"
+   ```
+
+3. The repo's own directory name, lowercased, with anything other than `a-z` and
+   `0-9` turned into `-`. A name longer than `A_TASK_PREFIX_MAX` (default 12)
+   becomes its word initials (`long-backend-service-name` gives `lbsn`), or is cut
+   to the cap when it is a single word. Set an alias when that result is not
+   readable.
+
+When there is no usable prefix, the name is the ticket alone (`ABC-123`), exactly
+as it was before prefixes existed. Naming never fails a task start.
+
+The name is computed from the repo and the ticket, so a re-run for the same task
+computes the same name and focuses the tab it made. Two cases change that: a
+different `--prefix` on the re-run, or an alias edited in between. Either one
+opens a new tab, so pass the same `--prefix` again.
+
+Tabs opened before this existed are named after the bare ticket. They keep
+working as ordinary tabs. When such a task is resumed and no tab with the new
+name exists yet, `a_c_task_start` finds the old bare-ticket tab and focuses it,
+rather than opening a second tab with a second Claude in the same worktree.
+
+To see the name without creating anything, add `--dry-run`:
+
+```bash
+a_c_task_start --dry-run -y -r myrepo -t ABC-123 -f "list filter" -b main -z work -c
+```
 
 ## Confirmation & auto mode
 
