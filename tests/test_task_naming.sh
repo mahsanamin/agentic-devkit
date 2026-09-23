@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Behaviour fixture for the task naming helpers in a_s_task_common.sh: the name a
-# task's zellij tab and its Claude session share.
+# task's zellij tab and its Claude session share, <prefix>-<ticket>-<feature>.
 #
 # The name has to be the same on every run for the same repo and ticket, because
 # that is how a re-run finds the tab it made. A name that drifts opens a second
@@ -59,8 +59,22 @@ for sh in $shells; do
         'a_task_session_name ABC-123 "$(a_task_repo_prefix ___)"'
     check "$sh" "same input gives the same name every time" "same" \
         'a="$(a_task_session_name ABC-1 "$(a_task_repo_prefix x-y-z-long-name-here)")"; b="$(a_task_session_name ABC-1 "$(a_task_repo_prefix x-y-z-long-name-here)")"; [ "$a" = "$b" ] && echo same'
-    check "$sh" "the tab name matches the session name" "ios-abc-123" \
-        'a_task_zellij_tab_name ABC-123 ios'
+    check "$sh" "the tab name matches the session name" "ios-abc-123-add-login-page" \
+        'a_task_zellij_tab_name ABC-123 ios add-login-page'
+    check "$sh" "the feature part follows the ticket" "ios-abc-123-list-filter" \
+        'a_task_session_name ABC-123 ios list-filter'
+    check "$sh" "a long feature slug keeps only the whole words that fit" "api-abc-123-accept-bucketing" \
+        'a_task_session_name ABC-123 api accept-bucketing-id-header'
+    check "$sh" "a first word longer than the cap is cut" "abcdefghijklmnop" \
+        'a_task_short_feature abcdefghijklmnopqrstuvwxyz-more'
+    check "$sh" "A_TASK_NAME_FEATURE_MAX changes the feature cap" "add" \
+        'A_TASK_NAME_FEATURE_MAX=5 a_task_short_feature add-login-page'
+    check "$sh" "a free-text label is cleaned like a slug" "ios-abc-123-list-filter" \
+        'a_task_session_name ABC-123 ios "List Filter!"'
+    check "$sh" "a feature with no prefix still names the task" "abc-123-list-filter" \
+        'a_task_session_name ABC-123 "" list-filter'
+    check "$sh" "a ticket-only branch has no feature part" "ios-abc-123" \
+        'a_task_session_name ABC-123 ios ""'
 done
 
 echo ""

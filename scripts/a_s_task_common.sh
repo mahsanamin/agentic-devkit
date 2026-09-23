@@ -432,9 +432,16 @@ a_task_permission_mode() {
 # `command -v zellij` and these never touch the caller's own shell.
 
 # ------------------------------------------------------- task naming ---
-# A task's zellij tab and its Claude session share one name, built from a short
-# project prefix and the ticket, lowercased: "ios-abc-123", "api-abc-123". A tab
-# bar full of bare ticket keys says nothing about which project each one is.
+# A task's zellij tab and its Claude session share one name, lowercased:
+#   <prefix>-<ticket>-<feature>     e.g. "ios-abc-123-login-filter"
+# The prefix says which project, the feature says what the work is, and the
+# ticket keeps the name unique. A tab bar full of bare ticket keys says neither.
+#
+# The feature part is the first words of the branch's feature slug, as many as
+# fit in A_TASK_NAME_FEATURE_MAX characters (default 16); a first word longer
+# than that is cut. A ticket-only branch has no feature part. The slug is part
+# of the branch name, so it cannot change for an existing task, and a re-run
+# computes the same name. a_c_task_start --label <text> replaces it by hand.
 #
 # Where the prefix comes from, first match wins:
 #   1. a_c_task_start --prefix <name> (or --no-prefix for the bare ticket)
@@ -452,6 +459,7 @@ a_task_permission_mode() {
 # With no usable prefix the name is the ticket alone, unchanged, as it was before
 # prefixes existed. Naming never fails a task start.
 A_TASK_PREFIX_MAX="${A_TASK_PREFIX_MAX:-12}"
+A_TASK_NAME_FEATURE_MAX="${A_TASK_NAME_FEATURE_MAX:-16}"
 
 # Lowercase $1, turn every run of characters outside a-z0-9 into one "-", and
 # trim leading and trailing dashes. Prints "" when nothing usable is left.
@@ -502,24 +510,51 @@ a_task_repo_prefix() {
     printf '%s' "$p"
 }
 
+# Print the short feature part of a task name from feature slug $1: whole
+# words, in order, while they fit in A_TASK_NAME_FEATURE_MAX characters
+# ("accept-bucketing-id-header" -> "accept-bucketing" at the default cap). A first word longer
+# than the cap is cut to it. Prints "" for an empty slug.
+a_task_short_feature() {
+    local slug w out="" max="${A_TASK_NAME_FEATURE_MAX:-16}"
+    slug="$(a_task_prefix_sanitize "$1")"
+    [ -n "$slug" ] || return 0
+    while IFS= read -r w; do
+        [ -n "$w" ] || continue
+        if [ -z "$out" ]; then
+            out="${w:0:$max}"
+        elif [ $(( ${#out} + 1 + ${#w} )) -le "$max" ]; then
+            out="$out-$w"
+        else
+            break
+        fi
+    done < <(printf '%s\n' "$slug" | tr '-' '\n')
+    printf '%s' "$out"
+}
+
 # Build the name shared by a task's zellij tab and its Claude session:
-# "<prefix>-<ticket>" lowercased, or the ticket alone when prefix $2 is empty.
-# The same (ticket, prefix) always gives the same name, which is what lets a
-# re-run find the tab it created instead of opening a second one.
+# "<prefix>-<ticket>-<feature>" lowercased, from ticket $1, prefix $2 and feature
+# slug $3 (shortened by a_task_short_feature). An empty prefix or feature is left
+# out; with both empty the name is the ticket alone, unchanged. The same inputs
+# always give the same name, which is what lets a re-run find the tab it created
+# instead of opening a second one.
 a_task_session_name() {
-    local ticket="$1" prefix
+    local ticket="$1" prefix feature name
     prefix="$(a_task_prefix_sanitize "${2:-}")"
-    if [ -n "$prefix" ]; then
-        printf '%s' "$prefix-$ticket" | tr '[:upper:]' '[:lower:]'
-    else
+    feature="$(a_task_short_feature "${3:-}")"
+    if [ -z "$prefix" ] && [ -z "$feature" ]; then
         printf '%s' "$ticket"
+        return 0
     fi
+    name="$ticket"
+    [ -n "$prefix" ]  && name="$prefix-$name"
+    [ -n "$feature" ] && name="$name-$feature"
+    printf '%s' "$name" | tr '[:upper:]' '[:lower:]'
 }
 
 # The zellij tab title for a task. Kept as its own entry point for callers that
 # only want the tab; it is the shared session name, see a_task_session_name.
 a_task_zellij_tab_name() {
-    a_task_session_name "$1" "${2:-}"
+    a_task_session_name "$1" "${2:-}" "${3:-}"
 }
 
 # Echo the state of zellij session $1: running | exited | absent.
