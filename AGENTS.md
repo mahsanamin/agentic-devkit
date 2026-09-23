@@ -165,6 +165,8 @@ agentic-devkit/
 
 **An agent** - create one canonical `agents/<name>.md` with the documented tier and capability fields. `a_s_render_agent` translates it for Codex and Google clients. Use a skill instead when the workflow should run inline rather than in an isolated subagent context.
 
+**An improvement you are NOT making now** - if the devkit itself is wrong, missing, or confusing and you are not fixing it in this session, run `a_sk_report_improvement`. It files one GitHub issue on the devkit repository (default `mahsanamin/agentic-devkit`, override with `A_DEVKIT_ISSUE_REPO` on a fork), and `a_r_l_improve_from_issues` works that backlog later. This is the default home for devkit friction from every machine, so the same gap hit by three people becomes one issue instead of three private workarounds. A small fix you can make right now beats an issue. The tracker is public: describe the problem generically and never put employer, client, host, ticket, or colleague names in it.
+
 **An always-on rule, a machine fact, or a glossary term** - do not hand-edit a provider's generated global file. Edit the source and run `a_c_agent_memory build`. Generic rule -> `memory/core-rules.md`; personal rule, machine identity, or glossary row -> `machine/*.md` in the private overlay.
 
 ---

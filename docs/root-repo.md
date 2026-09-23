@@ -58,7 +58,8 @@ variable names this devkit's scripts already use.
 | Key | Becomes | Used for |
 |---|---|---|
 | `MACHINE_NAME` | `A_MACHINE_NAME` | selects `machine/<name>.md` in an overlay |
-| `MACHINE_TYPE` | `a_machine_type` | OS family, `macos` or `linux`. Empty is normal: derived from `uname`. With `ORG_SLUG`, selects `<slug>.<type>.profile` in the org overlay |
+| `MACHINE_TYPE` | `a_machine_type` | OS family, `macos` or `linux`. Empty is normal: derived from `uname`. With `ORG_SLUG`, selects `<slug>.<type>.profile` in the org overlay. An old CPU value such as `m1` or `i7` is read as `MACHINE_ARCH` instead |
+| `MACHINE_ARCH` | `a_machine_arch`, `a_docker_platform` | CPU, `arm64` or `x64`. Empty is normal: derived from the hardware, correct under Rosetta too. `a_docker_platform` is the matching `linux/arm64` or `linux/amd64`, for a script that passes `--platform`. `DOCKER_DEFAULT_PLATFORM` is never set |
 | `ORG_SLUG` | `a_company_name` | the same |
 
 Machine values belong in `root.local.config`, which is gitignored, so one machine's values never

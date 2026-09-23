@@ -73,6 +73,37 @@ a_g_worktree_remove feature/auth -v              # only if merged (squash-merge 
 a_g_worktree_remove feature/auth -f              # force, no checks
 ```
 
+## What comes with you into a new worktree
+
+`git worktree add` gives you the committed tree and nothing else, so local config a project
+never commits (`.env`, `.envrc`, `.claude/settings.local.json`) would be missing and the project
+would not run. `a_g_worktree_init` and `a_g_worktree_review` copy that across from the main
+checkout. What they copy is decided in
+[`scripts/a_s_worktree_dotfiles.sh`](../scripts/a_s_worktree_dotfiles.sh), one rule for both:
+
+| Root dotfile in the main checkout | What happens |
+|---|---|
+| Tracked | Not copied. The checkout already produced it, at the branch's revision. |
+| Ignored (`.env`, `.envrc`, …) | Copied. This is what the copy exists for. |
+| Untracked and not ignored | **Left behind**, and named in the output. |
+| Tracked directory with ignored files inside (`.claude/`) | Only the ignored files inside are copied. Anything untracked in there is left behind and named, same as at the root. |
+| Editor and build caches (`.gradle/`, `.idea/`, `.venv/`, …) | Skipped, whatever their git status. |
+
+The third row is the one worth knowing. A file that is untracked and not ignored is loose work
+someone left in the main clone: a scratch note, a half-finished script, a file from another task.
+Carried into a new branch it shows up in that worktree's `git status` and is one `git add -A` away
+from being committed and reviewed as if it belonged to the branch. So it stays where it is, and
+the command tells you which files it left:
+
+```
+Left behind, untracked in the base checkout and not ignored:
+    .scratch-notes
+  Re-run with --include-untracked to take them, or copy the one you need by hand.
+```
+
+`a_g_worktree_init --include-untracked` takes them anyway when you do want them. Uncommitted
+changes to *tracked* files never travel under any setting: the worktree is built from a commit.
+
 ## What stops you losing work
 
 - **Unpushed-commit warning** before any removal.

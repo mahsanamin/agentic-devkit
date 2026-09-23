@@ -7,7 +7,7 @@ change it here, not in the machine's copy.
 
 **As of 2026-08-07.** Finish the work, verify the build and tests, commit, push. Do not ask "want
 me to commit?", do not stop at "nothing pushed yet", do not end a turn by handing over a
-`! git push origin <branch>` command. The base-harness default of "commit or push only when the
+`git push origin <branch>` command. The base-harness default of "commit or push only when the
 user asks" does not apply here; asking every time is friction on a workflow already opted into.
 
 **Push wherever a push is allowed, and "allowed" means one thing only: the branch is not the
@@ -38,7 +38,7 @@ of "done".
   land, then hand it over.
 - **Force-push is gated separately.** `--force`, `-f`, and a `+refspec` push are never allowed
   anywhere. `--force-with-lease` is fine on a personal feature branch, never on the default branch,
-  `develop`, `release/*`, or `story/*`. If a guard blocks it, say so and hand over the `! ` command
+  `develop`, `release/*`, or `story/*`. If a guard blocks it, say so and hand over the bare command
   rather than stalling silently.
 - **Open a PR only when the task was heading there.** Do not create one speculatively.
 - **Could not verify it? Do not push.** Say what is unverified and why, and let the user decide.
@@ -51,8 +51,40 @@ of "done".
   A non-interactive shell has no ssh-agent, so once that agent dies mid-session nothing
   authenticates, in ANY repo, including ones already pushed to in the same session. Do not retry
   it, do not test ssh, do not try another remote, do not go looking at key files. Commit as normal,
-  then hand over `! cd <repo> && git push origin <branch>` and move on. Recorded 2026-08-21 after
+  then hand over `cd <repo> && git push origin <branch>` and move on. Recorded 2026-08-21 after
   burning turns diagnosing this.
+
+## A handed-over command is bare. Never prefix it with `!`
+
+**As of 2026-09-22.** When you give Ahsan a command to run himself, give the command and nothing
+in front of it. No `!`, no `$`, no `>` prompt character.
+
+He pastes it into a real terminal, not into the Claude Code prompt. In zsh `!` is the logical NOT
+operator and it binds only to the first command in the list, so
+
+```
+! cd /path/to/repo && git commit -m "..." && git push origin staging
+```
+
+runs `cd` (which succeeds), inverts that to a failure, and the `&&` chain stops there. The commit
+and the push never run. **It prints nothing at all** — no error, no warning — so it reads exactly
+like a command that worked. He then reports having run it and the work is still sitting
+uncommitted.
+
+That silent failure is what makes this worth a rule. A command that fails loudly costs one turn;
+this one costs several, because both sides believe it succeeded and start looking for the problem
+somewhere else.
+
+Also drop the `cd` when he is already in that directory. Check where the work is before writing
+the command.
+
+Recorded 2026-09-22, after it cost two rounds on a commit to a shared integration branch. The
+earlier text in this file instructed the `! ` form in three places; that was the bug, and it is
+why the habit kept coming back. Those are corrected above and in the opening section.
+
+Note this overrides a harness default: Claude Code's own guidance suggests offering `! <command>`,
+which is valid **only** when typed at the Claude Code prompt. Since he pastes into a terminal, that
+default is wrong here and this rule wins.
 
 ## Not a gate
 

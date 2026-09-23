@@ -20,6 +20,7 @@ none were zellij or worktree bugs.
 |---|---|
 | A session seeing its own zellij session | `ZELLIJ_SESSION_NAME` is present inside the agent's shell tool, so it can open tabs in the session it runs in. No daemon, no socket. |
 | Opening a tab that runs a command | `a_c_zellij_tab <session> <tab> --cwd DIR --cmd '...'` |
+| Forking the session you are in, into a tab | `a_c_session_fork [tab]`, which wraps `claude --resume <id> --fork-session`. `CLAUDE_CODE_SESSION_ID` is present in the agent's shell tool, so a session can read its own id and fork itself. |
 | Naming a Claude child so it is addressable | `claude -n <name>` writes that name into `~/.claude/sessions/<pid>.json`, which is the peer registry |
 | Parent talking to a Claude child | The harness peer-messaging tool, addressed by that name |
 | One-shot delegation to Codex | `codex exec -s workspace-write -o out.txt "prompt"` |
@@ -98,6 +99,23 @@ and building messaging for them is wasted effort.
 want to watch and steer. This needs a spawn command: worktree, tab, named child,
 a handshake that confirms the child is addressable, and a registry so the parent
 can find it again.
+
+**Forking.** A copy of the session you are already in, carrying its whole
+context, running in its own tab. `a_c_session_fork` does this. Reach for it when
+the second lane needs everything this conversation already knows and re-explaining
+it would cost more than the work: a risky refactor you may throw away, a second
+reading of the same diff, a tangent worth trying without betting the conversation
+on it.
+
+The mechanism is `claude --resume <id> --fork-session`. The `--fork-session` half
+is what makes it safe: the fork replays the transcript and then takes a NEW
+session id, so its messages go to its own file. A plain `--resume` would put two
+live clients on one transcript, which is how you lose work rather than parallelise
+it.
+
+Forking is not a substitute for a peer session. The fork starts as a copy, so it
+shares every wrong assumption the parent holds. When you want an independent
+reading, spawn a fresh peer and let it form its own view from the code.
 
 ## The mailbox pattern, for a non-Claude child
 

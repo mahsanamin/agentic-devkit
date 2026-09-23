@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# a_g_worktree_update, non-interactive entry point.
+# The implementation is the a_g_worktree_update function in sourced/worktree.sh; this
+# file exists so an agent's Bash tool, which never sources the profile, can run it.
+exec "$(dirname "${BASH_SOURCE[0]}")/a_s_worktree_entry.sh" update "$@"

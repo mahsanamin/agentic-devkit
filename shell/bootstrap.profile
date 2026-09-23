@@ -47,18 +47,47 @@ export A_MACHINE_NAME="${MACHINE_NAME:-${A_MACHINE_NAME:-}}"
 
 # Machine and org identity, used to find the org shell profile below.
 export a_company_name="${ORG_SLUG:-${a_company_name:-}}"
-# OS family, which is what the org profile below actually varies by. An explicit value still
-# wins; otherwise it is derived, so a machine can never carry a hand-typed value that stopped
-# being true when its OS changed.
+# Two separate machine facts, both derived, so a machine never carries a hand-typed value that
+# stopped being true:
+#   a_machine_type  OS family, macos or linux. The org profile below is picked by this.
+#   a_machine_arch  CPU architecture, arm64 or x64. What Docker images and binaries care about.
+# An explicit MACHINE_TYPE / MACHINE_ARCH still wins.
 _a_mt="${MACHINE_TYPE:-${a_machine_type:-}}"
+_a_ma="${MACHINE_ARCH:-${a_machine_arch:-}}"
+# Older configs put a CPU model in the type ('m1' for Apple Silicon, 'i7' for Intel). That named
+# no profile, so the org profile silently never loaded. Read such a value as the CPU it meant,
+# and derive the OS family as usual.
+case "$_a_mt" in
+    m[0-9]*|arm|arm64|aarch64|apple*) [ -n "$_a_ma" ] || _a_ma="arm64"; _a_mt="" ;;
+    i[0-9]*|intel|x64|x86_64|amd64)   [ -n "$_a_ma" ] || _a_ma="x64";   _a_mt="" ;;
+esac
 if [ -z "$_a_mt" ]; then
     case "$(uname -s)" in
         Darwin) _a_mt="macos" ;;
         Linux)  _a_mt="linux" ;;
     esac
 fi
+if [ -z "$_a_ma" ]; then
+    _a_ma="$(uname -m)"
+    # A shell running under Rosetta reports x86_64 on Apple Silicon. Ask for the hardware.
+    [ "$(uname -s)" = "Darwin" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ] && _a_ma="arm64"
+fi
+case "$_a_ma" in
+    arm64|aarch64|arm*)  _a_ma="arm64" ;;
+    x86_64|amd64|x64)    _a_ma="x64" ;;
+esac
 export a_machine_type="$_a_mt"
-unset _a_mt
+export a_machine_arch="$_a_ma"
+# The matching Docker platform, for a script that needs to pass --platform explicitly, e.g.
+#   docker build --platform "$a_docker_platform" .
+# DOCKER_DEFAULT_PLATFORM is deliberately NOT set: that would change every docker command on
+# the machine, including ones for running containers that expect their current images.
+case "$_a_ma" in
+    arm64) export a_docker_platform="linux/arm64" ;;
+    x64)   export a_docker_platform="linux/amd64" ;;
+    *)     export a_docker_platform="" ;;
+esac
+unset _a_mt _a_ma
 
 # Repo tiers, which become the cd_p / cd_w / cd_g aliases in generic.profile.
 export a_dir_w_repos="${ORG_REPOS_DIR:-${a_dir_w_repos:-}}"

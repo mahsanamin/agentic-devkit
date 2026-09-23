@@ -64,6 +64,24 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
 fi
 
 GIT_ROOT=$(git rev-parse --show-toplevel)
+
+# See a_g_worktree_init for why this loader exists and why a missing helper copies
+# nothing rather than everything.
+a_s_load_dotfile_helper() {
+    local self="${BASH_SOURCE[0]:-$0}" dir cand
+    dir="$(cd -P "$(dirname "$self")" 2>/dev/null && pwd)"
+    for cand in "$dir/a_s_worktree_dotfiles.sh" \
+                "${MY_WORKFLOW_DIR:-$HOME/.claude}/scripts/a_s_worktree_dotfiles.sh"; do
+        if [ -f "$cand" ]; then
+            # shellcheck disable=SC1090
+            . "$cand"
+            return 0
+        fi
+    done
+    echo -e "${YELLOW}Local config not copied: a_s_worktree_dotfiles.sh was not found.${NC}"
+    echo "  Re-run the devkit installer so it sits beside this script."
+    return 1
+}
 PROJECT_NAME=$(basename "$GIT_ROOT")
 WORKTREES_DIR="$(dirname "$GIT_ROOT")/WorkTrees"
 
@@ -154,17 +172,11 @@ if [ $? -eq 0 ]; then
     echo ""
     echo -e "${GREEN}✓ Review worktree created${NC}"
 
-    DOTFILES_COPIED=0
-    for dotfile in "$GIT_ROOT"/.*; do
-        basename="$(basename "$dotfile")"
-        if [[ "$basename" == "." || "$basename" == ".." || "$basename" == ".git" ]]; then
-            continue
-        fi
-        cp -Rn "$dotfile" "$WORKTREE_PATH/" 2>/dev/null
-        DOTFILES_COPIED=$((DOTFILES_COPIED + 1))
-    done
-    if [ $DOTFILES_COPIED -gt 0 ]; then
-        echo -e "${GREEN}✓ Copied $DOTFILES_COPIED dotfile(s) to worktree${NC}"
+    # Same copy rule as a_g_worktree_init, and it matters more here: a review
+    # worktree exists to show what the author pushed, so anything of ours that is
+    # not committed and not ignored would read as part of their branch.
+    if a_s_load_dotfile_helper; then
+        a_s_copy_local_dotfiles "$GIT_ROOT" "$WORKTREE_PATH"
     fi
 
     echo ""

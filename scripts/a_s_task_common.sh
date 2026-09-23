@@ -431,15 +431,130 @@ a_task_permission_mode() {
 # not the caller is currently inside zellij. No-op-friendly: callers gate on
 # `command -v zellij` and these never touch the caller's own shell.
 
-# Build the zellij tab title for a task: the Jira ticket / PR id alone, e.g.
-# "PROJ-123". It is unique and short, so the tab is easy to spot and switch to in
-# the tab bar. The feature slug is intentionally NOT shown in the title (it lives
-# in the branch / worktree name); a second arg is accepted for backward
-# compatibility but ignored, so tabs stay compact and the name is predictable
-# (re-running for the same ticket finds the exact tab instead of duplicating it).
+# ------------------------------------------------------- task naming ---
+# A task's zellij tab and its Claude session share one name, lowercased:
+#   <prefix>-<ticket>-<feature>     e.g. "ios-abc-123-login-filter"
+# The prefix says which project, the feature says what the work is, and the
+# ticket keeps the name unique. A tab bar full of bare ticket keys says neither.
+#
+# The feature part is the first words of the branch's feature slug, as many as
+# fit in A_TASK_NAME_FEATURE_MAX characters (default 16); a first word longer
+# than that is cut. A ticket-only branch has no feature part. The slug is part
+# of the branch name, so it cannot change for an existing task, and a re-run
+# computes the same name. a_c_task_start --label <text> replaces it by hand.
+#
+# Where the prefix comes from, first match wins:
+#   1. a_c_task_start --prefix <name> (or --no-prefix for the bare ticket)
+#   2. A_TASK_PREFIX_ALIASES, a list of <repo-name>=<alias> pairs separated by
+#      spaces or commas. It is an ordinary exported variable, so it is set where
+#      every other machine or org value is set: the org overlay's shell profile,
+#      configs.profile, or root.local.config. Real repo names stay out of this
+#      public repo that way. When one repo appears twice, the LAST pair wins, so
+#      a later layer can append an override:
+#        export A_TASK_PREFIX_ALIASES="${A_TASK_PREFIX_ALIASES:-} my-ios-app=ios"
+#   3. derived from the repo's directory name: lowercased, anything but a-z and
+#      0-9 turned into "-". A name longer than A_TASK_PREFIX_MAX (default 12)
+#      becomes its word initials ("long-backend-service-name" -> "lbsn"), or is
+#      cut to the cap when it is a single word.
+# With no usable prefix the name is the ticket alone, unchanged, as it was before
+# prefixes existed. Naming never fails a task start.
+A_TASK_PREFIX_MAX="${A_TASK_PREFIX_MAX:-12}"
+A_TASK_NAME_FEATURE_MAX="${A_TASK_NAME_FEATURE_MAX:-16}"
+
+# Lowercase $1, turn every run of characters outside a-z0-9 into one "-", and
+# trim leading and trailing dashes. Prints "" when nothing usable is left.
+a_task_prefix_sanitize() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+        | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//'
+}
+
+# Print the alias configured for repo name $1 in A_TASK_PREFIX_ALIASES, or
+# nothing. Matching ignores case. Written with `tr` + `read` rather than word
+# splitting, because this library is also sourced into zsh, which does not split
+# an unquoted variable.
+a_task_prefix_alias() {
+    local want pair key val found=""
+    want="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    [ -n "$want" ] && [ -n "${A_TASK_PREFIX_ALIASES:-}" ] || return 0
+    while IFS= read -r pair; do
+        case "$pair" in *=*) ;; *) continue ;; esac
+        key="$(printf '%s' "${pair%%=*}" | tr '[:upper:]' '[:lower:]')"
+        val="${pair#*=}"
+        [ "$key" = "$want" ] && found="$val"
+    done < <(printf '%s\n' "$A_TASK_PREFIX_ALIASES" | tr ' ,\t' '\n\n\n')
+    printf '%s' "$found"
+}
+
+# Print the prefix for repo name $1 (a directory basename): the configured alias,
+# else a short form of the name itself. Prints "" when there is nothing usable.
+a_task_repo_prefix() {
+    local repo="$1" al p initials w max="${A_TASK_PREFIX_MAX:-12}"
+    al="$(a_task_prefix_alias "$repo")"
+    if [ -n "$al" ]; then
+        p="$(a_task_prefix_sanitize "$al")"
+        printf '%s' "${p:0:$max}"
+        return 0
+    fi
+    p="$(a_task_prefix_sanitize "$repo")"
+    if [ "${#p}" -gt "$max" ]; then
+        case "$p" in
+            *-*)
+                initials=""
+                while IFS= read -r w; do
+                    [ -n "$w" ] && initials="$initials${w:0:1}"
+                done < <(printf '%s\n' "$p" | tr '-' '\n')
+                p="$initials" ;;
+        esac
+        p="${p:0:$max}"
+    fi
+    printf '%s' "$p"
+}
+
+# Print the short feature part of a task name from feature slug $1: whole
+# words, in order, while they fit in A_TASK_NAME_FEATURE_MAX characters
+# ("accept-bucketing-id-header" -> "accept-bucketing" at the default cap). A first word longer
+# than the cap is cut to it. Prints "" for an empty slug.
+a_task_short_feature() {
+    local slug w out="" max="${A_TASK_NAME_FEATURE_MAX:-16}"
+    slug="$(a_task_prefix_sanitize "$1")"
+    [ -n "$slug" ] || return 0
+    while IFS= read -r w; do
+        [ -n "$w" ] || continue
+        if [ -z "$out" ]; then
+            out="${w:0:$max}"
+        elif [ $(( ${#out} + 1 + ${#w} )) -le "$max" ]; then
+            out="$out-$w"
+        else
+            break
+        fi
+    done < <(printf '%s\n' "$slug" | tr '-' '\n')
+    printf '%s' "$out"
+}
+
+# Build the name shared by a task's zellij tab and its Claude session:
+# "<prefix>-<ticket>-<feature>" lowercased, from ticket $1, prefix $2 and feature
+# slug $3 (shortened by a_task_short_feature). An empty prefix or feature is left
+# out; with both empty the name is the ticket alone, unchanged. The same inputs
+# always give the same name, which is what lets a re-run find the tab it created
+# instead of opening a second one.
+a_task_session_name() {
+    local ticket="$1" prefix feature name
+    prefix="$(a_task_prefix_sanitize "${2:-}")"
+    feature="$(a_task_short_feature "${3:-}")"
+    if [ -z "$prefix" ] && [ -z "$feature" ]; then
+        printf '%s' "$ticket"
+        return 0
+    fi
+    name="$ticket"
+    [ -n "$prefix" ]  && name="$prefix-$name"
+    [ -n "$feature" ] && name="$name-$feature"
+    printf '%s' "$name" | tr '[:upper:]' '[:lower:]'
+}
+
+# The zellij tab title for a task. Kept as its own entry point for callers that
+# only want the tab; it is the shared session name, see a_task_session_name.
 a_task_zellij_tab_name() {
-    local ticket="$1"
-    printf '%s' "$ticket"
+    a_task_session_name "$1" "${2:-}" "${3:-}"
 }
 
 # Echo the state of zellij session $1: running | exited | absent.

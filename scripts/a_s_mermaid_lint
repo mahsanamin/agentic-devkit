@@ -1,0 +1,236 @@
+#!/bin/bash
+# a_s_mermaid_lint - catch the Mermaid syntax that blanks a WHOLE diagram, before it is
+# published. Mermaid fails hard: one bad character replaces the entire diagram with a parse
+# error whose message names none of the characters involved, so the author sees "Parse error
+# on line 8 ... got 'NEWLINE'" and has nothing to go on.
+#
+# What it checks (each one verified against mermaid 12 by parsing and rendering):
+#   sequenceDiagram
+#     - a `;` in message text, Note text, a `participant ... as` alias, or a loop/alt/par
+#       label. `;` ends the statement there, so the rest of the line is parsed as a new
+#       statement and the diagram dies. Fix: write `#59;` instead.
+#     - literal double quotes. They are NOT syntax in a sequence diagram: they render as
+#       visible " marks and protect nothing. Warning, not an error.
+#   flowchart / graph
+#     - an unquoted label (node text, or the text between |...|) containing ( ) [ ] { } or @.
+#       Fix: wrap the label in double quotes, which IS syntax here.
+#   stateDiagram-v2
+#     - a `;` in a transition label. This one PARSES and renders wrong: the label is cut and
+#       you get phantom states. Nothing else would ever tell you.
+#   any type
+#     - an odd number of double quotes on a line (unbalanced quote).
+#     - a corrupted fence (backslash-escaped backticks) from writing markdown through a shell.
+#
+# Rules and rationale: agentic-devkit/rules/mermaid.md
+#
+# Usage: a_s_mermaid_lint [options] [file ...]
+#   With no file, or with `-`, reads from stdin. Markdown files are scanned for ```mermaid
+#   fenced blocks; a file with no fence at all is treated as one raw diagram.
+#
+#   -q, --quiet       Print nothing; use the exit code only.
+#   -s, --strict      Treat warnings as errors too.
+#       --no-compile  Skip the optional mmdc compile check even if mmdc is installed.
+#   -h, --help        Show this help.
+#
+# Exit codes: 0 clean (warnings allowed) - 1 findings - 2 bad usage.
+
+set -uo pipefail
+
+quiet=0
+strict=0
+no_compile=0
+files=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -q|--quiet)   quiet=1 ;;
+    -s|--strict)  strict=1 ;;
+    --no-compile) no_compile=1 ;;
+    -h|--help)    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -)            files+=("-") ;;
+    -*)           echo "a_s_mermaid_lint: unknown option $1" >&2; exit 2 ;;
+    *)            files+=("$1") ;;
+  esac
+  shift
+done
+[ ${#files[@]} -eq 0 ] && files=("-")
+
+errors=0
+warnings=0
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/a_mermaid_lint.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+say() { [ "$quiet" -eq 1 ] || printf '%s\n' "$*"; }
+
+report() {  # level file line message fix line_text
+  local level="$1" f="$2" ln="$3" msg="$4" fix="$5" text="$6"
+  if [ "$level" = ERROR ]; then errors=$((errors+1)); else warnings=$((warnings+1)); fi
+  say "$f:$ln: $level: $msg"
+  say "    | $text"
+  [ -n "$fix" ] && say "    fix: $fix"
+}
+
+# strip "..." spans so characters inside a quoted label are not judged as unquoted
+strip_quoted() { printf '%s' "$1" | sed 's/"[^"]*"//g'; }
+
+# strip numeric character entities (#59; and friends) so an escaped semicolon is not a finding
+strip_entities() { printf '%s' "$1" | sed 's/#[0-9][0-9]*;//g'; }
+
+count_quotes() { printf '%s' "$1" | tr -cd '"' | wc -c | tr -d ' '; }
+
+has_hazard() {  # $1 = label text; hazards are the characters that break an unquoted label
+  printf '%s' "$1" | grep -q '[][(){}@]'
+}
+
+lint_block() {  # $1 = block file, $2 = source file label, $3 = line offset of first block line
+  local bf="$1" src="$2" off="$3"
+  local dtype="" line n=0 stripped labels lab inner
+  local q_count=0 q_ln=0 q_text=""
+
+  # diagram type: first line that is not blank and not a %% comment/directive
+  while IFS= read -r line; do
+    case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in
+      ''|'%%'*) continue ;;
+      *) dtype="$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | awk '{print $1}')"; break ;;
+    esac
+  done < "$bf"
+
+  while IFS= read -r line; do
+    n=$((n+1))
+    local ln=$((off + n - 1))
+    local bare="$(printf '%s' "$line" | sed 's/^[[:space:]]*//')"
+    case "$bare" in ''|'%%'*) continue ;; esac
+
+    # unbalanced quote, any diagram type
+    if [ "$(( $(count_quotes "$line") % 2 ))" -ne 0 ]; then
+      report WARN "$src" "$ln" "odd number of double quotes on this line" \
+        "close the quote, or remove both" "$bare"
+    fi
+
+    case "$dtype" in
+      sequenceDiagram)
+        stripped="$(strip_entities "$line")"
+        if printf '%s' "$stripped" | grep -q ';[[:space:]]*[^[:space:]]'; then
+          report ERROR "$src" "$ln" \
+            "';' ends the statement in a sequenceDiagram, so this blanks the whole diagram" \
+            "write '#59;' instead of ';', or reword to drop it" "$bare"
+        fi
+        if printf '%s' "$line" | grep -q '"'; then
+          q_count=$((q_count+1))
+          [ "$q_ln" -eq 0 ] && { q_ln="$ln"; q_text="$bare"; }
+        fi
+        ;;
+      flowchart|flowchart-elk|graph)
+        stripped="$(strip_quoted "$line")"
+        # edge labels: |...|
+        labels="$(printf '%s' "$stripped" | grep -oE '\|[^|]*\|' 2>/dev/null)"
+        for lab in $(printf '%s' "$labels" | tr ' ' '\001'); do
+          inner="$(printf '%s' "$lab" | tr '\001' ' ' | sed 's/^|//; s/|$//')"
+          if has_hazard "$inner"; then
+            report ERROR "$src" "$ln" \
+              "unquoted edge label contains a character that breaks the parser" \
+              "quote it: |\"$inner\"|" "$bare"
+          fi
+        done
+        # node labels: the [...] form, which is the one that is safe to extract
+        labels="$(printf '%s' "$stripped" | grep -oE '\[[^][]*\]' 2>/dev/null)"
+        for lab in $(printf '%s' "$labels" | tr ' ' '\001'); do
+          inner="$(printf '%s' "$lab" | tr '\001' ' ' | sed 's/^\[//; s/\]$//')"
+          # peel the shape wrappers: [(cylinder)], [[subroutine]], [/para/], [\slant/], [>flag]
+          case "$inner" in
+            '('*')') inner="${inner#(}"; inner="${inner%)}" ;;
+            '/'*'/') inner="${inner#/}"; inner="${inner%/}" ;;
+            '\'*'/') inner="${inner#\\}"; inner="${inner%/}" ;;
+            '/'*'\') inner="${inner#/}"; inner="${inner%\\}" ;;
+            '>'*)    inner="${inner#>}" ;;
+          esac
+          if printf '%s' "$inner" | grep -q '[(){}@]'; then
+            report ERROR "$src" "$ln" \
+              "unquoted node label contains a character that breaks the parser" \
+              "quote it: [\"$inner\"]" "$bare"
+          fi
+        done
+        ;;
+      stateDiagram|stateDiagram-v2)
+        case "$bare" in
+          *-\>*:*)
+            stripped="$(strip_entities "${bare#*:}")"
+            if printf '%s' "$stripped" | grep -q ';[[:space:]]*[^[:space:]]'; then
+              report ERROR "$src" "$ln" \
+                "';' in a transition label PARSES but splits it and invents phantom states" \
+                "write '#59;' instead of ';', or reword to drop it" "$bare"
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  done < "$bf"
+
+  if [ "$q_count" -gt 0 ]; then
+    report WARN "$src" "$q_ln" \
+      "$q_count line(s) in this sequenceDiagram wrap text in double quotes; quotes are not syntax here and render as visible \" marks" \
+      "remove the quotes from the message, Note and alias text" "$q_text"
+  fi
+
+  if [ "$no_compile" -eq 0 ] && command -v mmdc >/dev/null 2>&1; then
+    if ! mmdc -i "$bf" -o "$tmpdir/out.svg" >"$tmpdir/mmdc.log" 2>&1; then
+      report ERROR "$src" "$off" "mmdc failed to compile this block" \
+        "$(head -3 "$tmpdir/mmdc.log" | tr '\n' ' ')" "$dtype block"
+    fi
+  fi
+}
+
+lint_file() {
+  local src="$1" input="$tmpdir/in.md" n=0 in_block=0 start=0 blocks=0 line
+  if [ "$src" = "-" ]; then cat > "$input"; src="(stdin)"
+  elif [ -r "$src" ]; then cat "$src" > "$input"
+  else echo "a_s_mermaid_lint: cannot read $src" >&2; errors=$((errors+1)); return; fi
+
+  # corrupted fence, from markdown pushed through a shell with escaped backticks
+  if grep -n '\\`\\`\\`' "$input" >/dev/null 2>&1; then
+    local bad
+    bad="$(grep -n '\\`\\`\\`' "$input" | head -1)"
+    report ERROR "$src" "${bad%%:*}" "escaped backticks in a fence; every code and mermaid block is corrupted" \
+      "rewrite the file with a literal-writing tool, never a shell heredoc with escaped backticks" \
+      "${bad#*:}"
+  fi
+
+  : > "$tmpdir/block.mmd"
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n+1))
+    if [ "$in_block" -eq 0 ]; then
+      if printf '%s' "$line" | grep -qE '^[[:space:]]*`{3,}[[:space:]]*mermaid[[:space:]]*$'; then
+        in_block=1; start=$((n+1)); blocks=$((blocks+1)); : > "$tmpdir/block.mmd"
+      fi
+    else
+      if printf '%s' "$line" | grep -qE '^[[:space:]]*`{3,}[[:space:]]*$'; then
+        in_block=0
+        lint_block "$tmpdir/block.mmd" "$src" "$start"
+      else
+        printf '%s\n' "$line" >> "$tmpdir/block.mmd"
+      fi
+    fi
+  done < "$input"
+  [ "$in_block" -eq 1 ] && lint_block "$tmpdir/block.mmd" "$src" "$start"
+
+  # no fence anywhere: treat the file as one raw diagram if it opens like one
+  if [ "$blocks" -eq 0 ] && ! grep -qE '^[[:space:]]*`{3,}' "$input"; then
+    if head -5 "$input" | grep -qE '^[[:space:]]*(sequenceDiagram|flowchart|graph|stateDiagram|classDiagram|erDiagram|gantt|journey|pie|gitGraph|block-beta|mindmap|timeline|quadrantChart|sankey-beta|xychart-beta|requirementDiagram|C4Context)'; then
+      cp "$input" "$tmpdir/block.mmd"
+      lint_block "$tmpdir/block.mmd" "$src" 1
+    fi
+  fi
+}
+
+for f in "${files[@]}"; do lint_file "$f"; done
+
+if [ "$errors" -gt 0 ] || [ "$warnings" -gt 0 ]; then
+  say ""
+  say "a_s_mermaid_lint: $errors error(s), $warnings warning(s). Rules: agentic-devkit/rules/mermaid.md"
+else
+  say "a_s_mermaid_lint: clean."
+fi
+
+[ "$errors" -gt 0 ] && exit 1
+[ "$strict" -eq 1 ] && [ "$warnings" -gt 0 ] && exit 1
+exit 0

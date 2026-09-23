@@ -103,6 +103,22 @@ panes in and marks the command pane `focus=true`, and it also handles idempotent
 session, verifying the tab exists because `new-tab` exits 0 regardless, and the launcher's
 PATH/TERM/VIRTUAL_ENV. `a_c_zellij_fix` repairs a session already damaged this way.
 
+### Devkit friction goes to the devkit's issues, not into a private note
+
+When the tooling itself is the problem, a skill that misfired, an agent that returned the wrong
+shape, a helper the docs name that does not exist, a default that cost you time, **report it** with
+`a_sk_report_improvement`. It files one GitHub issue on the devkit repository, and
+`a_r_l_improve_from_issues` works that backlog later.
+
+This is the default destination, from every machine. Several machines run this setup, so a private
+workaround fixes it for one person and leaves it broken for the rest, and nobody ever learns the
+same gap was hit three times. Fix it yourself instead when the fix is small and you are already in
+the repo: a commit beats an issue.
+
+The tracker is **public**. Describe the problem in generic terms and never paste employer, client,
+project, host, ticket or colleague names into it. If it cannot be described without them, do not
+file it, and say why.
+
 ### Knowledge placement — where a new fact goes
 
 Project-specific guidance belongs **in that project's repo**. `AGENTS.md` is canonical;

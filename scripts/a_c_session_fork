@@ -1,0 +1,116 @@
+#!/bin/bash
+# a_c_session_fork: fork the Claude Code session you are sitting in into a NEW
+# zellij tab, so you get a second lane that already knows everything this one
+# knows, without disturbing the conversation you are in.
+#
+# Usage:
+#   a_c_session_fork [tab] [--prompt 'TEXT'] [options]
+#
+# Arguments:
+#   [tab]   name for the new tab.
+#           [default: fork-N, the next free number in the session, so repeated
+#            forks never collide and never silently focus an older fork]
+#
+# Options:
+#   --prompt 'TEXT'   send TEXT as the fork's opening message.   [default: none]
+#   --id ID           Claude session to fork.      [default: $CLAUDE_CODE_SESSION_ID]
+#   --session NAME    zellij session to open in.   [default: $ZELLIJ_SESSION_NAME]
+#   --cwd DIR         directory the fork starts in.              [default: $PWD]
+#   --no-focus        create the tab but stay where you are.     [default: off]
+#   -n, --dry-run     print what would happen; touch nothing.    [default: off]
+#   -h, --help        show this help
+#
+# What "fork" means here, exactly: `claude --resume <id> --fork-session`. The new
+# tab replays this session's transcript and then takes a NEW session id. So the
+# fork starts with your full context but its messages are written to its own
+# file. Nothing it does can corrupt, truncate, or race the session you forked
+# from. That is the whole point, and it is why this uses --fork-session rather
+# than a plain --resume, which would put two live clients on ONE transcript.
+#
+# Why you want this: some work is worth trying without betting the conversation
+# on it. A risky refactor, a second reviewer's reading of the same diff, a
+# tangent you may throw away. Forking gives that a real tab you can watch and
+# steer, and your original session keeps going regardless of how the fork ends.
+#
+# Why a command and not a subagent: a subagent runs inside this session, cannot
+# be watched while it works, cannot be redirected mid-flight, and dies when this
+# session does. A fork is a session in its own right on all three counts.
+#
+# Why it never hand-rolls zellij: opening a tab correctly is genuinely fiddly
+# (the tab-bar/status-bar panes, focus routing, EXITED sessions, the launcher's
+# PATH). a_c_zellij_tab already solves all of it, so this calls that and stays
+# small. Do not replace that call with `zellij action` here.
+#
+# Exit status:
+#   0  the fork tab exists and is running claude
+#   2  bad arguments
+#   3  not inside a Claude Code session (no session id to fork)
+#   4  no zellij session to open a tab in
+#   5  the session transcript could not be found (nothing to fork)
+#   6  a_c_zellij_tab is missing, or it failed to make the tab
+
+set -u
+prog="${0##*/}"
+
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
+die() { printf '%s: %s\n' "$prog" "$1" >&2; exit "$2"; }
+
+tab=""; prompt=""; sid="${CLAUDE_CODE_SESSION_ID:-}"; zsession="${ZELLIJ_SESSION_NAME:-}"
+cwd="$PWD"; focus=1; dry=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --prompt)   prompt="${2:-}"; shift ;;
+        --id)       sid="${2:-}"; shift ;;
+        --session)  zsession="${2:-}"; shift ;;
+        --cwd)      cwd="${2:-}"; shift ;;
+        --no-focus) focus=0 ;;
+        -n|--dry-run) dry=1 ;;
+        -h|--help)  usage; exit 0 ;;
+        -*)         die "unknown option: $1 (try --help)" 2 ;;
+        *)          [ -n "$tab" ] && die "unexpected argument: $1 (try --help)" 2
+                    tab="$1" ;;
+    esac
+    shift
+done
+
+# A fork needs something to fork FROM. Outside Claude Code this variable is
+# unset, and guessing "the newest transcript in this directory" would sometimes
+# fork a stranger's session, so refuse instead.
+[ -n "$sid" ] || die "not inside a Claude Code session; pass --id <session-id> to fork a specific one" 3
+[ -n "$zsession" ] || die "no zellij session; run inside zellij or pass --session <name>" 4
+[ -d "$cwd" ] || die "no such directory: $cwd" 2
+
+# Fail here rather than letting the tab open and claude error inside it, where
+# the message scrolls past and the tab just looks broken. Search instead of
+# deriving the project-dir encoding, so a rename or an odd path cannot break it.
+transcript=$(find "$HOME/.claude/projects" -name "$sid.jsonl" -type f 2>/dev/null | head -1)
+[ -n "$transcript" ] || die "no transcript for session $sid (looked under ~/.claude/projects)" 5
+
+# Default tab name: the next free fork-N. Same name = a_c_zellij_tab focuses the
+# existing tab instead of making one, which for a fork is exactly wrong: you
+# would land in a previous fork and think this one failed.
+if [ -z "$tab" ]; then
+    existing=$(zellij --session "$zsession" action query-tab-names 2>/dev/null || true)
+    n=1
+    while printf '%s\n' "$existing" | grep -qx "fork-$n"; do n=$((n + 1)); done
+    tab="fork-$n"
+fi
+
+cmd="claude --resume $sid --fork-session"
+[ -n "$prompt" ] && cmd="$cmd $(printf '%q' "$prompt")"
+
+if [ "$dry" -eq 1 ]; then
+    printf 'would fork session %s\n  into tab : %s (zellij session %s)\n  cwd      : %s\n  command  : %s\n' \
+        "$sid" "$tab" "$zsession" "$cwd" "$cmd"
+    exit 0
+fi
+
+command -v a_c_zellij_tab >/dev/null 2>&1 || die "a_c_zellij_tab not on PATH; run the devkit install.sh" 6
+
+set -- "$zsession" "$tab" --cwd "$cwd" --cmd "$cmd"
+[ "$focus" -eq 0 ] && set -- "$@" --no-focus
+
+a_c_zellij_tab "$@" || die "a_c_zellij_tab failed to create tab '$tab' (its exit code above says why)" 6
+
+printf 'forked %s -> tab %s\n' "$sid" "$tab"

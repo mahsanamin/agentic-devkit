@@ -53,35 +53,53 @@ fences and Mermaid blocks. You defeat it mechanically:
 - Caller says "add to" -> `append` or `prepend`.
 
 ## Mermaid validity gate (do not skip when a diagram is present)
-You do not generate diagrams; the caller does. But you MUST stop a diagram that will
-fail to render from landing silently. For content containing a ```` ```mermaid ```` block,
-run these checks (the grep is scoped to mermaid blocks via awk so markdown tables do not
-false-positive):
+You do not generate diagrams; the caller does. But you MUST stop a diagram that will fail to
+render from landing silently. Mermaid fails hard: one bad character replaces the WHOLE diagram
+with a parse error, and the error names none of the characters involved, so the caller cannot
+debug it from the note.
 
-1. **Clean fences.** The opening line must be a bare ```` ```mermaid ```` (no `` \` ``).
-2. **Quoted edge labels.** An unquoted edge label that contains a special character is the
-   second thing that breaks Mermaid: a bare `@`, `(`, `)`, `:`, `#`, or `&` between `|...|`
-   throws `Parse error ... got 'LINK_ID'` and blanks the WHOLE diagram. Check the saved note
-   (awk scopes to mermaid blocks; extract each `|...|`, drop the quoted ones, keep any with a
-   special char):
-   ```
-   mdnest read <path> | awk '/^```mermaid/{m=1;next} /^```/{m=0} m' \
-     | grep -oE '\|[^|]+\|' | grep -vE '^\|".*"\|$' | grep -E '[@(){}:#&]' \
-     && echo "UNQUOTED EDGE LABEL (defect)" || echo "LABELS OK"
-   ```
-   Any printed `|...|` is an edge label with a special char that is not wrapped in quotes.
-3. **If a defect is found, do not leave it.** The safe, deterministic fix is to wrap the
-   offending edge label in double quotes in the temp file and `write` again, e.g.
-   `|@import pulls in|` becomes `|"@import pulls in"|`. If you cannot fix it confidently,
-   flag it back to the caller rather than saving a broken diagram.
-4. **Optional hard check:** if `command -v mmdc` succeeds you may compile-check the
-   extracted diagram with mermaid-cli; if it is absent, the lint above is the gate (do not
-   install it).
+**Run the lint on the temp file BEFORE you write, not after:**
 
-Full styling and validity rules (classDef palette, group by role, no manual `color:`,
-always quote edge labels) live in `rules/mdnest.md`.
+```
+a_s_mermaid_lint /tmp/mdnest_<slug>.md
+```
+
+Exit 0 is clean, 1 means findings. It reports the line, what breaks, and the fix. What it
+catches, and what you do about each:
+
+| Finding | Your action |
+|---|---|
+| `ERROR` `;` in sequenceDiagram text (message, `Note`, `participant ... as` alias, `loop`/`alt`/`par` label) | Fix it: replace that `;` with `#59;`, which renders as a plain `;`. Deterministic and safe. |
+| `ERROR` unquoted flowchart label containing `( ) [ ] { } @` | Fix it: wrap that label in double quotes, e.g. `\|@import pulls in\|` becomes `\|"@import pulls in"\|`. |
+| `ERROR` `;` in a `stateDiagram-v2` transition label | Fix it: replace that `;` with `#59;`. This one renders wrong without erroring, so it would never be noticed. |
+| `WARN` double quotes in a sequenceDiagram | Quotes are not syntax there; they render as visible `"` marks. If a message, `Note` or alias text is wholly wrapped in them, strip the wrapping pair. Never touch quotes inside the sentence. |
+| `WARN` odd number of double quotes | Do not guess. Report it to the caller. |
+| `ERROR` escaped backticks in a fence | Your own write path corrupted it. Rewrite the temp file with the Write tool and repeat. |
+
+Then write, and **run the lint once more on the saved note** so a transport problem cannot slip
+through:
+
+```
+mdnest read <path> | a_s_mermaid_lint -
+```
+
+If a finding is not in the table above, or you cannot fix it confidently, flag it back to the
+caller rather than saving a broken diagram. Never save a diagram the lint calls an ERROR.
+
+If `a_s_mermaid_lint` is not on PATH (an unlinked machine), fall back to these two greps and
+say in your report that the full lint did not run:
+
+````
+mdnest read <path> | awk '/^```mermaid/{m=1;next} /^```/{m=0} m' | grep -n ';[^[:space:]]'
+mdnest read <path> | grep -n '```mermaid'
+````
+
+Full syntax rules, with the verified list of what is safe and what breaks per diagram type:
+`agentic-devkit/rules/mermaid.md`. Styling and palette (classDef roles, no manual `color:` in
+mdnest): `rules/mdnest.md`.
 
 ## What you return
 A tight report: the verb used, the resolved path, the mdnest status/etag, and the
-verification results (CLEAN/BAD and the fence check). If anything failed, say exactly
+verification results (CLEAN/BAD, the fence check, and the `a_s_mermaid_lint` verdict when the
+content had a diagram, including any line you fixed and how). If anything failed, say exactly
 what and what you did about it. Keep it short; you are a tool, not a narrator.

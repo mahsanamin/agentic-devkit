@@ -2,15 +2,20 @@
 # Organization-specific profile template
 #
 # How to use:
-#   1. Copy this file to: shell/<your-org>.<machine-type>.profile
-#      Example: shell/acme.m1.profile
-#   2. Set a_company_name='acme' and a_machine_type='m1' in your configs.profile
+#   1. Copy this file to: shell/<your-org>.<os>.profile, where <os> is macos or linux
+#      Example: shell/acme.macos.profile
+#   2. Set a_company_name='acme' in your configs.profile (or ORG_SLUG in root.config)
 #   3. This file will be auto-loaded by generic.profile
 #
-# You can have multiple org profiles for different companies or machines:
-#   shell/acme.m1.profile    (work laptop, Apple Silicon)
-#   shell/acme.i7.profile    (work laptop, Intel)
-#   shell/freelance.m1.profile (personal projects)
+# The OS family is derived from `uname`, so you never set it by hand. One profile
+# per company and OS:
+#   shell/acme.macos.profile   (work laptop)
+#   shell/acme.linux.profile   (work server)
+#   shell/freelance.macos.profile (personal projects)
+# The CPU is a separate value, $a_machine_arch (arm64 or x64), with
+# $a_docker_platform (linux/arm64 or linux/amd64) derived from it. Branch on
+# those inside the profile when something differs by CPU, e.g.
+#   [ "$a_machine_arch" = "arm64" ] && export SOME_TOOL_FLAG=...
 
 ########################### Organization Exports ####
 # export ORG_API_URL="https://api.example.com"
