@@ -71,6 +71,19 @@ ask for it in three words.
 fenced code block, which copies in one click; a blockquote makes him strip a `>` off every line
 first.
 
+**Restated 2026-09-24, after it was broken twice in one session.** The terminal draws a blockquote
+as a `▎` bar down the left edge, and that bar comes along with every copied line. So a `▎` in front
+of a draft always means the rule was broken. It covers every kind of paste-ready text, with no
+exceptions:
+
+- a Slack or email draft, a PR or ticket comment, a commit message
+- a draft relayed from another session or subagent. Re-wrap it in a code fence before showing it,
+  even when the other session sent it as a blockquote
+- a revised version of text he pasted in
+
+Only the text to be pasted goes inside the fence. Put any notes about it outside, above or below,
+so the whole block can be copied without editing.
+
 ## Documents and artifacts get the SAME plain English, no exceptions
 
 **As of 2026-09-01.** The plain-language rule at the top of this file is not just for chat replies.
