@@ -23,6 +23,7 @@ none were zellij or worktree bugs.
 | Forking the session you are in, into a tab | `a_c_session_fork [tab]`, which wraps `claude --resume <id> --fork-session`. `CLAUDE_CODE_SESSION_ID` is present in the agent's shell tool, so a session can read its own id and fork itself. |
 | Naming a Claude child so it is addressable | `claude -n <name>` writes that name into `~/.claude/sessions/<pid>.json`, which is the peer registry |
 | Parent talking to a Claude child | The harness peer-messaging tool, addressed by that name |
+| Reaching a child whose name does not resolve | Some Claude Code versions never write `<pid>.json`, so the name is unknown to the registry. `a_s_session_address <name>` finds the socket from the process table and prints `uds:<path>`, which the messaging tool accepts as an address |
 | One-shot delegation to Codex | `codex exec -s workspace-write -o out.txt "prompt"` |
 | One-shot delegation to Claude | `claude -p "prompt"` |
 | Queueing a message to a Codex session | `codex queue --thread <uuid> --message "..."` (accepts a UUID or an exact session name; works even on a session that has exited) |

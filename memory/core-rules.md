@@ -85,6 +85,17 @@ final report.
 "Hand this over", "run these in parallel", and "keep an eye on them" are asking for sessions. Read
 them that way even when the work looks like something a subagent could carry.
 
+### Messaging another session when its name does not resolve
+
+Some Claude Code versions start sessions that never register their name, so `ListAgents` does not
+show them and `SendMessage` to the name fails with "No agent named ... is reachable", even though
+the session is alive and its socket accepts messages. When that happens, do not conclude the
+session is gone: run `a_s_session_address <name>` and send to the `uds:` address it prints
+(`a_s_session_address --list` shows every live session it can find). When you start a session that
+is expected to report back, put your own `uds:` address in its brief next to your name, so the
+reply still arrives. It is `uds:$CLAUDE_CODE_MESSAGING_SOCKET`, or `a_s_session_address <your name>`.
+To answer a message you received, reply to its `from=` address, which already works.
+
 ### A tab is `a_c_zellij_tab`, never hand-rolled zellij
 
 Anything that wants a tab calls **`a_c_zellij_tab`**, including "open a new tab", "give it its own

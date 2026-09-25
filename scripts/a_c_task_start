@@ -518,6 +518,7 @@ _a_c_task_start_main() {
                 elif [ "${ZELLIJ_SESSION_NAME:-}" = "$zellij_arg" ]; then
                     echo -e "${A_T_GREEN}✓ Opened tab${A_T_NC} ${A_T_DIM}$zj_tab (this session)${A_T_NC}"
                     zellij action go-to-tab-name "$zj_tab" >/dev/null 2>&1
+                    [ "$claude_flag" -eq 1 ] && a_task_print_session_address "$task_name"
                 else
                     # Either we are inside a DIFFERENT zellij session, or nobody is
                     # watching a terminal (a routine, a cron job, tether pressing a
@@ -532,6 +533,7 @@ _a_c_task_start_main() {
                     a_task_zellij_focus_tab "$zellij_arg" "$zj_tab"
                     echo -e "${A_T_GREEN}✓ Tab ready${A_T_NC} ${A_T_DIM}$zj_tab in session '$zellij_arg'.${A_T_NC}"
                     echo -e "  ${A_T_DIM}switch:${A_T_NC} detach (Ctrl-o d), then  zellij attach $zellij_arg  ${A_T_DIM}(or the session manager: Ctrl-o w)${A_T_NC}"
+                    [ "$claude_flag" -eq 1 ] && a_task_print_session_address "$task_name"
                 fi
                 return 0
             fi

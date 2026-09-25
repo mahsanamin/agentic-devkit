@@ -711,6 +711,28 @@ a_task_zellij_setup() {
     return $?                    # pass the opener's verdict up; never fake success
 }
 
+# Print the uds: address of the Claude session just started as $1, so whoever
+# started it can message it even when its name never registers (see
+# a_s_session_address). The session needs a moment to open its socket, so this
+# polls, but only for A_TASK_ADDR_WAIT seconds (default 8) and each lookup is a
+# local read, so it cannot hang. On a miss it prints the command to run later.
+a_task_print_session_address() {
+    local name="$1" sa addr="" i=0 tries
+    sa="$(command -v a_s_session_address 2>/dev/null)"
+    [ -n "$sa" ] || sa="${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}/scripts/a_s_session_address"
+    [ -x "$sa" ] || return 0
+    tries=$(( ${A_TASK_ADDR_WAIT:-8} * 2 ))
+    while [ "$i" -lt "$tries" ]; do
+        addr="$("$sa" "$name" 2>/dev/null)" && [ -n "$addr" ] && break
+        addr=""; sleep 0.5; i=$((i + 1))
+    done
+    if [ -n "$addr" ]; then
+        printf '  address: %s\n' "$addr"
+    else
+        printf '  address: not up yet, run  a_s_session_address %s\n' "$name"
+    fi
+}
+
 # Return 0 only when a REAL terminal a human is looking at is on this process, so
 # it is safe to hand that terminal to a full-screen program (`zellij attach`).
 #

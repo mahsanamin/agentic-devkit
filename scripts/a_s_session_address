@@ -1,0 +1,185 @@
+#!/bin/bash
+# a_s_session_address - print the address to message a live Claude Code session by name.
+#
+# Sessions reach each other with the harness messaging tool. Sending by name only works
+# when the session has a ~/.claude/sessions/<pid>.json that carries its name and socket.
+# Some Claude Code versions do not write that file, and then the name does not resolve
+# even though the session is alive and its socket accepts messages. This helper finds
+# the socket either way and prints it as uds:<path>, which the messaging tool accepts
+# in place of a name.
+#
+# Resolution order:
+#   1. registry  - a <pid>.json in the sessions dir whose "name" matches, whose pid is a
+#                  live process, and whose messagingSocketPath exists as a socket.
+#   2. process   - a live claude process started with -n <name> / --name <name> (exact
+#                  match), mapped to <socket dir>/<pid>.sock when that socket exists.
+# A pid found by both is reported once, from the registry.
+#
+# Usage: a_s_session_address <name>     print uds:<path> for that session
+#        a_s_session_address --list     every live session found: name, address, pid, start
+#        a_s_session_address -h|--help
+#
+# Output: with a name and exactly one match, ONLY the address goes to stdout, so
+#   to="$(a_s_session_address my-session)"
+# is safe. Several matches print one line each (address, pid, start time) and exit 3, so
+# the caller picks one instead of guessing. No match exits 1, with the live named
+# sessions it could see on stderr.
+#
+# Exit codes: 0 found · 1 no match · 2 bad usage · 3 ambiguous (several matches).
+#
+# Read-only: it reads the process table, the sessions dir and the socket dir, nothing else.
+#
+# Env overrides:
+#   A_CC_SOCK_DIR        the socket dir to use, instead of the candidates below
+#   A_CC_SESSIONS_DIR    the registry dir (default ${CLAUDE_CONFIG_DIR:-~/.claude}/sessions)
+#   A_CC_PS_FILE         read the process list from this file instead of running ps (tests).
+#                        One process per line: <pid> <5-field lstart> <command...>
+#
+# Socket dir candidates, first hit wins: the dir of $CLAUDE_CODE_MESSAGING_SOCKET (set
+# inside a session, so it is the dir this machine really uses), $XDG_RUNTIME_DIR/cc-socks,
+# $CLAUDE_CODE_TMPDIR/cc-socks, /tmp/cc-socks, /tmp/cc-socks-<uid>, then the dir of any
+# messagingSocketPath seen in the registry. Claude Code picks from the same places.
+
+set -u
+
+prog="${0##*/}"
+
+_err() { printf '%s: %s\n' "$prog" "$*" >&2; }
+
+usage() { sed -n '2,/^$/{s/^# \{0,1\}//;p;}' "$0" | sed '$d'; }
+
+mode=""
+target=""
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    --list|-l) mode=list ;;
+    "") usage >&2; exit 2 ;;
+    -*) _err "unknown option: $1"; exit 2 ;;
+    *) mode=find; target="$1" ;;
+esac
+[ $# -le 1 ] || { _err "expected one argument"; exit 2; }
+
+sessions_dir="${A_CC_SESSIONS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions}"
+
+# The process list, one line per process: pid, then lstart (always 5 fields, the same
+# on BSD and GNU ps), then the full command. `ps -A -o` works on both.
+ps_list() {
+    if [ -n "${A_CC_PS_FILE:-}" ]; then
+        cat "$A_CC_PS_FILE"
+    else
+        ps -A -o pid= -o lstart= -o command= 2>/dev/null
+    fi
+}
+
+PS_OUT="$(ps_list | sed 's/^ *//')"
+
+# ps_line <pid>: the process line for a live pid, empty when it is not running.
+ps_line() { printf '%s\n' "$PS_OUT" | awk -v p="$1" '$1 == p { print; exit }'; }
+
+# start_of <ps line>: the 5-field lstart.
+start_of() { printf '%s\n' "$1" | awk '{ print $2, $3, $4, $5, $6 }'; }
+
+# json_field <file> <key>: a string or number field from a flat one-line JSON file.
+json_field() {
+    sed -n "s/.*\"$2\":\"\{0,1\}\([^\",}]*\)\"\{0,1\}[,}].*/\1/p" "$1" | head -n 1
+}
+
+sock_dirs() {
+    if [ -n "${A_CC_SOCK_DIR:-}" ]; then
+        printf '%s\n' "$A_CC_SOCK_DIR"
+        return
+    fi
+    [ -n "${CLAUDE_CODE_MESSAGING_SOCKET:-}" ] && dirname "$CLAUDE_CODE_MESSAGING_SOCKET"
+    [ -n "${XDG_RUNTIME_DIR:-}" ] && printf '%s\n' "$XDG_RUNTIME_DIR/cc-socks"
+    [ -n "${CLAUDE_CODE_TMPDIR:-}" ] && printf '%s\n' "$CLAUDE_CODE_TMPDIR/cc-socks"
+    printf '%s\n' /tmp/cc-socks "/tmp/cc-socks-$(id -u)"
+    local f p
+    for f in "$sessions_dir"/*.json; do
+        [ -f "$f" ] || continue
+        p="$(json_field "$f" messagingSocketPath)"
+        [ -n "$p" ] && dirname "$p"
+    done
+}
+SOCK_DIRS="$(sock_dirs | awk 'NF && !seen[$0]++')"
+
+# sock_for <pid>: the first existing <dir>/<pid>.sock.
+sock_for() {
+    local d
+    while IFS= read -r d; do
+        [ -S "$d/$1.sock" ] && { printf '%s\n' "$d/$1.sock"; return 0; }
+    done <<EOF
+$SOCK_DIRS
+EOF
+    return 1
+}
+
+# Collect every live session as "name<TAB>address<TAB>pid<TAB>start<TAB>source".
+FOUND=""
+seen_pids=" "
+
+add() { FOUND="${FOUND}$1	uds:$2	$3	$4	$5
+"; seen_pids="$seen_pids$3 "; }
+
+# 1. registry
+for f in "$sessions_dir"/*.json; do
+    [ -f "$f" ] || continue
+    pid="$(json_field "$f" pid)"
+    [ -n "$pid" ] || pid="$(basename "$f" .json)"
+    name="$(json_field "$f" name)"
+    sock="$(json_field "$f" messagingSocketPath)"
+    [ -n "$name" ] && [ -n "$sock" ] || continue
+    line="$(ps_line "$pid")"
+    [ -n "$line" ] || continue
+    [ -S "$sock" ] || continue
+    add "$name" "$sock" "$pid" "$(start_of "$line")" registry
+done
+
+# 2. process table. Only processes whose program is claude, and only the first
+# -n/--name on the line, since the prompt that follows is free text.
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    pid="${line%% *}"
+    case "$seen_pids" in *" $pid "*) continue ;; esac
+    name="$(printf '%s\n' "$line" | awk '
+        {
+            # the program is claude itself, or node running a claude entry point
+            first = 8; prog = $7; sub(/.*\//, "", prog)
+            if (prog == "node" && $8 ~ /claude/) { first = 9; prog = "claude" }
+            if (prog != "claude") exit
+            for (i = first; i <= NF; i++) {
+                if (($i == "-n" || $i == "--name") && i < NF) { print $(i + 1); exit }
+                if ($i ~ /^--name=/) { v = $i; sub(/^--name=/, "", v); print v; exit }
+            }
+        }')"
+    [ -n "$name" ] || continue
+    sock="$(sock_for "$pid")" || continue
+    add "$name" "$sock" "$pid" "$(start_of "$line")" process
+done <<EOF
+$PS_OUT
+EOF
+
+FOUND="$(printf '%s' "$FOUND" | sort -t '	' -k1,1 -k3,3n)"
+
+if [ "$mode" = list ]; then
+    [ -n "$FOUND" ] || { _err "no live named sessions found"; exit 1; }
+    printf '%s\n' "$FOUND" | awk -F '\t' '{ printf "%-32s %-36s pid %-7s %s (%s)\n", $1, $2, $3, $4, $5 }'
+    exit 0
+fi
+
+matches="$(printf '%s\n' "$FOUND" | awk -F '\t' -v n="$target" '$1 == n')"
+count="$(printf '%s' "$matches" | awk 'NF' | wc -l | tr -d ' ')"
+
+case "$count" in
+    1) printf '%s\n' "$matches" | cut -f2; exit 0 ;;
+    0)
+        _err "no live session named '$target'"
+        if [ -n "$FOUND" ]; then
+            printf 'live named sessions:\n' >&2
+            printf '%s\n' "$FOUND" | awk -F '\t' '{ printf "  %-32s %s\n", $1, $2 }' >&2
+        fi
+        exit 1 ;;
+    *)
+        _err "$count live sessions are named '$target', pick one:"
+        printf '%s\n' "$matches" | awk -F '\t' '{ printf "%s  pid %s  started %s\n", $2, $3, $4 }'
+        exit 3 ;;
+esac
