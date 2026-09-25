@@ -17,6 +17,23 @@ Never use an em dash or en dash in any output: messages, drafts, docs, PRs, comm
 Restructure with commas, periods, colons, parentheses, or words like "so" and "and" instead.
 Ordinary hyphens in compound words are fine.
 
+## Progress updates: say what happened, not the tool's shorthand
+
+**As of 2026-09-25.** The plain-language rule covers the short "here is where I am" messages a
+session writes while it works, and that is where it keeps breaking. Say what happened and what it
+means for him, in everyday words.
+
+- No bare commit hashes. Say "your PR's latest changes", not `43aaa19d1`. Give a hash only if he
+  asks, and say what it is.
+- No tool shorthand: "green" means the checks passed, "live build" means the test site, "merged
+  with main" means combined with the newest code on main, "WebKit" means Safari.
+
+| Do not write | Write instead |
+|---|---|
+| "The live build is d3383f0, which is 43aaa19d1 merged with main. Its CI and deploy are both green. Running the browser test in Chrome and WebKit." | "The test site is now running your PR's changes, combined with the newest code on main. All the automatic checks passed, and the site finished updating. Now I'm testing it in Chrome and Safari." |
+
+Recorded after he could not follow a status line like the one on the left.
+
 ## When he asks what to do, answer with the actions and nothing else
 
 If the question is operational ("what do I merge", "what is required", "how do I deploy this",
