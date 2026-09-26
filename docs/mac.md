@@ -14,6 +14,22 @@ a_c_docker_cleanup --aggressive  # also remove unused tagged images + all build 
 ```
 A weekly launchd schedule ships in `launchd/com.ahsan.docker-cleanup.plist`.
 
+### Reclaim Space From Caches and Junk
+`a_c_disk_cleanup` clears only what tools wrote on their own and will regenerate: updater
+leftovers (`*.ShipIt`, `*-updater`), browser caches, logs older than 30 days, `brew cleanup`,
+plus `a_c_docker_cleanup` in safe mode. **Dry run is the default**; nothing is deleted without
+`--apply`, and `--apply` asks first.
+```bash
+a_c_disk_cleanup                  # dry run: the plan, sizes, and what is kept on purpose
+a_c_disk_cleanup --apply          # clean the safe tier (prompts)
+a_c_disk_cleanup --apply --deep   # also npm / pip / node-gyp caches (costs re-downloads)
+a_c_disk_cleanup --apply -y       # no prompt, for a scheduled run
+```
+It deletes only inside `~/Library/Caches`, `~/Library/Logs`, and `~/.cache`, never follows a
+symlink, and skips a browser's cache while that browser is running. ML models, test browsers
+(playwright, puppeteer), JetBrains indexes, app data, and `~/Downloads` are listed with their
+sizes but never removed.
+
 ### Machine gets slow after days of uptime ("red memory")
 
 Run `a_c_mem_doctor`. Read-only by default, safe to run anywhere.

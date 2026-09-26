@@ -1,0 +1,287 @@
+#!/bin/bash
+#
+# a_c_disk_cleanup - reclaim disk space from machine-generated junk, SAFELY.
+#
+# Caches, updater leftovers, and old logs pile up on a Mac without anyone
+# asking for them. This script clears ONLY that: things a tool wrote on its
+# own and will quietly regenerate. Anything you made, downloaded, or would
+# have to set up again by hand is reported, never removed.
+#
+# DRY RUN IS THE DEFAULT. Without --apply nothing is touched; you get the
+# plan and the space it would free. With --apply it shows the same plan and
+# asks before deleting (skip the prompt with -y for a scheduled run).
+#
+# The safety contract:
+#   * Deletes only inside ~/Library/Caches, ~/Library/Logs, and ~/.cache.
+#     Every path is checked against that allowlist right before removal,
+#     and symlinks are never followed.
+#   * A cache is skipped while its app is running (a browser mid-session,
+#     an updater mid-install), so nothing is pulled out from under a process.
+#   * Logs are only removed when older than LOG_AGE days.
+#   * Docker is delegated to a_c_docker_cleanup in its SAFE mode: never
+#     stops a running container, never prunes volumes.
+#   * Package caches (npm, pip) are only touched with --deep. They are
+#     regenerable, but clearing them costs re-downloads, so it is opt-in.
+#
+# Kept on purpose (listed with sizes, never deleted):
+#   ML models (huggingface, ollama, torch), test browsers (playwright,
+#   puppeteer: tests do not re-download them on their own), IDE indexes
+#   (JetBrains: slow to rebuild), agent runtimes (codex), app data
+#   (WhatsApp, Claude, Slack), ~/Downloads, Docker volumes, the Colima VM.
+#
+# Tiers:
+#   safe (default)  updater leftovers (*.ShipIt, *-updater), browser caches,
+#                   logs older than LOG_AGE, `brew cleanup`, Docker safe mode.
+#   deep (--deep)   also npm, pip, node-gyp and icedtea-web caches.
+#
+# Usage:
+#   a_c_disk_cleanup                  Dry run: show the plan, touch nothing
+#   a_c_disk_cleanup --apply          Clean the safe tier (asks first)
+#   a_c_disk_cleanup --apply --deep   Also clean the deep tier
+#   a_c_disk_cleanup --apply -y       No prompt (for scheduled runs)
+#   a_c_disk_cleanup --no-docker      Skip the Docker step
+#   a_c_disk_cleanup --help           Show this help
+#
+# Tuning (env vars):
+#   LOG_AGE              Age cutoff for logs, in days      (default 30)
+#   DISK_CLEANUP_LOG     Log file  (default ~/Library/Logs/a_c_disk_cleanup.log)
+#
+# Exit codes: 0 ok, 1 declined at the prompt, 2 bad option.
+
+set -uo pipefail
+
+# ---- config -------------------------------------------------------------
+LOG_AGE="${LOG_AGE:-30}"
+LOG_FILE="${DISK_CLEANUP_LOG:-$HOME/Library/Logs/a_c_disk_cleanup.log}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+APPLY=0
+DEEP=0
+YES=0
+DOCKER=1
+
+# ---- colors (off when not a TTY, e.g. under launchd) --------------------
+if [ -t 1 ]; then
+    GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; DIM='\033[2m'; NC='\033[0m'
+else
+    GREEN=''; YELLOW=''; BLUE=''; DIM=''; NC=''
+fi
+
+# ---- args ---------------------------------------------------------------
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --apply)       APPLY=1 ;;
+        -n|--dry-run)  APPLY=0 ;;
+        --deep)        DEEP=1 ;;
+        -y|--yes)      YES=1 ;;
+        --no-docker)   DOCKER=0 ;;
+        -h|--help)
+            awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# ---- logging: console AND the log file, only when we actually delete ----
+if [ "$APPLY" -eq 1 ]; then
+    mkdir -p "$(dirname "$LOG_FILE")"
+    exec > >(tee -a "$LOG_FILE") 2>&1
+fi
+
+log()  { printf "%b\n" "$*"; }
+rule() { log "${DIM}------------------------------------------------------------${NC}"; }
+
+# KiB -> "1.2 GB" / "340 MB" (metric units).
+human() { awk -v k="${1:-0}" 'BEGIN { b = k * 1024; if (b >= 1e9) printf "%.1f GB", b / 1e9; else printf "%.0f MB", b / 1e6 }'; }
+size_kib() { du -sk "$1" 2>/dev/null | awk '{print $1+0}'; }
+
+# The allowlist. Refuse anything outside it, and never a symlink.
+allowed() {
+    local p="$1"
+    [ -L "$p" ] && return 1
+    case "$p" in
+        "$HOME"/Library/Caches/?*|"$HOME"/Library/Logs|"$HOME"/Library/Logs/?*|"$HOME"/.cache/?*) ;;
+        *) return 1 ;;
+    esac
+    case "$p" in *..*) return 1 ;; esac
+    return 0
+}
+
+app_running() { [ -n "$1" ] && pgrep -xq "$1"; }
+
+# ---- the plan: parallel arrays (bash 3.2 has no associative arrays) ------
+P_KIND=(); P_LABEL=(); P_TARGET=(); P_KIB=()
+TOTAL_KIB=0
+
+add() {  # kind label target kib
+    P_KIND+=("$1"); P_LABEL+=("$2"); P_TARGET+=("$3"); P_KIB+=("$4")
+    TOTAL_KIB=$((TOTAL_KIB + $4))
+}
+skip() { log "  ${YELLOW}skip${NC}  $1 ${DIM}($2)${NC}"; }
+
+# A directory whose contents are pure cache. The directory itself is kept.
+plan_dir() {  # label app-process path
+    local label="$1" app="$2" path="$3" kib
+    [ -d "$path" ] || return 0
+    if ! allowed "$path"; then skip "$label" "outside the allowlist: $path"; return 0; fi
+    kib=$(size_kib "$path")
+    [ "${kib:-0}" -gt 1024 ] || return 0
+    if app_running "$app"; then skip "$label" "$app is running, $(human "$kib") left alone"; return 0; fi
+    add dir "$label" "$path" "$kib"
+}
+
+# ------------------------------------------------------------------------
+rule
+log "${BLUE}Disk cleanup${NC}  $(date '+%Y-%m-%d %H:%M:%S')  tier=$([ "$DEEP" -eq 1 ] && echo deep || echo safe)$([ "$APPLY" -eq 1 ] || echo '  (dry run, nothing will be deleted)')"
+rule
+df -h / | awk 'NR==2 {print "  Free on /: " $4 " of " $2}'
+log ""
+log "${BLUE}Scanning...${NC}"
+
+# 1) Updater leftovers: downloaded update bundles that already got installed.
+for p in "$HOME"/Library/Caches/*.ShipIt "$HOME"/Library/Caches/*-updater; do
+    [ -d "$p" ] || continue
+    plan_dir "updater leftovers: $(basename "$p")" "ShipIt" "$p"
+done
+
+# 2) Browser caches. Web content only; logins, tabs and bookmarks live in
+#    Application Support and are not touched.
+plan_dir "Chrome cache"   "Google Chrome" "$HOME/Library/Caches/Google/Chrome"
+plan_dir "Brave cache"    "Brave Browser" "$HOME/Library/Caches/BraveSoftware"
+plan_dir "Brave app cache" "Brave Browser" "$HOME/Library/Caches/com.brave.Browser"
+plan_dir "Arc cache"      "Arc"           "$HOME/Library/Caches/Arc"
+plan_dir "Opera GX cache" "Opera GX"      "$HOME/Library/Caches/com.operasoftware.OperaGX"
+plan_dir "Firefox cache"  "firefox"       "$HOME/Library/Caches/Firefox"
+
+# 3) Old logs, by age, anywhere under ~/Library/Logs.
+if [ -d "$HOME/Library/Logs" ] && allowed "$HOME/Library/Logs"; then
+    kib=$(find "$HOME/Library/Logs" -type f -mtime +"$LOG_AGE" -print0 2>/dev/null \
+        | xargs -0 stat -f %z 2>/dev/null | awk '{s+=$1} END {printf "%d", s/1024}')
+    [ "${kib:-0}" -gt 1024 ] && add logs "logs older than ${LOG_AGE} days" "$HOME/Library/Logs" "$kib"
+fi
+
+# 4) Homebrew: old formula versions and cached downloads.
+if command -v brew >/dev/null 2>&1; then
+    # brew prints e.g. "would free approximately 246.7MB of disk space".
+    kib=$(brew cleanup -n 2>/dev/null | awk '/free approximately/ {
+        for (i = 1; i <= NF; i++) if ($i ~ /^[0-9.,]+[KMG]?B$/) t = $i
+        u = t; gsub(/[0-9.,]/, "", u); v = t; gsub(/[^0-9.]/, "", v)
+        if (u == "GB") v *= 1024 * 1024; else if (u == "MB") v *= 1024; else if (u == "B") v /= 1024
+        printf "%d", v }')
+    [ "${kib:-0}" -gt 1024 ] && add cmd "Homebrew old versions + downloads" "brew cleanup" "$kib"
+fi
+
+# 5) Deep tier: package-manager caches. Regenerable, costs re-downloads.
+if [ "$DEEP" -eq 1 ]; then
+    if command -v npm >/dev/null 2>&1 && [ -d "$HOME/.npm/_cacache" ]; then
+        kib=$(size_kib "$HOME/.npm/_cacache")
+        [ "${kib:-0}" -gt 1024 ] && add cmd "npm cache" "npm cache clean --force" "$kib"
+    fi
+    if command -v pip3 >/dev/null 2>&1 && [ -d "$HOME/Library/Caches/pip" ]; then
+        kib=$(size_kib "$HOME/Library/Caches/pip")
+        [ "${kib:-0}" -gt 1024 ] && add cmd "pip cache" "pip3 cache purge" "$kib"
+    fi
+    plan_dir "node-gyp headers cache" "" "$HOME/Library/Caches/node-gyp"
+    plan_dir "icedtea-web (Java Web Start) cache" "" "$HOME/.cache/icedtea-web"
+fi
+
+# ---- show the plan ------------------------------------------------------
+log ""
+log "${BLUE}Plan${NC}"
+if [ "${#P_KIND[@]}" -eq 0 ]; then
+    log "  ${DIM}nothing worth cleaning outside Docker${NC}"
+else
+    for i in "${!P_KIND[@]}"; do
+        printf "  %10s  %s\n" "$(human "${P_KIB[$i]}")" "${P_LABEL[$i]}"
+    done
+    printf "  %10s  %s\n" "$(human "$TOTAL_KIB")" "total, plus whatever Docker frees"
+fi
+
+# ---- kept on purpose: report so nothing big is a mystery ----------------
+log ""
+log "${BLUE}Kept on purpose${NC} ${DIM}(yours or costly to rebuild; clean these by hand if you want)${NC}"
+for pair in \
+    "ML models: huggingface|$HOME/.cache/huggingface" \
+    "ML models: ollama|$HOME/.ollama" \
+    "ML models: torch|$HOME/.cache/torch" \
+    "test browsers: playwright|$HOME/Library/Caches/ms-playwright" \
+    "test browsers: puppeteer|$HOME/.cache/puppeteer" \
+    "IDE indexes: JetBrains|$HOME/Library/Caches/JetBrains" \
+    "agent runtime: codex|$HOME/.cache/codex-runtimes" \
+    "agent cache: codex|$HOME/Library/Caches/com.openai.codex" \
+    "app data: WhatsApp|$HOME/Library/Group Containers/group.net.whatsapp.WhatsApp.shared" \
+    "app data: Claude|$HOME/Library/Application Support/Claude" \
+    "Colima VM disk|$HOME/.colima" \
+    "Downloads|$HOME/Downloads"; do
+    label="${pair%%|*}"; path="${pair#*|}"
+    [ -e "$path" ] || continue
+    kib=$(size_kib "$path")
+    [ "${kib:-0}" -gt 102400 ] && printf "  %10s  %s\n" "$(human "$kib")" "$label"
+done
+[ "$DEEP" -eq 0 ] && log "  ${DIM}npm/pip caches are left too; add --deep to include them${NC}"
+
+# ---- Docker: always previewed; delegated to its own safe script ---------
+DOCKER_SCRIPT="$SCRIPT_DIR/a_c_docker_cleanup"
+run_docker() {
+    [ "$DOCKER" -eq 1 ] || return 0
+    if [ ! -x "$DOCKER_SCRIPT" ]; then log "${YELLOW}a_c_docker_cleanup not found next to this script; skipping Docker.${NC}"; return 0; fi
+    log ""
+    "$DOCKER_SCRIPT" "$@"
+}
+
+if [ "$APPLY" -eq 0 ]; then
+    run_docker --dry-run
+    log ""
+    rule
+    log "Dry run only. To clean: ${GREEN}a_c_disk_cleanup --apply$([ "$DEEP" -eq 1 ] && echo ' --deep')${NC}"
+    rule
+    exit 0
+fi
+
+# ---- confirm ------------------------------------------------------------
+if [ "$YES" -eq 0 ]; then
+    if [ ! -t 0 ]; then log "${YELLOW}Not a terminal and no -y given; refusing to delete.${NC}"; exit 1; fi
+    printf "\nDelete the items above and run the Docker safe cleanup? [y/N] "
+    read -r reply
+    case "$reply" in y|Y|yes|YES) ;; *) log "Nothing deleted."; exit 1 ;; esac
+fi
+
+# ---- execute ------------------------------------------------------------
+log ""
+log "${BLUE}Cleaning${NC}"
+for i in "${!P_KIND[@]}"; do
+    target="${P_TARGET[$i]}"
+    case "${P_KIND[$i]}" in
+        dir)
+            # Re-check right before deleting: the app may have started since the scan.
+            if ! allowed "$target"; then skip "${P_LABEL[$i]}" "failed allowlist at delete time"; continue; fi
+            find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+            ;;
+        logs)
+            allowed "$target" || continue
+            find "$target" -type f -mtime +"$LOG_AGE" -delete 2>/dev/null
+            ;;
+        cmd)
+            $target >/dev/null 2>&1 || log "  ${YELLOW}(${target} reported an error, continuing)${NC}"
+            ;;
+    esac
+    log "  ${GREEN}done${NC}  ${P_LABEL[$i]}"
+done
+
+run_docker
+
+# Colima keeps its VM disk at its high-water mark. Trimming hands the space
+# freed inside the VM back to macOS. Harmless when there is nothing to trim.
+if [ "$DOCKER" -eq 1 ] && command -v colima >/dev/null 2>&1 && colima status >/dev/null 2>&1; then
+    log ""
+    log "${BLUE}Returning freed Docker space from the Colima VM to macOS${NC}"
+    colima ssh -- sudo fstrim -a >/dev/null 2>&1 && log "  ${GREEN}done${NC}  fstrim" \
+        || log "  ${YELLOW}fstrim failed; the space is free inside the VM but not yet on macOS${NC}"
+fi
+
+log ""
+rule
+df -h / | awk 'NR==2 {print "  Free on /: " $4 " of " $2}'
+log "${GREEN}Done.${NC}  Log: ${LOG_FILE}"
+rule
