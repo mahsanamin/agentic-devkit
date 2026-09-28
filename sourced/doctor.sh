@@ -165,7 +165,7 @@ a_c_workflow_doctor() {
     echo ""
     echo -e "${BLUE}Agentic machine:${NC}"
     if [ -z "${A_MACHINE_NAME:-}" ]; then
-        _doc_warn "A_MACHINE_NAME is not set — this machine has no identity to introduce itself with"
+        _doc_warn "MACHINE_NAME is not set — this machine has no identity to introduce itself with"
     else
         _doc_ok "machine identity: $A_MACHINE_NAME"
     fi

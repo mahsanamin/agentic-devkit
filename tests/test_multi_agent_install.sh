@@ -19,7 +19,9 @@ trap 'rm -rf "$TEST_HOME"' EXIT
 export HOME="$TEST_HOME"
 export MY_WORKFLOW_DIR="$REPO_ROOT"
 export SHELL=/bin/bash
-unset A_AGENT_OVERLAY_DIR A_AGENT_ORG_OVERLAY_DIR
+unset A_AGENT_OVERLAY_DIR A_AGENT_ORG_OVERLAY_DIR A_ROOT_DIR A_MACHINE_NAME
+# A fixed name, so the guidance build does not depend on the caller's shell.
+export MACHINE_NAME=TEST-BOX
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 

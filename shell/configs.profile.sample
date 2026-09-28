@@ -32,8 +32,9 @@ if [ -z "$A_ROOT_DIR" ]; then
     export MY_WORKFLOW_DIR="${a_dir_p_repos}/agentic-devkit"
 
     # This machine's name, as an agent should introduce it. It does not have to match
-    # the hostname. Selects machine/$A_MACHINE_NAME.md in your overlay.
-    export A_MACHINE_NAME=''
+    # the hostname. Selects machine/$MACHINE_NAME.md in your overlay. install.sh asks
+    # for it when it is empty. (Older profiles set A_MACHINE_NAME, which still works.)
+    export MACHINE_NAME=''
 
     # Optional overlays and brain. Empty is fine, the build still works without them.
     export A_AGENT_OVERLAY_DIR=''

@@ -245,8 +245,9 @@ read_assignment() {
 settings_profile() {
     local f
     for f in "$HOME/my_settings/a_configs.profile" "$HOME/my_settings/configs.profile"; do
-        [ -f "$f" ] && { echo "$f"; return; }
+        [ -f "$f" ] && { echo "$f"; return 0; }
     done
+    return 0
 }
 
 load_machine_config() {
@@ -257,23 +258,30 @@ load_machine_config() {
 
     if [ -n "$root" ] && [ -f "$root/root.config" ]; then
         export A_ROOT_DIR="$root"
-        # Already loaded by the shell? Then the exports below are already right.
-        [ -n "${MY_WORKFLOW_DIR:-}" ] && return 0
-        # Same order and mapping as shell/bootstrap.profile: local first, then root.config.
-        set +u
-        [ -f "$root/root.local.config" ] && source "$root/root.local.config"
-        source "$root/root.config"
-        set -u
-        export A_AGENT_OVERLAY_DIR="${PRIVATE_DEVKIT_DIR:-${A_AGENT_OVERLAY_DIR:-}}"
-        export A_AGENT_ORG_OVERLAY_DIR="${ORG_DEVKIT_DIR:-${A_AGENT_ORG_OVERLAY_DIR:-}}"
-        export A_AGENT_ORG_BRAIN_DIR="${ORG_BRAIN_DIR:-${A_AGENT_ORG_BRAIN_DIR:-}}"
-        export A_AGENT_BRAIN_DIR="${PRIVATE_BRAIN_DIR:-${A_AGENT_BRAIN_DIR:-}}"
-        export A_MACHINE_NAME="${MACHINE_NAME:-${A_MACHINE_NAME:-}}"
-    elif [ -z "${A_MACHINE_NAME:-}" ] && [ -n "$profile" ]; then
-        # Standalone profile: the name is set by hand in it.
-        local name; name="$(read_assignment A_MACHINE_NAME "$profile")"
+        # Not loaded by the shell yet? Then do what shell/bootstrap.profile does:
+        # local first, then root.config, then map the roles.
+        if [ -z "${MY_WORKFLOW_DIR:-}" ]; then
+            set +u
+            [ -f "$root/root.local.config" ] && source "$root/root.local.config"
+            source "$root/root.config"
+            set -u
+            export A_AGENT_OVERLAY_DIR="${PRIVATE_DEVKIT_DIR:-${A_AGENT_OVERLAY_DIR:-}}"
+            export A_AGENT_ORG_OVERLAY_DIR="${ORG_DEVKIT_DIR:-${A_AGENT_ORG_OVERLAY_DIR:-}}"
+            export A_AGENT_ORG_BRAIN_DIR="${ORG_BRAIN_DIR:-${A_AGENT_ORG_BRAIN_DIR:-}}"
+            export A_AGENT_BRAIN_DIR="${PRIVATE_BRAIN_DIR:-${A_AGENT_BRAIN_DIR:-}}"
+            export A_MACHINE_NAME="${MACHINE_NAME:-${A_MACHINE_NAME:-}}"
+        fi
+    elif [ -z "${A_MACHINE_NAME:-}" ]; then
+        # Standalone: the name is set by hand in the profile. MACHINE_NAME is the key,
+        # A_MACHINE_NAME is what older profiles used.
+        local name="${MACHINE_NAME:-}"
+        if [ -z "$name" ] && [ -n "$profile" ]; then
+            name="$(read_assignment MACHINE_NAME "$profile")"
+            [ -n "$name" ] || name="$(read_assignment A_MACHINE_NAME "$profile")"
+        fi
         [ -n "$name" ] && export A_MACHINE_NAME="$name"
     fi
+    [ -n "${A_MACHINE_NAME:-}" ] && export MACHINE_NAME="$A_MACHINE_NAME"
     return 0
 }
 
@@ -298,9 +306,37 @@ save_assignment() {
     fi
 }
 
+# Save a standalone profile's name as MACHINE_NAME. The line has to sit above the
+# hand-off to bootstrap.profile, or the shell reads it too late.
+save_profile_name() {
+    local name="$1" file="$2" tmp
+    local key_re='^[[:space:]]*(export[[:space:]]+)?'
+    if grep -Eq "${key_re}MACHINE_NAME=" "$file"; then
+        save_assignment MACHINE_NAME "$name" "$file" "export "
+    elif grep -Eq "${key_re}A_MACHINE_NAME=" "$file"; then
+        # An older profile: rename the key in place, so it keeps its position.
+        tmp="$(mktemp)"
+        sed -E "s|^([[:space:]]*)(export[[:space:]]+)?A_MACHINE_NAME=.*|\\1\\2MACHINE_NAME=\"$name\"|" "$file" > "$tmp"
+        cat "$tmp" > "$file" && rm -f "$tmp"
+    elif grep -Ev '^[[:space:]]*#' "$file" | grep -Eq 'root\.config|bootstrap\.profile'; then
+        tmp="$(mktemp)"
+        awk -v line="export MACHINE_NAME=\"$name\"" '
+            !done && $0 !~ /^[[:space:]]*#/ && /root\.config|bootstrap\.profile/ {
+                print line; print ""; done = 1
+            }
+            { print }' "$file" > "$tmp"
+        cat "$tmp" > "$file" && rm -f "$tmp"
+    else
+        printf 'export MACHINE_NAME="%s"\n' "$name" >> "$file"
+    fi
+}
+
 # Make sure A_MACHINE_NAME is set, asking for it if needed. Returns 1 to skip the build.
 ensure_machine_name() {
-    [ -n "${A_MACHINE_NAME:-}" ] && return 0
+    if [ -n "${A_MACHINE_NAME:-}" ]; then
+        export MACHINE_NAME="$A_MACHINE_NAME"
+        return 0
+    fi
 
     local home; home="$(machine_name_home)"
     local is_root=false
@@ -316,7 +352,7 @@ ensure_machine_name() {
         if $is_root; then
             say "    ${GREEN}echo 'MACHINE_NAME=\"<name>\"' >> $home${NC}"
         else
-            say "    ${GREEN}set A_MACHINE_NAME in ${home:-~/my_settings/configs.profile}${NC}"
+            say "    ${GREEN}set MACHINE_NAME in ${home:-~/my_settings/configs.profile}${NC}"
         fi
         say "    ${GREEN}$REPO_ROOT/install.sh --link-only${NC}"
         return 1
@@ -336,7 +372,7 @@ ensure_machine_name() {
         return 1
     fi
 
-    export A_MACHINE_NAME="$name"
+    export A_MACHINE_NAME="$name" MACHINE_NAME="$name"
     if $is_root; then
         if [ ! -f "$home" ]; then
             {
@@ -349,11 +385,11 @@ ensure_machine_name() {
         save_assignment MACHINE_NAME "$name" "$home" ""
         say "  ${GREEN}saved${NC}     MACHINE_NAME=\"$name\" ${DIM}in $home${NC}"
     elif [ -n "$home" ]; then
-        save_assignment A_MACHINE_NAME "$name" "$home" "export "
-        say "  ${GREEN}saved${NC}     A_MACHINE_NAME=\"$name\" ${DIM}in $home${NC}"
+        save_profile_name "$name" "$home"
+        say "  ${GREEN}saved${NC}     MACHINE_NAME=\"$name\" ${DIM}in $home${NC}"
     else
         say "  ${YELLOW}!${NC} no profile to save it in, so it is used for this run only."
-        say "    ${DIM}Add export A_MACHINE_NAME=\"$name\" to your shell profile to keep it.${NC}"
+        say "    ${DIM}Add export MACHINE_NAME=\"$name\" to your shell profile to keep it.${NC}"
     fi
     return 0
 }
@@ -395,6 +431,112 @@ suggest_extras() {
     say "${DIM}Details, including what is exposed on the network: docs/claude-sessions.md${NC}"
 }
 
+# ---------------------------------------------------------------------------
+# 4. Show the machine name in the starship prompt, in grey.
+#
+# starship's hostname module prints the OS hostname, not the configured name.
+# Only runs when a starship config already exists; touches nothing else in it.
+# ---------------------------------------------------------------------------
+
+# "start end" line numbers of the top-level format value, or nothing if there is none.
+starship_format_range() {
+    awk '
+        inml { if (index($0, q)) { print start, NR; exit } next }
+        /^[[:space:]]*\[/ { exit }
+        /^[[:space:]]*format[[:space:]]*=/ {
+            start = NR; v = $0; sub(/^[^=]*=[[:space:]]*/, "", v)
+            q = substr(v, 1, 3)
+            if ((q == "\"\"\"" || q == "'"'''"'") && index(substr(v, 4), q) == 0) { inml = 1; next }
+            print start, NR; exit
+        }' "$1"
+}
+
+configure_starship_prompt() {
+    local file="${STARSHIP_CONFIG:-$HOME/.config/starship.toml}"
+    [ -f "$file" ] || return 0
+
+    step "Shell prompt (starship)"
+    local range s e changes=() hint="" tmp
+    local add_block=false fmt_action=""
+    grep -Eq '^[[:space:]]*\[custom\.machine\][[:space:]]*$' "$file" || add_block=true
+
+    range="$(starship_format_range "$file")"
+    if [ -z "$range" ]; then
+        hint="no top-level format line, so the format is left alone. Add \${custom.machine} to it to place the name."
+    else
+        s="${range% *}"; e="${range#* }"
+        if sed -n "${s},${e}p" "$file" | grep -Fq '${custom.machine}'; then
+            :
+        elif sed -n "${s},${e}p" "$file" | grep -Fq '$hostname'; then
+            fmt_action=replace
+        else
+            fmt_action=prepend
+        fi
+    fi
+
+    $add_block && changes+=("add a [custom.machine] module (MACHINE_NAME in grey)")
+    [ "$fmt_action" = replace ] && changes+=("replace \$hostname with \${custom.machine} in format")
+    [ "$fmt_action" = prepend ] && changes+=("prepend \${custom.machine} to format")
+
+    if [ "${#changes[@]}" -eq 0 ]; then
+        say "  ${GREEN}●${NC} already shows the machine name ${DIM}($file)${NC}"
+        [ -n "$hint" ] && say "  ${YELLOW}!${NC} $hint"
+        return 0
+    fi
+    local c
+    if $DRY_RUN; then
+        for c in "${changes[@]}"; do say "  ${DIM}would${NC} $c ${DIM}in $file${NC}"; done
+        [ -n "$hint" ] && say "  ${YELLOW}!${NC} $hint"
+        return 0
+    fi
+
+    local backup; backup="$file.bak.$(date +%Y%m%dT%H%M%S)"
+    cp "$file" "$backup"
+    say "  ${DIM}backup${NC}    $backup"
+
+    if [ -n "$fmt_action" ]; then
+        tmp="$(mktemp)"
+        awk -v s="$s" -v e="$e" -v act="$fmt_action" '
+            BEGIN { mod = "${custom.machine}" }
+            function prepend_after_quote(line,   i, p) {
+                i = index(line, "="); p = substr(line, i + 1)
+                match(p, /^[[:space:]]*("""|'"'''"'|"|'"'"')/)
+                return substr(line, 1, i + RLENGTH) mod substr(p, RLENGTH + 1)
+            }
+            NR >= s && NR <= e && !done {
+                if (act == "replace") {
+                    i = index($0, "$hostname")
+                    if (i) { $0 = substr($0, 1, i - 1) mod substr($0, i + 9); done = 1 }
+                } else if (NR == s) {
+                    rest = $0; sub(/^[^=]*=[[:space:]]*/, "", rest)
+                    # A multiline string that starts on the next line: prefix that line,
+                    # so the newline right after the opening quotes is still trimmed.
+                    if (s != e && (rest == "\"\"\"" || rest == "'"'''"'")) { pending = 1 }
+                    else { $0 = prepend_after_quote($0); done = 1 }
+                } else if (pending) { $0 = mod $0; done = 1 }
+            }
+            { print }' "$file" > "$tmp"
+        cat "$tmp" > "$file" && rm -f "$tmp"
+    fi
+
+    if $add_block; then
+        cat >> "$file" <<'TOML'
+
+# The machine name (MACHINE_NAME) in grey, or the OS hostname when no name is set.
+[custom.machine]
+when = true
+command = 'printf %s "${MACHINE_NAME:-$(hostname -s)}"'
+shell = ["sh"]
+style = "bright-black"
+format = "[@$output]($style) "
+TOML
+    fi
+
+    for c in "${changes[@]}"; do say "  ${GREEN}changed${NC}   $c ${DIM}in $file${NC}"; done
+    [ -n "$hint" ] && say "  ${YELLOW}!${NC} $hint"
+    return 0
+}
+
 main() {
     say "${BLUE}agentic-devkit install${NC} ${DIM}($REPO_ROOT)${NC}"
     $DRY_RUN && say "${YELLOW}(dry run - nothing will change)${NC}"
@@ -420,6 +562,7 @@ main() {
                 --provider "$(memory_provider)" 2>&1 | sed 's/^/  /'
         fi
     fi
+    configure_starship_prompt
     say "\n${GREEN}Done.${NC} ${DIM}Agent assets and guidance installed (provider: $PROVIDER).${NC}"
     if ! $DRY_RUN && has_provider claude; then
         suggest_extras

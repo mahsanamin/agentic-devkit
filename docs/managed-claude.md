@@ -98,7 +98,7 @@ rules do not. That is the last unmanaged thing in an otherwise managed setup.
 | Block | Source | Layer |
 |---|---|---|
 | core rules | `agentic-devkit/memory/core-rules.md` | core (public, generic) |
-| machine identity | `<overlay>/machine/<A_MACHINE_NAME>.md` | overlay (private) |
+| machine identity | `<overlay>/machine/<MACHINE_NAME>.md` | overlay (private) |
 | personal rules | `<overlay>/machine/rules.md` | overlay (private) |
 | glossary | `<overlay>/machine/glossary.md` | overlay (private) |
 | pointers | generated from the configured repo paths | — |
@@ -112,9 +112,19 @@ a_c_agent_memory check    # exit 1 on drift (used by a_c_workflow_doctor)
 
 Everything it writes sits between `agentic-devkit: managed memory` markers. **Text outside the
 markers is never touched** — adopting an existing hand-written file keeps that file, verbatim,
-below the generated region. Three variables in `configs.profile` drive it: `A_MACHINE_NAME`,
+below the generated region. Three variables in `configs.profile` drive it: `MACHINE_NAME` (read as `A_MACHINE_NAME`),
 `A_AGENT_OVERLAY_DIR`, `A_AGENT_BRAIN_DIR`. With none of them set you still get valid files
 from the core rules alone.
+
+When `MACHINE_NAME` is missing, `install.sh` asks for it in the console and saves it: to
+`root.local.config` when there is a root repo, otherwise to `~/my_settings/configs.profile`,
+above the hand-off to `bootstrap.profile`.
+
+If `~/.config/starship.toml` exists (or `$STARSHIP_CONFIG`), `install.sh` also puts the name in
+the prompt, in grey. It adds a `[custom.machine]` module and swaps `$hostname` for
+`${custom.machine}` in the top-level `format`, or prepends it when there is no `$hostname`. It
+backs the file up before the first change, touches nothing else, and a second run changes
+nothing. With no name set, the module shows the OS hostname.
 
 ### Machine identity
 
