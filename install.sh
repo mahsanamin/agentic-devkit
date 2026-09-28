@@ -221,6 +221,144 @@ memory_provider() {
 }
 
 # ---------------------------------------------------------------------------
+# Machine config for a shell that has not loaded the profile yet.
+#
+# On a brand new machine install.sh runs before the profile was ever sourced, so
+# nothing is exported: no machine name, no overlays, no brains. The guidance build
+# then refuses once per provider. Read the same files the profile would read, and
+# ask for the machine name when none is configured. The name is typed by the
+# user, never derived from the hostname.
+# ---------------------------------------------------------------------------
+
+# Last `[export ]KEY=value` assignment of KEY in FILE, quotes stripped. No eval.
+read_assignment() {
+    local key="$1" file="$2" line
+    [ -f "$file" ] || return 0
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$key=" "$file" | tail -n 1)" || true
+    line="${line#*=}"
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//")"
+    printf '%s' "${line/#\~/$HOME}"
+}
+
+# The personal profile this machine sources (root-repo form first).
+settings_profile() {
+    local f
+    for f in "$HOME/my_settings/a_configs.profile" "$HOME/my_settings/configs.profile"; do
+        [ -f "$f" ] && { echo "$f"; return; }
+    done
+}
+
+load_machine_config() {
+    local profile root
+    profile="$(settings_profile)"
+    root="${A_ROOT_DIR:-}"
+    [ -n "$root" ] || root="$(read_assignment A_ROOT_DIR "${profile:-/dev/null}")"
+
+    if [ -n "$root" ] && [ -f "$root/root.config" ]; then
+        export A_ROOT_DIR="$root"
+        # Already loaded by the shell? Then the exports below are already right.
+        [ -n "${MY_WORKFLOW_DIR:-}" ] && return 0
+        # Same order and mapping as shell/bootstrap.profile: local first, then root.config.
+        set +u
+        [ -f "$root/root.local.config" ] && source "$root/root.local.config"
+        source "$root/root.config"
+        set -u
+        export A_AGENT_OVERLAY_DIR="${PRIVATE_DEVKIT_DIR:-${A_AGENT_OVERLAY_DIR:-}}"
+        export A_AGENT_ORG_OVERLAY_DIR="${ORG_DEVKIT_DIR:-${A_AGENT_ORG_OVERLAY_DIR:-}}"
+        export A_AGENT_ORG_BRAIN_DIR="${ORG_BRAIN_DIR:-${A_AGENT_ORG_BRAIN_DIR:-}}"
+        export A_AGENT_BRAIN_DIR="${PRIVATE_BRAIN_DIR:-${A_AGENT_BRAIN_DIR:-}}"
+        export A_MACHINE_NAME="${MACHINE_NAME:-${A_MACHINE_NAME:-}}"
+    elif [ -z "${A_MACHINE_NAME:-}" ] && [ -n "$profile" ]; then
+        # Standalone profile: the name is set by hand in it.
+        local name; name="$(read_assignment A_MACHINE_NAME "$profile")"
+        [ -n "$name" ] && export A_MACHINE_NAME="$name"
+    fi
+    return 0
+}
+
+# Where the machine name is stored on this machine, for messages and for saving.
+machine_name_home() {
+    if [ -n "${A_ROOT_DIR:-}" ] && [ -f "$A_ROOT_DIR/root.config" ]; then
+        echo "$A_ROOT_DIR/root.local.config"
+    else
+        settings_profile
+    fi
+}
+
+# Write KEY="value" into FILE: replace the existing line, or append one.
+save_assignment() {
+    local key="$1" value="$2" file="$3" prefix="$4" tmp
+    if [ -f "$file" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$key=" "$file"; then
+        tmp="$(mktemp)"
+        sed -E "s|^([[:space:]]*)(export[[:space:]]+)?$key=.*|\1\2$key=\"$value\"|" "$file" > "$tmp"
+        cat "$tmp" > "$file" && rm -f "$tmp"
+    else
+        printf '%s%s="%s"\n' "$prefix" "$key" "$value" >> "$file"
+    fi
+}
+
+# Make sure A_MACHINE_NAME is set, asking for it if needed. Returns 1 to skip the build.
+ensure_machine_name() {
+    [ -n "${A_MACHINE_NAME:-}" ] && return 0
+
+    local home; home="$(machine_name_home)"
+    local is_root=false
+    [ -n "${A_ROOT_DIR:-}" ] && [ -f "$A_ROOT_DIR/root.config" ] && is_root=true
+
+    say "  ${YELLOW}!${NC} This machine has no name yet. Agents use it to say which machine they are on."
+    if $DRY_RUN; then
+        say "  ${DIM}would ask for it, save it to ${home:-your profile}, and build the guidance${NC}"
+        return 1
+    fi
+    if [ ! -t 0 ]; then
+        say "  Skipping the guidance build. Set the name, then build:"
+        if $is_root; then
+            say "    ${GREEN}echo 'MACHINE_NAME=\"<name>\"' >> $home${NC}"
+        else
+            say "    ${GREEN}set A_MACHINE_NAME in ${home:-~/my_settings/configs.profile}${NC}"
+        fi
+        say "    ${GREEN}$REPO_ROOT/install.sh --link-only${NC}"
+        return 1
+    fi
+
+    say "  ${DIM}Pick any name you like, for example WORK-LAPTOP. It does not have to match the hostname.${NC}"
+    say "  ${DIM}Letters, digits, dots, dashes and underscores. Press Enter to skip for now.${NC}"
+    local name=""
+    while :; do
+        read -r -p "  Machine name: " name || name=""
+        [ -z "$name" ] && break
+        [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] && break
+        say "  ${RED}Only letters, digits, dots, dashes and underscores.${NC}"
+    done
+    if [ -z "$name" ]; then
+        say "  Skipped. Run ${GREEN}$REPO_ROOT/install.sh --link-only${NC} again when you have a name."
+        return 1
+    fi
+
+    export A_MACHINE_NAME="$name"
+    if $is_root; then
+        if [ ! -f "$home" ]; then
+            {
+                echo "# This machine only. Never committed. Overrides root.config."
+                echo "# Loaded BEFORE root.config, whose keys are all \${KEY:-default}, so these win and"
+                echo "# every path derived from it follows."
+                echo ""
+            } > "$home"
+        fi
+        save_assignment MACHINE_NAME "$name" "$home" ""
+        say "  ${GREEN}saved${NC}     MACHINE_NAME=\"$name\" ${DIM}in $home${NC}"
+    elif [ -n "$home" ]; then
+        save_assignment A_MACHINE_NAME "$name" "$home" "export "
+        say "  ${GREEN}saved${NC}     A_MACHINE_NAME=\"$name\" ${DIM}in $home${NC}"
+    else
+        say "  ${YELLOW}!${NC} no profile to save it in, so it is used for this run only."
+        say "    ${DIM}Add export A_MACHINE_NAME=\"$name\" to your shell profile to keep it.${NC}"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # 3. Tell the user about the optional always-on bits.
 #
 # Deliberately NOT auto-installed: these are background services (a launchd job,
@@ -262,6 +400,7 @@ main() {
     $DRY_RUN && say "${YELLOW}(dry run - nothing will change)${NC}"
 
     $LINK_ONLY || wire_shell
+    load_machine_config
     link_agents
     install_configured_overlays
 
@@ -271,7 +410,9 @@ main() {
     if [ -x "$REPO_ROOT/scripts/a_c_agent_memory" ]; then
         say ""
         say "${BLUE}Global agent guidance${NC}"
-        if $DRY_RUN; then
+        if ! ensure_machine_name; then
+            :
+        elif $DRY_RUN; then
             MY_WORKFLOW_DIR="$REPO_ROOT" "$REPO_ROOT/scripts/a_c_agent_memory" build --dry-run \
                 --provider "$(memory_provider)" 2>&1 | sed 's/^/  /'
         else
