@@ -473,7 +473,7 @@ case "$CMD" in
     else
       echo "         ${Y}does not exist yet${R}"
     fi
-    echo "${B}machine${R}  ${MACHINE:-${Y}A_MACHINE_NAME unset${R}}"
+    echo "${B}machine${R}  ${MACHINE:-${Y}MACHINE_NAME unset${R}}"
     echo "${B}runtime${R}  $RUNTIME_NAME ($RUNTIME_MAKER)"
     echo "${B}sources${R}"
     printf "  %-11s %s\n" "core" "$CORE"

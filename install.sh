@@ -306,41 +306,78 @@ save_assignment() {
     fi
 }
 
-# Save a standalone profile's name as MACHINE_NAME. The line has to sit above the
-# hand-off to bootstrap.profile, or the shell reads it too late.
+# A line that sets the name, with the current key or the older A_MACHINE_NAME.
+NAME_LINE_RE='^[[:space:]]*(export[[:space:]]+)?(A_)?MACHINE_NAME='
+
+# First non-comment line of a profile that hands off to the shared shell layer.
+# An older standalone profile sources generic.profile directly, a newer one
+# bootstrap.profile, and the root-repo form reads root.config.
+profile_handoff_line() {
+    awk '!/^[[:space:]]*#/ && /root\.config|bootstrap\.profile|generic\.profile/ { print NR; exit }' "$1"
+}
+
+# True when a line setting the name sits below the hand-off, so the shell layer
+# has already loaded by the time it runs.
+profile_name_misplaced() {
+    local h; h="$(profile_handoff_line "$1")"
+    [ -n "$h" ] || return 1
+    awk -v h="$h" -v re="$NAME_LINE_RE" 'FNR > h && $0 ~ re { found = 1 } END { exit !found }' "$1"
+}
+
+# Save a standalone profile's name as MACHINE_NAME, above the hand-off:
+#   - a MACHINE_NAME line above it is updated in place,
+#   - else an older A_MACHINE_NAME line above it is renamed in place,
+#   - else a new line goes right above the hand-off (at the end if there is none).
+# Name lines below the hand-off are removed, since the shell reads them too late.
 save_profile_name() {
-    local name="$1" file="$2" tmp
-    local key_re='^[[:space:]]*(export[[:space:]]+)?'
-    if grep -Eq "${key_re}MACHINE_NAME=" "$file"; then
-        save_assignment MACHINE_NAME "$name" "$file" "export "
-    elif grep -Eq "${key_re}A_MACHINE_NAME=" "$file"; then
-        # An older profile: rename the key in place, so it keeps its position.
-        tmp="$(mktemp)"
-        sed -E "s|^([[:space:]]*)(export[[:space:]]+)?A_MACHINE_NAME=.*|\\1\\2MACHINE_NAME=\"$name\"|" "$file" > "$tmp"
-        cat "$tmp" > "$file" && rm -f "$tmp"
-    elif grep -Ev '^[[:space:]]*#' "$file" | grep -Eq 'root\.config|bootstrap\.profile'; then
-        tmp="$(mktemp)"
-        awk -v line="export MACHINE_NAME=\"$name\"" '
-            !done && $0 !~ /^[[:space:]]*#/ && /root\.config|bootstrap\.profile/ {
-                print line; print ""; done = 1
+    local name="$1" file="$2" h tmp
+    h="$(profile_handoff_line "$file")"
+    tmp="$(mktemp)"
+    awk -v h="${h:-0}" -v re="$NAME_LINE_RE" -v name="$name" '
+        function above(n) { return h == 0 || n < h }
+        # Pass 1: find the line to keep.
+        NR == FNR {
+            if ($0 ~ re && above(FNR)) {
+                if ($0 ~ /A_MACHINE_NAME=/) { if (!old) old = FNR }
+                else if (!cur) cur = FNR
             }
-            { print }' "$file" > "$tmp"
-        cat "$tmp" > "$file" && rm -f "$tmp"
-    else
-        printf 'export MACHINE_NAME="%s"\n' "$name" >> "$file"
-    fi
+            next
+        }
+        FNR == 1 { target = cur ? cur : old }
+        # Pass 2: write it out.
+        FNR == target {
+            match($0, /^[[:space:]]*(export[[:space:]]+)?/)
+            print substr($0, 1, RLENGTH) "MACHINE_NAME=\"" name "\""
+            next
+        }
+        FNR == h && !target { print "export MACHINE_NAME=\"" name "\""; print "" }
+        h && FNR > h && $0 ~ re { next }
+        { print }
+        END { if (!h && !target) print "export MACHINE_NAME=\"" name "\"" }
+    ' "$file" "$file" > "$tmp"
+    cat "$tmp" > "$file" && rm -f "$tmp"
 }
 
 # Make sure A_MACHINE_NAME is set, asking for it if needed. Returns 1 to skip the build.
 ensure_machine_name() {
-    if [ -n "${A_MACHINE_NAME:-}" ]; then
-        export MACHINE_NAME="$A_MACHINE_NAME"
-        return 0
-    fi
-
     local home; home="$(machine_name_home)"
     local is_root=false
     [ -n "${A_ROOT_DIR:-}" ] && [ -f "$A_ROOT_DIR/root.config" ] && is_root=true
+
+    if [ -n "${A_MACHINE_NAME:-}" ]; then
+        export MACHINE_NAME="$A_MACHINE_NAME"
+        # A name line below the hand-off (older installs appended it there) is read
+        # too late by the shell layer. Move it up.
+        if ! $is_root && [ -n "$home" ] && profile_name_misplaced "$home"; then
+            if $DRY_RUN; then
+                say "  ${DIM}would move${NC} MACHINE_NAME above the hand-off ${DIM}in $home${NC}"
+            else
+                save_profile_name "$A_MACHINE_NAME" "$home"
+                say "  ${GREEN}moved${NC}     MACHINE_NAME above the hand-off ${DIM}in $home${NC}"
+            fi
+        fi
+        return 0
+    fi
 
     say "  ${YELLOW}!${NC} This machine has no name yet. Agents use it to say which machine they are on."
     if $DRY_RUN; then
@@ -537,6 +574,35 @@ TOML
     return 0
 }
 
+# Which prompt this machine draws, and how the name gets into it.
+configure_prompt() {
+    local file="${STARSHIP_CONFIG:-$HOME/.config/starship.toml}"
+    if [ -f "$file" ]; then
+        configure_starship_prompt
+        return 0
+    fi
+
+    step "Shell prompt"
+    local rc; rc="$(detect_rc)"
+    if [ -f "$rc" ] && grep -Eq '^[^#]*starship init' "$rc"; then
+        say "  ${YELLOW}!${NC} skipped: starship is set up in $rc but has no config at $file"
+        say "    ${DIM}Create it (touch $file) and re-run to add the machine name to the prompt.${NC}"
+        return 0
+    fi
+
+    local what="the $(basename "$rc" | sed 's/^\.//; s/rc$//') prompt"
+    if [ -f "$rc" ]; then
+        local theme
+        theme="$(read_assignment ZSH_THEME "$rc")"
+        [ -n "$theme" ] && what="the oh-my-zsh prompt (theme $theme)"
+    fi
+    say "  ${GREEN}●${NC} sourced/prompt.sh puts MACHINE_NAME in grey at the start of $what"
+    say "    ${DIM}It runs after the theme and any PROMPT line in $rc. Turn it off with A_PROMPT_MACHINE_NAME=0.${NC}"
+    [ -n "${MACHINE_NAME:-${A_MACHINE_NAME:-}}" ] \
+        || say "    ${DIM}Nothing shows until the machine has a name.${NC}"
+    return 0
+}
+
 main() {
     say "${BLUE}agentic-devkit install${NC} ${DIM}($REPO_ROOT)${NC}"
     $DRY_RUN && say "${YELLOW}(dry run - nothing will change)${NC}"
@@ -562,7 +628,7 @@ main() {
                 --provider "$(memory_provider)" 2>&1 | sed 's/^/  /'
         fi
     fi
-    configure_starship_prompt
+    configure_prompt
     say "\n${GREEN}Done.${NC} ${DIM}Agent assets and guidance installed (provider: $PROVIDER).${NC}"
     if ! $DRY_RUN && has_provider claude; then
         suggest_extras

@@ -126,6 +126,11 @@ the prompt, in grey. It adds a `[custom.machine]` module and swaps `$hostname` f
 backs the file up before the first change, touches nothing else, and a second run changes
 nothing. With no name set, the module shows the OS hostname.
 
+Any other zsh or bash prompt (oh-my-zsh, a theme, a hand-written `PROMPT`) gets the name from
+`sourced/prompt.sh`, which `generic.profile` loads. It adds `@<name>` in grey at the start of
+`PROMPT` / `PS1` from a hook that runs just before each prompt is drawn, so it lands after the
+theme and anything else in `.zshrc`, and never twice. `A_PROMPT_MACHINE_NAME=0` turns it off.
+
 ### Machine identity
 
 A machine that runs unattended work needs a name it can introduce itself with, a stated role,

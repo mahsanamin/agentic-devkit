@@ -237,7 +237,7 @@ sync_one() {
     # would push past the one check that matters. A refused commit is left for a human: the
     # content is in the wrong repo, which is not something to retry around.
     if git -C "$repo" commit --quiet \
-        -m "sync: ${A_MACHINE_NAME:-$(hostname)} $(date -u '+%Y-%m-%d %H:%M:%S') UTC" 2>/dev/null; then
+        -m "sync: ${MACHINE_NAME:-${A_MACHINE_NAME:-$(hostname)}} $(date -u '+%Y-%m-%d %H:%M:%S') UTC" 2>/dev/null; then
       say "${G}committed${R} $name ${D}(local changes)${R}"
       CHANGED=1
     else

@@ -5,6 +5,12 @@ if [ -z "$MY_WORKFLOW_DIR" ]; then
     return 1
 fi
 
+########################### Machine name ####
+# Both names, the same way bootstrap.profile does it. A standalone profile sources this
+# file directly and never loads bootstrap.profile, and readers use either name.
+export A_MACHINE_NAME="${MACHINE_NAME:-${A_MACHINE_NAME:-}}"
+export MACHINE_NAME="$A_MACHINE_NAME"
+
 ########################### Global Path Additions ####
 # Add your own PATH entries here or in your org profile
 # export PATH=$PATH:/path/to/your/tools
@@ -67,6 +73,8 @@ source "$MY_WORKFLOW_DIR/sourced/worktree.sh"
 source "$MY_WORKFLOW_DIR/sourced/git.sh"
 source "$MY_WORKFLOW_DIR/sourced/doctor.sh"
 source "$MY_WORKFLOW_DIR/sourced/task.sh"
+# MACHINE_NAME in grey at the start of a zsh or bash prompt. A_PROMPT_MACHINE_NAME=0 turns it off.
+source "$MY_WORKFLOW_DIR/sourced/prompt.sh"
 # Transitional back-compat aliases for renamed commands (old muscle-memory names).
 [ -f "$MY_WORKFLOW_DIR/sourced/compat.sh" ] && source "$MY_WORKFLOW_DIR/sourced/compat.sh"
 
