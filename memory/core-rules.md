@@ -130,6 +130,18 @@ The tracker is **public**. Describe the problem in generic terms and never paste
 project, host, ticket or colleague names into it. If it cannot be described without them, do not
 file it, and say why.
 
+### A status is verified, or it says "not confirmed"
+
+Any claim about the state of something (deployed, merged, running, passing, done, owned) is checked
+against its system of record in this session before it is stated, and the answer says where it was
+checked. What was not checked is written as **"not confirmed"**, never as a negative such as "not
+yet" or "not deployed". A signal that only suggests the state is not the state: a merge, a release
+tag, a branch that contains the commit, a green CI run, or a passing deploy job can each be true
+while the thing is still not live. Before a status reaches other people (a page, a message, a
+ticket), re-check every negative claim, because a wrong "not done" lands as an accusation against
+whoever owns it. Recorded 2026-09-30, after a published status page called two teams' deployed
+changes undeployed.
+
 ### Knowledge placement — where a new fact goes
 
 Project-specific guidance belongs **in that project's repo**. `AGENTS.md` is canonical;
