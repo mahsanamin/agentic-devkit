@@ -158,6 +158,19 @@ ticket), re-check every negative claim, because a wrong "not done" lands as an a
 whoever owns it. Recorded 2026-09-30, after a published status page called two teams' deployed
 changes undeployed.
 
+**A peer's finding is a lead, not a fact.** When another session or a subagent reports something,
+check which branch, repo or system it actually looked at before repeating it. "Not on the
+`development` branch" is not the same as "not done": the work can sit in an open PR or a release
+branch. Check open PRs and release branches before saying something is missing.
+
+### Before sending a value to more places, find who reads it
+
+When a report says a value (a header, an id, a field) is missing from some calls, first check
+whether anything on the receiving side reads it there: search the backend code for the name. If
+nothing consumes it, the missing value is harmless, and the answer is "by design", not a sweep and a
+PR. Do this cheap check before planning call sites, CORS or tests. Recorded 2026-09-30, after a
+two-hour sweep planned a change that no backend would have used.
+
 ### Knowledge placement — where a new fact goes
 
 Project-specific guidance belongs **in that project's repo**. `AGENTS.md` is canonical;
