@@ -85,6 +85,22 @@ final report.
 "Hand this over", "run these in parallel", and "keep an eye on them" are asking for sessions. Read
 them that way even when the work looks like something a subagent could carry.
 
+**The same holds against doing it inline.** When a session that is already busy with something else
+(monitoring a release, answering a bug report, coordinating other lanes) finds a new piece of work
+that will end in its own PR, it starts a session for it instead of branching and coding in place.
+It writes a brief with everything it already found (the cause, the call sites, the traps, how to
+verify), launches the session with `a_c_task_start -c -z <session> --task-file <brief>`, and then
+supervises it: it answers the new session's questions, checks its reports, and passes results to
+the user.
+
+- **One lane at a time.** Start the next session only after the current one is running on its
+  own, and don't have several going at once unless the user asks for it.
+- **Only for a real task.** A proper change with its own PR qualifies. A one-line fix, a comment
+  reply, or a follow-up commit on a branch this session already owns does not, so do that directly.
+
+Recorded 2026-09-30, after a session that was handling a production bug report started editing a
+fresh branch for the fix itself, when the user wanted it handed to its own tab and supervised.
+
 ### Messaging another session when its name does not resolve
 
 Some Claude Code versions start sessions that never register their name, so `ListAgents` does not
