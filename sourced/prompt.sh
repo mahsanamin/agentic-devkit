@@ -9,6 +9,8 @@
 # in the profile still shows.
 #
 # Idempotent: the prefix is added once and swapped out if the name changes.
+# It is only a fallback: when the prompt already shows the name (a coloured name
+# line in .zshrc, a theme), it adds nothing, so the name never appears twice.
 # Turn it off with A_PROMPT_MACHINE_NAME=0.
 
 [[ $- == *i* ]] || return 0
@@ -21,13 +23,11 @@ _a_prompt_machine_skip() {
 if [ -n "${ZSH_VERSION:-}" ]; then
     _a_prompt_machine_precmd() {
         local prefix="%F{8}@${MACHINE_NAME}%f "
-        if _a_prompt_machine_skip; then
-            [ -n "${_A_PROMPT_PREFIX:-}" ] && PROMPT="${PROMPT#"$_A_PROMPT_PREFIX"}"
-            _A_PROMPT_PREFIX=""
-            return 0
-        fi
         # Strip the previous prefix first, then add the current one.
         [ -n "${_A_PROMPT_PREFIX:-}" ] && PROMPT="${PROMPT#"$_A_PROMPT_PREFIX"}"
+        _A_PROMPT_PREFIX=""
+        _a_prompt_machine_skip && return 0
+        [[ "$PROMPT" == *"$MACHINE_NAME"* ]] && return 0
         PROMPT="${prefix}${PROMPT}"
         _A_PROMPT_PREFIX="$prefix"
         # Stay last, so a theme's own precmd that rebuilds PROMPT runs before this one.
@@ -39,10 +39,9 @@ elif [ -n "${BASH_VERSION:-}" ]; then
     _a_prompt_machine_prompt_command() {
         local prefix="\[\e[90m\]@${MACHINE_NAME}\[\e[0m\] "
         [ -n "${_A_PROMPT_PREFIX:-}" ] && PS1="${PS1#"$_A_PROMPT_PREFIX"}"
-        if _a_prompt_machine_skip; then
-            _A_PROMPT_PREFIX=""
-            return 0
-        fi
+        _A_PROMPT_PREFIX=""
+        _a_prompt_machine_skip && return 0
+        [[ "$PS1" == *"$MACHINE_NAME"* ]] && return 0
         PS1="${prefix}${PS1}"
         _A_PROMPT_PREFIX="$prefix"
     }
