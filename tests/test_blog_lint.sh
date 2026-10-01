@@ -114,6 +114,7 @@ expect_clean "filler inside <code>"        '<div class="card"><p>Run <code>just 
 expect_clean "words inside a code block"   '```
 simply leverage
 ```'
+expect_clean "a quotation is not checked"   "> Just simply leverage $(words 30 word)end."
 expect_clean "word part is not a hit"      "The keyboard is justified."
 
 printf '\nimages\n'

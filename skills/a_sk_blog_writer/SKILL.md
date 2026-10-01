@@ -131,7 +131,7 @@ visual, and images without alt text. Options: `--max-sentence`, `--max-avg`, `--
 `--gap`, `-q`. Exit code 1 means findings.
 
 Treat each finding as a question, not an order. A 27-word sentence that reads cleanly can stay,
-and "just" inside a quotation is not yours to cut. Then walk the checklist the lint cannot judge:
+and the lint does not check `> ` quotations, which are not yours to edit. Then walk the checklist the lint cannot judge:
 
 - [ ] The first two paragraphs carry the main point; the summary box stands alone.
 - [ ] Headings, read alone, tell the story.

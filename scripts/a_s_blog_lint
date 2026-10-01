@@ -13,6 +13,8 @@
 #   - more than --gap words (default 300) with no heading or visual in between. A table,
 #     fenced code block, image, <figure>, <img>, <table>, <details> or <div> counts as a visual.
 #   - an image with no alt text: ![](x), <img> without alt, or alt=""
+#   A `> ` blockquote counts toward the gap, but its words are not checked: quoted text is
+#   not the writer's to edit.
 #
 # Usage: a_s_blog_lint [options] [file ...]
 #   With no file, or with `-`, reads from stdin.
@@ -125,6 +127,8 @@ def split_blocks(lines):
         first = buf[0].strip()
         if VISUAL_OPEN.match(first) or IMG_MD.search(first) and not plain(IMG_MD.sub("", first)):
             yield "visual", start + 1, text
+        elif first.startswith(">"):
+            yield "quote", start + 1, text
         elif re.match(r"^([-*+]|\d+[.)])\s", first):
             yield "list", start + 1, text
         else:
@@ -203,7 +207,8 @@ def lint(name, content, opt):
             findings.append((gap_start, "wall-of-text",
                              f"{gap} words with no heading or visual (max {opt.gap})"))
             gap, gap_start = 0, None
-        if kind == "list":
+        # A quotation counts toward the gap, but its words are not the writer's to change.
+        if kind in ("list", "quote"):
             continue
         if kind == "prose" and n > opt.max_para:
             findings.append((start, "long-paragraph", f"paragraph is {n} words (max {opt.max_para})"))
