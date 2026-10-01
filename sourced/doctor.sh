@@ -1,7 +1,8 @@
 #!/bin/bash
 # agentic-devkit doctor: verifies this shell is correctly wired to MY_WORKFLOW_DIR
 # and that loaded functions match the on-disk source (catches stale shells and
-# rogue clones).
+# rogue clones), then runs scripts/a_c_doctor for the machine checks. Use
+# a_c_doctor on its own when the shell itself is not in question.
 
 a_c_workflow_doctor() {
     local GREEN='\033[0;32m' YELLOW='\033[1;33m' RED='\033[0;31m' BLUE='\033[0;34m' NC='\033[0m'
@@ -162,31 +163,13 @@ a_c_workflow_doctor() {
         fi
     fi
 
-    echo ""
-    echo -e "${BLUE}Agentic machine:${NC}"
-    if [ -z "${MACHINE_NAME:-${A_MACHINE_NAME:-}}" ]; then
-        _doc_warn "MACHINE_NAME is not set — this machine has no identity to introduce itself with"
-    else
-        _doc_ok "machine identity: ${MACHINE_NAME:-$A_MACHINE_NAME}"
-    fi
-    if command -v a_c_agent_memory > /dev/null 2>&1; then
-        if a_c_agent_memory check > /dev/null 2>&1; then
-            _doc_ok "Claude, Codex, and Gemini guidance is in sync with its sources"
-        else
-            _doc_warn "global agent guidance has drifted — run: a_c_agent_memory build"
-        fi
-    fi
-    local unmanaged
-    unmanaged=$(find ~/.claude/skills ~/.claude/agents ~/.agents/skills ~/.gemini/config/skills -mindepth 1 -maxdepth 1 ! -type l 2>/dev/null | wc -l | tr -d ' ')
-    if [ "${unmanaged:-0}" -gt 0 ]; then
-        echo "   i $unmanaged externally managed provider asset(s) left untouched (plugins/frameworks/workspaces)"
-    else
-        _doc_ok "every installed provider asset is managed by the devkit"
-    fi
-
     echo "─────────────────────────────────────────────────────────────"
     echo -e "${GREEN}$ok ok${NC}  ${YELLOW}$warn warn${NC}  ${RED}$err err${NC}"
     unset -f _doc_ok _doc_warn _doc_err
+
+    # The machine checks: name, repo folders, updates, links, guidance.
+    echo ""
+    a_c_doctor "$@"
 
     [ "$err" -eq 0 ]
 }

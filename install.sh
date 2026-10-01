@@ -568,6 +568,17 @@ TOML
     return 0
 }
 
+# A health check of the result: name, repo folders, updates, links. A few seconds,
+# most of it fetching from each repo's origin. It only reports, so its result never
+# fails the install.
+run_doctor() {
+    $DRY_RUN && return 0
+    [ -x "$REPO_ROOT/scripts/a_c_doctor" ] || return 0
+    say ""
+    "$REPO_ROOT/scripts/a_c_doctor" || true
+    say "${DIM}Run this check again any time: ${NC}${GREEN}a_c_doctor${NC}"
+}
+
 # Which prompt this machine draws, and how the name gets into it.
 configure_prompt() {
     local file="${STARSHIP_CONFIG:-$HOME/.config/starship.toml}"
@@ -624,6 +635,7 @@ main() {
     fi
     configure_prompt
     say "\n${GREEN}Done.${NC} ${DIM}Agent assets and guidance installed (provider: $PROVIDER).${NC}"
+    run_doctor
     if ! $DRY_RUN && has_provider claude; then
         suggest_extras
     fi

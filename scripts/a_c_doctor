@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+#
+# a_c_doctor - is this machine set up right, and is anything out of date?
+#
+# Usage:
+#   a_c_doctor             check everything, fetching from each repo's origin for updates
+#   a_c_doctor --offline   same, but compare against what was last fetched (no network)
+#
+# Checks, each with the command that fixes what it finds:
+#   - the shell rc file loads the devkit profile
+#   - this machine has a name, a machine file in an overlay (optional), a prompt colour
+#   - the repo folders behind cd_p / cd_w / cd_g are set and exist
+#   - the devkit, the overlays and the root repo: updates waiting, local changes
+#   - every skill and agent in those repos is linked into the provider homes
+#   - the generated agent guidance matches its sources
+#
+# Runs as its own process, so install.sh runs it at the end of every install. For the
+# checks that need your live shell (functions loaded from the right clone), use
+# a_c_workflow_doctor, which runs this as well.
+#
+# Exit status: 0 when nothing is wrong, 1 when there is a warning or an error.
+
+set -uo pipefail
+
+OFFLINE=false
+for a in "$@"; do
+    case "$a" in
+        --offline) OFFLINE=true ;;
+        -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "a_c_doctor: unknown argument: $a (see --help)" >&2; exit 2 ;;
+    esac
+done
+
+DEVKIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -t 1 ]; then
+    GREEN='\033[0;32m' YELLOW='\033[1;33m' RED='\033[0;31m' BLUE='\033[0;34m' DIM='\033[2m' NC='\033[0m'
+else
+    GREEN='' YELLOW='' RED='' BLUE='' DIM='' NC=''
+fi
+ok=0 warn=0 err=0
+good()    { echo -e " ${GREEN}✓${NC} $1"; ok=$((ok+1)); }
+bad()     { echo -e " ${YELLOW}!${NC} $1"; warn=$((warn+1)); }
+broken()  { echo -e " ${RED}✗${NC} $1"; err=$((err+1)); }
+info()    { echo -e " ${DIM}·${NC} $1"; }
+fix()     { echo -e "     ${DIM}fix:${NC} ${GREEN}$1${NC}"; }
+section() { echo; echo -e "${BLUE}$1${NC}"; }
+
+# ------------------------------------------------------------------- load the config
+#
+# In a shell that loaded the profile, everything is already exported. From install.sh
+# or a fresh terminal it is not, so read the same files the profile reads.
+
+read_assignment() {
+    local key="$1" file="$2" line
+    [ -f "$file" ] || return 0
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$key=" "$file" | tail -n 1)" || true
+    line="${line#*=}"
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//")"
+    printf '%s' "${line/#\~/$HOME}"
+}
+
+PROFILE=""
+for f in "$HOME/my_settings/a_configs.profile" "$HOME/my_settings/configs.profile"; do
+    [ -f "$f" ] && { PROFILE="$f"; break; }
+done
+
+ROOT="${A_ROOT_DIR:-}"
+[ -n "$ROOT" ] || ROOT="$(read_assignment A_ROOT_DIR "${PROFILE:-/dev/null}")"
+[ -n "$ROOT" ] && [ -f "$ROOT/root.config" ] || ROOT=""
+
+if [ -n "$ROOT" ]; then
+    # The keys a user edits, and the file they edit them in.
+    CONFIG="$ROOT/root.local.config"
+    KEY_P=PERSONAL_REPOS_DIR KEY_W=ORG_REPOS_DIR KEY_G=GLOBAL_REPOS_DIR
+    if [ -z "${MY_WORKFLOW_DIR:-}" ]; then
+        set +u
+        [ -f "$ROOT/root.local.config" ] && . "$ROOT/root.local.config"
+        . "$ROOT/root.config"
+        set -u
+        a_dir_p_repos="${PERSONAL_REPOS_DIR:-}"
+        a_dir_w_repos="${ORG_REPOS_DIR:-}"
+        a_dir_g_repos="${GLOBAL_REPOS_DIR:-}"
+        A_AGENT_OVERLAY_DIR="${PRIVATE_DEVKIT_DIR:-}"
+        A_AGENT_ORG_OVERLAY_DIR="${ORG_DEVKIT_DIR:-}"
+    fi
+else
+    CONFIG="$PROFILE"
+    KEY_P=a_dir_p_repos KEY_W=a_dir_w_repos KEY_G=a_dir_g_repos
+    if [ -z "${MY_WORKFLOW_DIR:-}" ] && [ -n "$PROFILE" ]; then
+        a_dir_p_repos="$(read_assignment a_dir_p_repos "$PROFILE")"
+        a_dir_w_repos="$(read_assignment a_dir_w_repos "$PROFILE")"
+        a_dir_g_repos="$(read_assignment a_dir_g_repos "$PROFILE")"
+        A_AGENT_OVERLAY_DIR="$(read_assignment A_AGENT_OVERLAY_DIR "$PROFILE")"
+        A_AGENT_ORG_OVERLAY_DIR="$(read_assignment A_AGENT_ORG_OVERLAY_DIR "$PROFILE")"
+    fi
+fi
+# The name is read fresh from the file, so a rename shows up before the shell reloads.
+NAME="$(read_assignment MACHINE_NAME "${CONFIG:-/dev/null}")"
+[ -n "$NAME" ] || NAME="$(read_assignment A_MACHINE_NAME "${CONFIG:-/dev/null}")"
+[ -n "$NAME" ] || NAME="${MACHINE_NAME:-${A_MACHINE_NAME:-}}"
+
+echo -e "${BLUE}agentic-devkit doctor${NC} ${DIM}($DEVKIT)${NC}"
+
+# ------------------------------------------------------------------- shell wiring
+section "Shell"
+if [ -z "$PROFILE" ]; then
+    broken "no profile in ~/my_settings, so nothing loads the devkit"
+    fix "$DEVKIT/install.sh"
+else
+    rc=""
+    case "$(basename "${SHELL:-}")" in
+        bash) rc="$HOME/.bashrc" ;;
+        *)    rc="$HOME/.zshrc" ;;
+    esac
+    if [ -f "$rc" ] && grep -Eq "^[^#]*(source|\.)[[:space:]].*my_settings/[^ ]*\.profile" "$rc"; then
+        good "$(basename "$rc") loads $(basename "$PROFILE")"
+    else
+        broken "$rc does not load $PROFILE"
+        fix "$DEVKIT/install.sh"
+    fi
+fi
+[ -n "$CONFIG" ] && info "settings file: $CONFIG"
+
+# ------------------------------------------------------------------- machine
+section "Machine"
+if [ -z "$NAME" ]; then
+    bad "no machine name set, so agents cannot say which machine they are on"
+    fix "$DEVKIT/install.sh   (it asks for the name)"
+else
+    good "name: $NAME"
+    # Optional: a machine/<name>.md in an overlay adds facts about this machine to the
+    # agent guidance. Its absence is fine, but files for other names often mean a rename.
+    found="" others=""
+    for overlay in "${A_AGENT_OVERLAY_DIR:-}" "${A_AGENT_ORG_OVERLAY_DIR:-}"; do
+        [ -n "$overlay" ] && [ -d "$overlay/machine" ] || continue
+        [ -f "$overlay/machine/$NAME.md" ] && found="$overlay/machine/$NAME.md"
+        others="$others$(cd "$overlay/machine" && ls ./*.md 2>/dev/null | sed 's|^\./||; s|\.md$||' \
+                  | grep -Ev '^(glossary|rules|README)$' | grep -vxF "$NAME" | tr '\n' ' ')"
+    done
+    if [ -n "$found" ]; then
+        good "machine file: $found"
+    elif [ -n "$others" ]; then
+        info "no machine/$NAME.md in an overlay (optional). There are files for: $others"
+        echo -e "     ${DIM}if one of those is this machine under an old name, rename the file to $NAME.md${NC}"
+    fi
+    colour="$(read_assignment MACHINE_COLOR "${CONFIG:-/dev/null}")"
+    if [ -n "$colour" ]; then
+        good "prompt colour: $colour"
+    elif [ -f "$HOME/.zshrc" ] && grep -Fq '# fleetkit prompt colour' "$HOME/.zshrc"; then
+        good "prompt colour: set in .zshrc"
+    else
+        info "the prompt shows the name in grey. To colour it: ${GREEN}a_c_machine color <colour>${NC} (list: a_c_machine colors)"
+    fi
+fi
+
+# ------------------------------------------------------------------- folders
+section "Repo folders (cd_p, cd_w, cd_g)"
+check_tier() {
+    local alias="$1" key="$2" dir="$3" what="$4"
+    if [ -z "$dir" ]; then
+        info "$alias is off: $key is empty ($what)"
+        echo -e "     ${DIM}to turn it on, set $key in ${CONFIG:-your profile}${NC}"
+    elif [ -d "$dir" ]; then
+        good "$alias -> $dir"
+    else
+        bad "$alias points at $dir, which does not exist"
+        fix "mkdir -p \"$dir\"   or set $key in ${CONFIG:-your profile} to the right folder"
+    fi
+}
+check_tier cd_p "$KEY_P" "${a_dir_p_repos:-}" "personal repos"
+check_tier cd_w "$KEY_W" "${a_dir_w_repos:-}" "work repos"
+check_tier cd_g "$KEY_G" "${a_dir_g_repos:-}" "global repos"
+
+# ------------------------------------------------------------------- updates
+section "Updates"
+REPOS=()
+add_repo() {
+    local d="$1" r
+    [ -n "$d" ] && [ -d "$d/.git" ] || return 0
+    d="$(cd -P "$d" && pwd)"
+    for r in ${REPOS[@]+"${REPOS[@]}"}; do [ "$r" = "$d" ] && return 0; done
+    REPOS+=("$d")
+}
+add_repo "$DEVKIT"
+add_repo "${A_AGENT_OVERLAY_DIR:-}"
+add_repo "${A_AGENT_ORG_OVERLAY_DIR:-}"
+add_repo "$ROOT"
+
+FETCH_LOG="$(mktemp -d)"
+trap 'rm -rf "$FETCH_LOG"' EXIT
+if ! $OFFLINE; then
+    # All at once, and never waiting on a password or a dead ssh-agent.
+    i=0
+    for d in "${REPOS[@]}"; do
+        ( GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+            git -C "$d" fetch -q 2>"$FETCH_LOG/$i.err" || touch "$FETCH_LOG/$i.failed" ) &
+        i=$((i+1))
+    done
+    wait
+fi
+
+needs_install=false
+i=0
+for d in "${REPOS[@]}"; do
+    n="$(basename "$d")"
+    branch="$(git -C "$d" branch --show-current 2>/dev/null)"
+    if [ -f "$FETCH_LOG/$i.failed" ]; then
+        bad "$n: could not reach its origin, so updates are unknown"
+        echo -e "     ${DIM}$(head -1 "$FETCH_LOG/$i.err")${NC}"
+        fix "git -C \"$d\" fetch   (if it asks for an ssh key: ssh-add)"
+    elif ! git -C "$d" rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
+        info "$n: branch ${branch:-?} has no upstream, not checked"
+    else
+        behind="$(git -C "$d" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)"
+        ahead="$(git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)"
+        if [ "$behind" -gt 0 ]; then
+            bad "$n: $behind update(s) waiting on ${branch:-its branch}"
+            fix "git -C \"$d\" pull && \"$DEVKIT/install.sh\""
+        else
+            good "$n is up to date"
+        fi
+        [ "$ahead" -gt 0 ] && { bad "$n: $ahead local commit(s) not pushed"; fix "git -C \"$d\" push"; }
+    fi
+    dirty="$(git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+    [ "$dirty" -gt 0 ] && info "$n has $dirty uncommitted change(s)"
+    i=$((i+1))
+done
+$OFFLINE && info "offline: compared against the last fetch, not the origin"
+
+# ------------------------------------------------------------------- installed links
+section "Installed skills and agents"
+# A name can come from the devkit or an overlay, so a link is right if it points into
+# any of the repos above.
+points_into_repos() {
+    local target r
+    target="$(cd -P "$1" 2>/dev/null && pwd || readlink "$1")"
+    for r in "${REPOS[@]}"; do case "$target" in "$r"/*) return 0 ;; esac; done
+    return 1
+}
+missing=() stale=()
+check_home() {
+    local home="$1" kind="$2" r src n link
+    [ -d "$home" ] || return 0
+    for r in "${REPOS[@]}"; do
+        if [ "$kind" = skills ]; then
+            for src in "$r"/skills/*/SKILL.md; do
+                [ -f "$src" ] || continue
+                # Claude-only skills are not linked for the other providers.
+                [ "$home" != "$HOME/.claude/skills" ] \
+                    && grep -Eq '^providers:[[:space:]]*claude[[:space:]]*$' "$src" && continue
+                n="$(basename "$(dirname "$src")")"; link="$home/$n"
+                if [ ! -e "$link" ]; then missing+=("$link")
+                elif [ -L "$link" ] && ! points_into_repos "$link"; then stale+=("$link"); fi
+            done
+        else
+            for src in "$r"/agents/*.md; do
+                [ -f "$src" ] || continue
+                n="$(basename "$src")"; [ "$n" = README.md ] && continue
+                link="$home/$n"
+                if [ ! -e "$link" ]; then missing+=("$link")
+                elif [ -L "$link" ] && ! points_into_repos "$link"; then stale+=("$link"); fi
+            done
+        fi
+    done
+    # Links whose repo file is gone.
+    for link in "$home"/*; do
+        [ -L "$link" ] && [ ! -e "$link" ] && stale+=("$link")
+    done
+}
+check_home "$HOME/.claude/skills" skills
+check_home "$HOME/.agents/skills" skills
+check_home "$HOME/.claude/agents" agents
+
+if [ "${#missing[@]}" -eq 0 ] && [ "${#stale[@]}" -eq 0 ]; then
+    good "every skill and agent in these repos is linked"
+else
+    [ "${#missing[@]}" -gt 0 ] && bad "${#missing[@]} not installed yet, e.g. ${missing[0]/#$HOME/~}"
+    [ "${#stale[@]}" -gt 0 ] && bad "${#stale[@]} link(s) broken or pointing elsewhere, e.g. ${stale[0]/#$HOME/~}"
+    needs_install=true
+fi
+$needs_install && fix "\"$DEVKIT/install.sh\""
+
+# ------------------------------------------------------------------- guidance
+section "Agent guidance"
+if [ -x "$DEVKIT/scripts/a_c_agent_memory" ]; then
+    if MY_WORKFLOW_DIR="${MY_WORKFLOW_DIR:-$DEVKIT}" "$DEVKIT/scripts/a_c_agent_memory" check >/dev/null 2>&1; then
+        good "Claude, Codex and Gemini guidance matches its sources"
+    else
+        bad "the generated guidance is out of date with its sources"
+        fix "a_c_agent_memory build"
+    fi
+fi
+
+# ------------------------------------------------------------------- summary
+echo
+echo -e "${GREEN}$ok ok${NC}  ${YELLOW}$warn to fix${NC}  ${RED}$err broken${NC}"
+[ $((warn + err)) -eq 0 ]

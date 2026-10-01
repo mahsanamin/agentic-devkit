@@ -335,7 +335,15 @@ show() {
     say "colour:   ${colour:-(none, shown in grey)}"
     say "saved in: $CONFIG"
     say "prompt:   $(prompt_kind)"
-    say "fleetkit: ${FLEETKIT:-(not found)}"
+    say "fleetkit: ${FLEETKIT:-(not found, the built-in colour names are used)}"
+    say ""
+    [ -n "$name" ] || say "Set a name:     $DEVKIT/install.sh   (it asks for one)"
+    if [ -z "$(saved_colour)" ]; then
+        say "Set a colour:   a_c_machine color <colour>   (see the names: a_c_machine colors)"
+    else
+        say "Change colour:  a_c_machine color <colour>   (see the names: a_c_machine colors)"
+    fi
+    [ -n "$name" ] && say "Rename:         a_c_machine name <new-name>"
 }
 
 cmd="${1:-show}"
