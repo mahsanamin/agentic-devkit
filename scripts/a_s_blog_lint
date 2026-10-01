@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+# a_s_blog_lint - report the things that make a blog post hard to read, before it is published.
+# It reports; it never rewrites. The rules and their sources are in
+# agentic-devkit/skills/a_sk_blog_writer/SKILL.md.
+#
+# What it checks, on the prose only (frontmatter, code blocks, HTML tags and table rows are
+# skipped for sentence counts):
+#   - a sentence over --max-sentence words (default 25)        GOV.UK "Sentence length"
+#   - the average sentence length (warns over --max-avg, default 20)
+#   - a paragraph over --max-para words (default 80)
+#   - a "words to avoid" hit (leverage, utilise, empower, ...)  GOV.UK "Words to avoid"
+#   - filler / condescension (simply, just, easy, obviously)    Google developer style
+#   - more than --gap words (default 300) with no heading or visual in between. A table,
+#     fenced code block, image, <figure>, <img>, <table>, <details> or <div> counts as a visual.
+#   - an image with no alt text: ![](x), <img> without alt, or alt=""
+#
+# Usage: a_s_blog_lint [options] [file ...]
+#   With no file, or with `-`, reads from stdin.
+#
+#   -q, --quiet            Print nothing; use the exit code only.
+#       --max-sentence N   Longest sentence allowed, in words (default 25).
+#       --max-avg N        Highest average sentence length before a warning (default 20).
+#       --max-para N       Longest paragraph allowed, in words (default 80).
+#       --gap N            Most words allowed without a heading or visual (default 300).
+#   -h, --help             Show this help.
+#
+# Exit codes: 0 clean - 1 findings - 2 bad usage or unreadable file.
+
+import argparse
+import re
+import sys
+
+# GOV.UK's list, minus the words that are literal in technical writing (commit, deploy, key,
+# land, progress, impact), plus the marketing words that hide the same lack of a verb.
+WORDS_TO_AVOID = [
+    "advancing", "collaborate", "combat", "countering", "deliver", "delivers", "delivering",
+    "dialogue", "disincentivise", "drive out", "empower", "empowers", "empowering",
+    "facilitate", "facilitates", "facilitating", "foster", "fostering", "initiate",
+    "leverage", "leverages", "leveraging", "liaise", "overarching", "promote", "robust",
+    "slimming down", "streamline", "streamlines", "strengthening", "tackling",
+    "transforming", "utilise", "utilize", "utilises", "utilizes", "utilising", "utilizing",
+    "seamless", "seamlessly", "cutting-edge", "game-changer", "synergy",
+]
+FILLER = ["simply", "just", "easy", "easily", "obviously", "of course", "clearly", "basically"]
+
+ABBREV = re.compile(r"\b(e\.g|i\.e|etc|vs|Mr|Mrs|Ms|Dr|St|No|approx|incl)\.", re.I)
+WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’\-]*")
+HTML_TAG = re.compile(r"<[^>]+>")
+MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+INLINE_CODE = re.compile(r"`[^`]*`")
+VISUAL_OPEN = re.compile(r"^\s*<(figure|img|table|details|div|svg|picture|video)\b", re.I)
+IMG_MD = re.compile(r"!\[([^\]]*)\]\(([^)]*)\)")
+IMG_HTML = re.compile(r"<img\b[^>]*>", re.I)
+ALT_ATTR = re.compile(r"\balt\s*=\s*(\"([^\"]*)\"|'([^']*)')", re.I)
+
+
+def plain(text):
+    """Strip markup so only the words a reader reads remain."""
+    text = INLINE_CODE.sub(lambda m: m.group(0).strip("`"), text)
+    text = MD_LINK.sub(lambda m: m.group(1), text)
+    text = HTML_TAG.sub(" ", text)
+    text = re.sub(r"&[a-z]+;|&#\d+;", " ", text)
+    text = re.sub(r"[*_~>#|]", " ", text)
+    return re.sub(r"\s+([,.;:!?])", r"\1", re.sub(r"\s+", " ", text)).strip()
+
+
+BLOCK_TAG = re.compile(r"</?(?:p|li|h[1-6]|div|figcaption|summary|td|th|br|ul|ol)\b[^>]*>", re.I)
+
+
+def segments(html):
+    """Split an HTML visual into the separate pieces of text a reader sees."""
+    return [plain(part) for part in BLOCK_TAG.split(html) if words(plain(part))]
+
+
+def words(text):
+    return WORD.findall(text)
+
+
+def sentences(text):
+    protected = ABBREV.sub(lambda m: m.group(0).replace(".", "\0"), text)
+    # Only `.` `!` `?` followed by space and an opening character ends a sentence, so
+    # numbers like 1.5 and file names like README.md stay whole.
+    parts = re.split(r"(?<=[.!?])[\"'”’)]*\s+(?=[\"'“‘(]?[A-Z0-9])", protected)
+    return [p.replace("\0", ".").strip() for p in parts if words(p)]
+
+
+def split_blocks(lines):
+    """Yield (kind, start_line, text). kind: heading, visual, code, table, prose, list."""
+    i, n = 0, len(lines)
+    if n and lines[0].strip() == "---":
+        for j in range(1, n):
+            if lines[j].strip() == "---":
+                i = j + 1
+                break
+    while i < n:
+        line = lines[i]
+        s = line.strip()
+        if not s:
+            i += 1
+            continue
+        if s.startswith("```") or s.startswith("~~~"):
+            fence, start = s[:3], i
+            i += 1
+            while i < n and not lines[i].strip().startswith(fence):
+                i += 1
+            i += 1
+            yield "code", start + 1, ""
+            continue
+        if re.match(r"^#{1,6}\s", s) or re.match(r"^<h[1-6]\b", s, re.I):
+            yield "heading", i + 1, s
+            i += 1
+            continue
+        if s.startswith("|"):
+            start = i
+            while i < n and lines[i].strip().startswith("|"):
+                i += 1
+            yield "table", start + 1, "\n".join(lines[start:i])
+            continue
+        start, buf = i, []
+        while i < n and lines[i].strip() and not lines[i].strip().startswith(("```", "~~~", "|")) \
+                and not re.match(r"^#{1,6}\s", lines[i].strip()):
+            buf.append(lines[i])
+            i += 1
+        text = "\n".join(buf)
+        first = buf[0].strip()
+        if VISUAL_OPEN.match(first) or IMG_MD.search(first) and not plain(IMG_MD.sub("", first)):
+            yield "visual", start + 1, text
+        elif re.match(r"^([-*+]|\d+[.)])\s", first):
+            yield "list", start + 1, text
+        else:
+            yield "prose", start + 1, text
+
+
+def find_terms(text, terms):
+    # Words inside code are commands and identifiers, not prose.
+    text = re.sub(r"<code\b[^>]*>.*?</code>", " ", INLINE_CODE.sub(" ", text), flags=re.I | re.S)
+    low = plain(text).lower()
+    hits = []
+    for t in terms:
+        if re.search(r"(?<![\w-])" + re.escape(t) + r"(?![\w-])", low):
+            hits.append(t)
+    return hits
+
+
+def list_items(text):
+    """Yield (line offset, text) for each item of a markdown list block."""
+    item, at = [], 0
+    for k, line in enumerate(text.split("\n")):
+        if re.match(r"^\s*([-*+]|\d+[.)])\s", line) and item:
+            yield at, "\n".join(item)
+            item, at = [], k
+        item.append(line)
+    if item:
+        yield at, "\n".join(item)
+
+
+def check_words(lineno, raw, pieces, findings, all_sentences, opt):
+    for piece in pieces:
+        for sent in sentences(piece):
+            c = len(words(sent))
+            all_sentences.append(c)
+            if c > opt.max_sentence:
+                findings.append((lineno, "long-sentence",
+                                 f"{c} words (max {opt.max_sentence}): {sent[:90]}..."))
+    for t in find_terms(raw, WORDS_TO_AVOID):
+        findings.append((lineno, "word-to-avoid", f'"{t}": say what is actually done'))
+    for t in find_terms(raw, FILLER):
+        findings.append((lineno, "filler", f'"{t}": cut it, or show it is so'))
+
+
+def lint(name, content, opt):
+    findings, warnings = [], []
+    lines = content.splitlines()
+    all_sentences, gap, gap_start = [], 0, None
+
+    for lineno, raw in enumerate(lines, 1):
+        for m in IMG_MD.finditer(raw):
+            if not m.group(1).strip():
+                findings.append((lineno, "image-alt", f"image has no alt text: {m.group(2)[:60]}"))
+        for m in IMG_HTML.finditer(raw):
+            a = ALT_ATTR.search(m.group(0))
+            if not a or not (a.group(2) or a.group(3) or "").strip():
+                src = re.search(r"src\s*=\s*[\"']([^\"']*)", m.group(0), re.I)
+                findings.append((lineno, "image-alt",
+                                 f"<img> has no alt text: {src.group(1)[:60] if src else '?'}"))
+
+    for kind, start, text in split_blocks(lines):
+        if kind == "visual":
+            check_words(start, text, segments(text), findings, all_sentences, opt)
+        if kind == "list":
+            for k, item in list_items(text):
+                body = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", item)
+                check_words(start + k, item, [plain(body)], findings, all_sentences, opt)
+        if kind in ("heading", "visual", "code", "table"):
+            gap, gap_start = 0, None
+            continue
+        body = plain(text)
+        n = len(words(body))
+        if gap_start is None:
+            gap_start = start
+        gap += n
+        if gap > opt.gap:
+            findings.append((gap_start, "wall-of-text",
+                             f"{gap} words with no heading or visual (max {opt.gap})"))
+            gap, gap_start = 0, None
+        if kind == "list":
+            continue
+        if kind == "prose" and n > opt.max_para:
+            findings.append((start, "long-paragraph", f"paragraph is {n} words (max {opt.max_para})"))
+        check_words(start, text, [body], findings, all_sentences, opt)
+
+    avg = sum(all_sentences) / len(all_sentences) if all_sentences else 0
+    if avg > opt.max_avg:
+        warnings.append(f"average sentence is {avg:.1f} words (aim for {opt.max_avg} or fewer)")
+    findings.sort(key=lambda f: f[0])
+
+    if not opt.quiet:
+        for lineno, rule, msg in findings:
+            print(f"{name}:{lineno}: {rule}: {msg}")
+        for w in warnings:
+            print(f"{name}: warning: {w}")
+        by_rule = {}
+        for _, rule, _ in findings:
+            by_rule[rule] = by_rule.get(rule, 0) + 1
+        summary = ", ".join(f"{k} {v}" for k, v in sorted(by_rule.items())) or "no findings"
+        print(f"{name}: {len(all_sentences)} sentences, average {avg:.1f} words; {summary}")
+    return bool(findings)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="a_s_blog_lint", add_help=False)
+    p.add_argument("files", nargs="*")
+    p.add_argument("-q", "--quiet", action="store_true")
+    p.add_argument("--max-sentence", type=int, default=25)
+    p.add_argument("--max-avg", type=int, default=20)
+    p.add_argument("--max-para", type=int, default=80)
+    p.add_argument("--gap", type=int, default=300)
+    p.add_argument("-h", "--help", action="store_true")
+    try:
+        opt = p.parse_args()
+    except SystemExit:
+        return 2
+    if opt.help:
+        with open(__file__, encoding="utf-8") as f:
+            for line in f.read().splitlines()[1:]:
+                if not line.startswith("#"):
+                    break
+                print(line[2:])
+        return 0
+    found = False
+    for f in opt.files or ["-"]:
+        try:
+            content = sys.stdin.read() if f == "-" else open(f, encoding="utf-8").read()
+        except OSError as e:
+            print(f"a_s_blog_lint: {e}", file=sys.stderr)
+            return 2
+        found |= lint("<stdin>" if f == "-" else f, content, opt)
+    return 1 if found else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
