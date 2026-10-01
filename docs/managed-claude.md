@@ -121,15 +121,17 @@ When `MACHINE_NAME` is missing, `install.sh` asks for it in the console and save
 above the hand-off to `bootstrap.profile`.
 
 If `~/.config/starship.toml` exists (or `$STARSHIP_CONFIG`), `install.sh` also puts the name in
-the prompt, in grey. It adds a `[custom.machine]` module and swaps `$hostname` for
-`${custom.machine}` in the top-level `format`, or prepends it when there is no `$hostname`. It
-backs the file up before the first change, touches nothing else, and a second run changes
+the prompt, in grey, but only when the prompt shows no machine name yet. A top-level `format`
+that already has `$hostname` or `${custom.machine}` is left as it is, colours included.
+Otherwise it adds a `[custom.machine]` module and prepends `${custom.machine}` to the format.
+It backs the file up before the change, touches nothing else, and a second run changes
 nothing. With no name set, the module shows the OS hostname.
 
 Any other zsh or bash prompt (oh-my-zsh, a theme, a hand-written `PROMPT`) gets the name from
 `sourced/prompt.sh`, which `generic.profile` loads. It adds `@<name>` in grey at the start of
 `PROMPT` / `PS1` from a hook that runs just before each prompt is drawn, so it lands after the
-theme and anything else in `.zshrc`, and never twice. `A_PROMPT_MACHINE_NAME=0` turns it off.
+theme and anything else in `.zshrc`, and never twice. If the prompt already contains the
+name, for example a coloured name line in `.zshrc`, it adds nothing. `A_PROMPT_MACHINE_NAME=0` turns it off.
 
 ### Machine identity
 

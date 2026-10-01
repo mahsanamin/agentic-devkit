@@ -471,7 +471,8 @@ suggest_extras() {
 # ---------------------------------------------------------------------------
 # 4. Show the machine name in the starship prompt, in grey.
 #
-# starship's hostname module prints the OS hostname, not the configured name.
+# Only for a prompt that shows no machine name at all: a format that already has
+# $hostname or ${custom.machine} is left exactly as it is, colours included.
 # Only runs when a starship config already exists; touches nothing else in it.
 # ---------------------------------------------------------------------------
 
@@ -495,24 +496,20 @@ configure_starship_prompt() {
     step "Shell prompt (starship)"
     local range s e changes=() hint="" tmp
     local add_block=false fmt_action=""
-    grep -Eq '^[[:space:]]*\[custom\.machine\][[:space:]]*$' "$file" || add_block=true
 
     range="$(starship_format_range "$file")"
     if [ -z "$range" ]; then
         hint="no top-level format line, so the format is left alone. Add \${custom.machine} to it to place the name."
     else
         s="${range% *}"; e="${range#* }"
-        if sed -n "${s},${e}p" "$file" | grep -Fq '${custom.machine}'; then
-            :
-        elif sed -n "${s},${e}p" "$file" | grep -Fq '$hostname'; then
-            fmt_action=replace
-        else
+        # A name the prompt already shows (in its own style) is kept, not replaced.
+        if ! sed -n "${s},${e}p" "$file" | grep -Fq -e '${custom.machine}' -e '$hostname'; then
             fmt_action=prepend
+            grep -Eq '^[[:space:]]*\[custom\.machine\][[:space:]]*$' "$file" || add_block=true
         fi
     fi
 
     $add_block && changes+=("add a [custom.machine] module (MACHINE_NAME in grey)")
-    [ "$fmt_action" = replace ] && changes+=("replace \$hostname with \${custom.machine} in format")
     [ "$fmt_action" = prepend ] && changes+=("prepend \${custom.machine} to format")
 
     if [ "${#changes[@]}" -eq 0 ]; then
@@ -533,7 +530,7 @@ configure_starship_prompt() {
 
     if [ -n "$fmt_action" ]; then
         tmp="$(mktemp)"
-        awk -v s="$s" -v e="$e" -v act="$fmt_action" '
+        awk -v s="$s" -v e="$e" '
             BEGIN { mod = "${custom.machine}" }
             function prepend_after_quote(line,   i, p) {
                 i = index(line, "="); p = substr(line, i + 1)
@@ -541,10 +538,7 @@ configure_starship_prompt() {
                 return substr(line, 1, i + RLENGTH) mod substr(p, RLENGTH + 1)
             }
             NR >= s && NR <= e && !done {
-                if (act == "replace") {
-                    i = index($0, "$hostname")
-                    if (i) { $0 = substr($0, 1, i - 1) mod substr($0, i + 9); done = 1 }
-                } else if (NR == s) {
+                if (NR == s) {
                     rest = $0; sub(/^[^=]*=[[:space:]]*/, "", rest)
                     # A multiline string that starts on the next line: prefix that line,
                     # so the newline right after the opening quotes is still trimmed.
