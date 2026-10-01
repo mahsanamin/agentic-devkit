@@ -1,0 +1,376 @@
+#!/usr/bin/env bash
+#
+# a_c_machine - this machine's name and prompt colour, in one place.
+#
+# Usage:
+#   a_c_machine                    show the name, the colour, and what draws the prompt
+#   a_c_machine color <colour>     show the name in this colour (orange, teal, '#ff8800', 208)
+#   a_c_machine name <name>        rename this machine, and redraw the prompt with it
+#   a_c_machine colors             list the colour names
+#   a_c_machine apply              redraw the prompt from the saved name and colour
+#
+#   --check                        say what would change, change nothing
+#
+# The name is MACHINE_NAME and the colour is MACHINE_COLOR, both saved where the name
+# already lives: root.local.config with a root repo, otherwise the personal profile.
+#
+# Drawing the prompt, compatible with fleetkit (github.com/mahsanamin/fleetkit):
+#   - zsh: the same marked PROMPT line fleetkit's macos/mac-setup.sh writes, so the two
+#     tools keep one line in .zshrc between them and never draw the name twice.
+#   - starship: the same [hostname] keys fleetkit's ubuntu/guest-setup.sh sets, or the
+#     ${custom.machine} module when install.sh added that one instead.
+# fleetkit's scripts are not called: each runs more than the prompt step (mac-setup.sh
+# also writes ~/.a_aliases with its own cd_* aliases, guest-setup.sh is a whole build).
+# Colour names come from fleetkit's lib/colours.sh when fleetkit is found, so a name means
+# the same colour in both tools. Without fleetkit, the copy below is used.
+#
+# With no colour set, sourced/prompt.sh shows the name in grey.
+
+set -euo pipefail
+
+CHECK=false
+args=()
+for a in "$@"; do
+    case "$a" in
+        --check|-n|--dry-run) CHECK=true ;;
+        -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) args+=("$a") ;;
+    esac
+done
+set -- "${args[@]+"${args[@]}"}"
+
+DEVKIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MARK="# fleetkit prompt colour"
+ZSHRC="$HOME/.zshrc"
+STARSHIP_TOML="${STARSHIP_CONFIG:-$HOME/.config/starship.toml}"
+
+die()  { echo "a_c_machine: $*" >&2; exit 1; }
+say()  { echo "$*"; }
+
+# ------------------------------------------------------------------- config
+
+# Last `[export ]KEY=value` assignment of KEY in FILE, quotes stripped. No eval.
+read_assignment() {
+    local key="$1" file="$2" line
+    [ -f "$file" ] || return 0
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$key=" "$file" | tail -n 1)" || true
+    line="${line#*=}"
+    line="${line%%#*}"
+    printf '%s' "$line" | sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//"
+}
+
+settings_profile() {
+    local f
+    for f in "$HOME/my_settings/a_configs.profile" "$HOME/my_settings/configs.profile"; do
+        [ -f "$f" ] && { echo "$f"; return 0; }
+    done
+    return 0
+}
+
+# The file that holds MACHINE_NAME on this machine.
+config_file() {
+    local profile root
+    profile="$(settings_profile)"
+    root="${A_ROOT_DIR:-}"
+    [ -n "$root" ] || root="$(read_assignment A_ROOT_DIR "${profile:-/dev/null}")"
+    root="${root/#\~/$HOME}"
+    if [ -n "$root" ] && [ -f "$root/root.config" ]; then
+        echo "$root/root.local.config"
+    else
+        echo "$profile"
+    fi
+}
+
+CONFIG="$(config_file)"
+[ -n "$CONFIG" ] || die "no personal profile in ~/my_settings. Run install.sh in $DEVKIT first."
+
+saved_name() {
+    local n
+    n="$(read_assignment MACHINE_NAME "$CONFIG")"
+    [ -n "$n" ] || n="$(read_assignment A_MACHINE_NAME "$CONFIG")"
+    printf '%s' "$n"
+}
+saved_colour() { read_assignment MACHINE_COLOR "$CONFIG"; }
+
+# Replace KEY's value in CONFIG in place, keeping its indentation and export.
+replace_assignment() {
+    local key="$1" value="$2" tmp
+    tmp="$(mktemp)"
+    sed -E "s|^([[:space:]]*)(export[[:space:]]+)?$key=.*|\1\2$key=\"$value\"|" "$CONFIG" > "$tmp"
+    cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+}
+
+save_colour() {
+    if grep -Eq '^[[:space:]]*(export[[:space:]]+)?MACHINE_COLOR=' "$CONFIG"; then
+        replace_assignment MACHINE_COLOR "$1"
+    else
+        # Only this command reads it, so its place in the file does not matter.
+        local prefix=""
+        [ "$(basename "$CONFIG")" = root.local.config ] || prefix="export "
+        printf '\n# Prompt colour for MACHINE_NAME. Set with: a_c_machine color <name>\n%sMACHINE_COLOR="%s"\n' \
+            "$prefix" "$1" >> "$CONFIG"
+    fi
+}
+
+save_name() {
+    if grep -Eq '^[[:space:]]*(export[[:space:]]+)?MACHINE_NAME=' "$CONFIG"; then
+        replace_assignment MACHINE_NAME "$1"
+    elif grep -Eq '^[[:space:]]*(export[[:space:]]+)?A_MACHINE_NAME=' "$CONFIG"; then
+        replace_assignment A_MACHINE_NAME "$1"
+    else
+        # A first name has to sit above the profile's hand-off; install.sh places it.
+        die "$CONFIG has no MACHINE_NAME line yet. Run install.sh in $DEVKIT, it asks for the name."
+    fi
+}
+
+# ------------------------------------------------------------------- fleetkit + colours
+
+find_fleetkit() {
+    local d
+    for d in "${FLEETKIT_DIR:-}" "$(dirname "$DEVKIT")/fleetkit" "${a_dir_p_repos:-}/fleetkit" \
+             /opt/fleetkit "$HOME/fleetkit"; do
+        [ -n "$d" ] && [ -f "$d/lib/colours.sh" ] && { (cd "$d" && pwd); return 0; }
+    done
+    return 0
+}
+FLEETKIT="$(find_fleetkit)"
+
+if [ -n "$FLEETKIT" ]; then
+    # shellcheck disable=SC1091
+    . "$FLEETKIT/lib/colours.sh"
+else
+    # Kept in step with fleetkit's lib/colours.sh: name, hex for starship, index for zsh.
+    PALETTE='orange #ff8700 208
+amber #ffc000 214
+gold #e0b000 178
+lime #a6e22e 154
+mint #5fd7af 79
+teal #00b3a4 37
+sky #56b6f7 75
+azure #0087ff 33
+indigo #6c7ae0 62
+violet #a970ff 141
+lavender #c3a6ff 183
+magenta #ff5fff 207
+pink #ff79c6 212
+coral #ff7a5c 209
+salmon #ff9e80 216
+crimson #e0405e 197
+brown #b5651d 130
+slate #90a4ae 109
+grey #b0b0b0 145
+gray #b0b0b0 145'
+    BASIC='black red green yellow blue purple cyan white'
+    palette_row() { printf '%s\n' "$PALETTE" | awk -v n="$1" '$1 == n'; }
+    basic_index() {
+        local i=0 c
+        for c in $BASIC; do
+            [ "$c" = "$1" ] && { echo "$i"; return 0; }
+            [ "bright-$c" = "$1" ] && { echo $((i + 8)); return 0; }
+            i=$((i + 1))
+        done
+        return 1
+    }
+    valid_colour() {
+        case "$1" in
+            '#'[0-9a-fA-F]*) return 0 ;;
+            [0-9]|[0-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5]) return 0 ;;
+        esac
+        [ -n "$(palette_row "$1")" ] || basic_index "$1" >/dev/null
+    }
+    resolve_colour() {
+        local row; row="$(palette_row "$1")"
+        COLOUR_NAME=""; COLOUR_HEX=""; COLOUR_INDEX=""
+        if [ -n "$row" ]; then
+            COLOUR_NAME="$1"; COLOUR_HEX="$(echo "$row" | cut -d' ' -f2)"; COLOUR_INDEX="$(echo "$row" | cut -d' ' -f3)"
+        elif basic_index "$1" >/dev/null; then
+            COLOUR_NAME="$1"; COLOUR_HEX="$1"; COLOUR_INDEX="$(basic_index "$1")"
+        else
+            case "$1" in
+                '#'*) COLOUR_HEX="$1" ;;
+                *)    COLOUR_HEX="$1"; COLOUR_INDEX="$1" ;;
+            esac
+        fi
+    }
+    list_colours() {
+        echo "Named shades:"
+        printf '%s\n' "$PALETTE" | grep -v '^gray ' | while read -r n h i; do
+            printf '   %-10s %-9s zsh index %s\n' "$n" "$h" "$i"
+        done
+        echo
+        echo "Also accepted: $BASIC, a bright- variant of each,"
+        echo "a hex like '#ff8800' (quote it), or a 0-255 index like 208."
+    }
+fi
+
+# ------------------------------------------------------------------- which prompt
+
+prompt_kind() {
+    local rc
+    for rc in "$ZSHRC" "$HOME/.bashrc"; do
+        if [ -f "$rc" ] && grep -Eq '^[^#]*starship init' "$rc"; then echo starship; return; fi
+    done
+    case "$(basename "${SHELL:-}")" in
+        zsh)  echo zsh ;;
+        bash) echo bash ;;
+        *)    echo other ;;
+    esac
+}
+
+backup() { [ -f "$1" ] && cp "$1" "$1.bak.$(date +%Y%m%dT%H%M%S)"; return 0; }
+
+# ------------------------------------------------------------------- drawing
+
+# The same marked line fleetkit's mac-setup.sh writes, so either tool updates it in place.
+draw_zsh() {
+    local name="$1" index="$2" line tmp
+    [ -n "$index" ] || die "zsh needs a colour name or a 0-255 index, not a bare hex. See: a_c_machine colors"
+    line="PROMPT=\"%B%{\$(printf '\\033[3m')%}%F{$index}$name%f%{\$(printf '\\033[23m')%}%b \$PROMPT\"  $MARK"
+    if [ -f "$ZSHRC" ] && grep -Fq "$MARK" "$ZSHRC"; then
+        say "  update the marked PROMPT line in $ZSHRC"
+    else
+        say "  add a PROMPT line to $ZSHRC"
+    fi
+    $CHECK && return 0
+    backup "$ZSHRC"
+    tmp="$(mktemp)"
+    if [ -f "$ZSHRC" ] && grep -Fq "$MARK" "$ZSHRC"; then
+        LINE="$line" MARK="$MARK" awk 'index($0, ENVIRON["MARK"]) { print ENVIRON["LINE"]; next } { print }' "$ZSHRC" > "$tmp"
+    else
+        { [ -f "$ZSHRC" ] && cat "$ZSHRC"; printf '%s\n' "$line"; } > "$tmp"
+    fi
+    cat "$tmp" > "$ZSHRC" && rm -f "$tmp"
+}
+
+# Same keys fleetkit's Ubuntu script sets: [hostname] shows the name, bold, in the colour.
+# A format that uses ${custom.machine} instead (added by install.sh) gets the colour there.
+draw_starship() {
+    local name="$1" hex="$2"
+    [ -f "$STARSHIP_TOML" ] || die "starship is set up but there is no $STARSHIP_TOML. Create it (touch it) and re-run."
+    command -v python3 >/dev/null || die "python3 is needed to edit $STARSHIP_TOML"
+    say "  set the name and colour in $STARSHIP_TOML"
+    $CHECK && return 0
+    backup "$STARSHIP_TOML"
+    if python3 - "$STARSHIP_TOML" "$name" "$hex" <<'PYEOF'
+import sys, pathlib, re
+path, name, colour = sys.argv[1:4]
+p = pathlib.Path(path)
+lines = p.read_text().splitlines()
+
+def set_in_table(lines, table, keys):
+    try:
+        i = lines.index(f"[{table}]")
+    except ValueError:
+        return lines + ["", f"[{table}]"] + [f"{k} = {v}" for k, v in keys.items()]
+    j = i + 1
+    while j < len(lines) and not lines[j].lstrip().startswith("["):
+        j += 1
+    body = [b for b in lines[i+1:j] if not any(re.match(rf"\s*{k}\s*=", b) for k in keys)]
+    while body and not body[-1].strip():
+        body.pop()
+    body += [f"{k} = {v}" for k, v in keys.items()]
+    rest = lines[j:]
+    return lines[:i+1] + body + ([""] if rest else []) + rest
+
+first_table = next((n for n, l in enumerate(lines) if l.lstrip().startswith("[")), len(lines))
+fmt_start = next((n for n in range(first_table) if re.match(r"\s*format\s*=", lines[n])), None)
+top = "\n".join(lines[fmt_start:first_table]) if fmt_start is not None else ""
+
+if "${custom.machine}" in top and "$hostname" not in top:
+    lines = set_in_table(lines, "custom.machine", {
+        "style": f'"bold {colour}"',
+        "format": '"[$output]($style) "',
+    })
+else:
+    lines = set_in_table(lines, "hostname", {
+        "ssh_only": "false",
+        "style": f'"bold {colour}"',
+        "format": f'"[{name}]($style) "',
+    })
+    # A format without $hostname would never show it. With no format line at all,
+    # starship's default already includes $hostname.
+    if fmt_start is not None and "$hostname" not in top:
+        line = lines[fmt_start]
+        m = re.match(r'(\s*format\s*=\s*)("""|\'\'\'|"|\')(.*)$', line)
+        if m and m.group(2) in ('"""', "'''") and m.group(3) == "":
+            lines[fmt_start + 1] = "$hostname" + lines[fmt_start + 1]
+        elif m:
+            lines[fmt_start] = m.group(1) + m.group(2) + "$hostname" + m.group(3)
+
+p.write_text("\n".join(lines) + "\n")
+PYEOF
+    then :; else die "could not edit $STARSHIP_TOML (python3 failed). The backup is next to it."; fi
+}
+
+draw() {
+    local name colour kind
+    name="$(saved_name)"; colour="$(saved_colour)"
+    [ -n "$name" ] || die "no machine name saved in $CONFIG. Run install.sh in $DEVKIT, it asks for one."
+    if [ -z "$colour" ]; then
+        say "No colour set, so the prompt shows $name in grey. Pick one: a_c_machine color <colour>"
+        return 0
+    fi
+    valid_colour "$colour" || die "saved colour '$colour' is not one this command knows. See: a_c_machine colors"
+    resolve_colour "$colour"
+    kind="$(prompt_kind)"
+    say "Drawing $name in $colour ($kind prompt)"
+    case "$kind" in
+        starship) draw_starship "$name" "$COLOUR_HEX" ;;
+        zsh)      draw_zsh "$name" "$COLOUR_INDEX" ;;
+        *)        die "only zsh and starship prompts are handled. Your shell: ${SHELL:-unknown}" ;;
+    esac
+    $CHECK || say "Open a new terminal, or run: exec \$SHELL -l"
+}
+
+# ------------------------------------------------------------------- commands
+
+show() {
+    local name colour
+    name="$(saved_name)"; colour="$(saved_colour)"
+    say "name:     ${name:-(not set, install.sh asks for it)}"
+    if [ -z "$colour" ] && [ -f "$ZSHRC" ] && grep -Fq "$MARK" "$ZSHRC"; then
+        # Set by fleetkit directly, before this command existed.
+        colour="zsh colour $(grep -F "$MARK" "$ZSHRC" | sed -n 's/.*%F{\([^}]*\)}.*/\1/p' | head -1), from the marked line in .zshrc (not saved here yet)"
+    fi
+    say "colour:   ${colour:-(none, shown in grey)}"
+    say "saved in: $CONFIG"
+    say "prompt:   $(prompt_kind)"
+    say "fleetkit: ${FLEETKIT:-(not found)}"
+}
+
+cmd="${1:-show}"
+case "$cmd" in
+    show) show ;;
+    colors|colours) list_colours ;;
+    color|colour)
+        [ $# -eq 2 ] || die "usage: a_c_machine color <colour>   (see: a_c_machine colors)"
+        valid_colour "$2" || die "'$2' is not a colour this command knows. See: a_c_machine colors"
+        if $CHECK; then
+            say "  save MACHINE_COLOR=\"$2\" in $CONFIG"
+            # Draw with the new colour without saving it.
+            new="$2"; saved_colour() { printf '%s' "$new"; }
+        else
+            save_colour "$2"
+        fi
+        draw
+        ;;
+    name)
+        [ $# -eq 2 ] || die "usage: a_c_machine name <name>"
+        [[ "$2" =~ ^[A-Za-z0-9._@+-]+$ ]] || die "use letters, digits and . _ @ + - only, so the name is safe in every prompt"
+        old="$(saved_name)"
+        if $CHECK; then
+            say "  save MACHINE_NAME=\"$2\" in $CONFIG"
+            new="$2"; saved_name() { printf '%s' "$new"; }
+        else
+            save_name "$2"
+        fi
+        [ -n "$(saved_colour)" ] && draw
+        if [ "$old" != "$2" ]; then
+            say ""
+            say "The agents read this name too. Rebuild their guidance: a_c_agent_memory build"
+            say "If you keep a machine file in an overlay, it is now machine/$2.md (was machine/${old:-?}.md)."
+        fi
+        ;;
+    apply) draw ;;
+    *) die "unknown command: $cmd. See: a_c_machine --help" ;;
+esac

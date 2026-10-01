@@ -131,7 +131,20 @@ Any other zsh or bash prompt (oh-my-zsh, a theme, a hand-written `PROMPT`) gets 
 `sourced/prompt.sh`, which `generic.profile` loads. It adds `@<name>` in grey at the start of
 `PROMPT` / `PS1` from a hook that runs just before each prompt is drawn, so it lands after the
 theme and anything else in `.zshrc`, and never twice. If the prompt already contains the
-name, for example a coloured name line in `.zshrc`, it adds nothing. `A_PROMPT_MACHINE_NAME=0` turns it off.
+name, for example a coloured name line in `.zshrc`, it adds nothing.
+
+To give the name a colour, or to rename the machine, use `a_c_machine`:
+
+```bash
+a_c_machine                  # show the name, the colour, and what draws the prompt
+a_c_machine color orange     # colour the name (a_c_machine colors lists the names)
+a_c_machine name WORK-LAPTOP # rename this machine and redraw the prompt
+```
+
+It saves `MACHINE_COLOR` next to `MACHINE_NAME` and draws the prompt the same way fleetkit
+does, so the two never show the name twice: the marked `PROMPT` line in `.zshrc` for zsh, the
+`[hostname]` module for starship. With fleetkit cloned next to the devkit it uses fleetkit's
+colour names. `A_PROMPT_MACHINE_NAME=0` turns it off.
 
 ### Machine identity
 
