@@ -135,7 +135,9 @@ find_fleetkit() {
 }
 FLEETKIT="$(find_fleetkit)"
 
-if [ -n "$FLEETKIT" ]; then
+# An older fleetkit has fewer names and no loose matching (colour_key), so use it only when
+# it is at least as new as the copy below. `git pull` in fleetkit brings it up to date.
+if [ -n "$FLEETKIT" ] && grep -q '^colour_key()' "$FLEETKIT/lib/colours.sh"; then
     # shellcheck disable=SC1091
     . "$FLEETKIT/lib/colours.sh"
 else
@@ -143,24 +145,51 @@ else
     PALETTE='orange #ff8700 208
 amber #ffc000 214
 gold #e0b000 178
+lemon #ffff5f 227
 lime #a6e22e 154
+light-green #87d787 114
+emerald #00d787 42
+dark-green #00875f 29
+olive #afaf00 142
 mint #5fd7af 79
+turquoise #00d7d7 44
 teal #00b3a4 37
 sky #56b6f7 75
+light-blue #87afff 111
 azure #0087ff 33
+royal #5f5fff 63
 indigo #6c7ae0 62
 violet #a970ff 141
 lavender #c3a6ff 183
 magenta #ff5fff 207
 pink #ff79c6 212
+light-pink #ffafd7 218
+rose #ff5f87 204
+ruby #d7005f 161
+crimson #e0405e 197
 coral #ff7a5c 209
 salmon #ff9e80 216
-crimson #e0405e 197
+peach #ffd7af 223
 brown #b5651d 130
 slate #90a4ae 109
+light-grey #d0d0d0 252
 grey #b0b0b0 145
+dark-grey #808080 244
 gray #b0b0b0 145'
     BASIC='black red green yellow blue purple cyan white'
+    # How people type a colour: "Light Green", light_green, lightgreen. All mean light-green.
+    colour_key() {
+        local c
+        c="$(printf '%s' "$*" | tr '[:upper:]' '[:lower:]' | sed -E 's/[ _]+/-/g')"
+        case "$c" in
+            light-*|dark-*|bright-*) ;;
+            light*)  c="light-${c#light}" ;;
+            dark*)   c="dark-${c#dark}" ;;
+            bright*) c="bright-${c#bright}" ;;
+        esac
+        case "$c" in light-gray) c=light-grey ;; dark-gray) c=dark-grey ;; esac
+        printf '%s' "$c"
+    }
     palette_row() { printf '%s\n' "$PALETTE" | awk -v n="$1" '$1 == n'; }
     basic_index() {
         local i=0 c
@@ -172,19 +201,20 @@ gray #b0b0b0 145'
         return 1
     }
     valid_colour() {
-        case "$1" in
+        local c; c="$(colour_key "$1")"
+        case "$c" in
             '#'[0-9a-fA-F]*) return 0 ;;
             [0-9]|[0-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5]) return 0 ;;
         esac
-        [ -n "$(palette_row "$1")" ] || basic_index "$1" >/dev/null
+        [ -n "$(palette_row "$c")" ] || basic_index "$c" >/dev/null
     }
     resolve_colour() {
-        local row; row="$(palette_row "$1")"
+        local c row; c="$(colour_key "$1")"; row="$(palette_row "$c")"
         COLOUR_NAME=""; COLOUR_HEX=""; COLOUR_INDEX=""
         if [ -n "$row" ]; then
-            COLOUR_NAME="$1"; COLOUR_HEX="$(echo "$row" | cut -d' ' -f2)"; COLOUR_INDEX="$(echo "$row" | cut -d' ' -f3)"
-        elif basic_index "$1" >/dev/null; then
-            COLOUR_NAME="$1"; COLOUR_HEX="$1"; COLOUR_INDEX="$(basic_index "$1")"
+            COLOUR_NAME="$c"; COLOUR_HEX="$(echo "$row" | cut -d' ' -f2)"; COLOUR_INDEX="$(echo "$row" | cut -d' ' -f3)"
+        elif basic_index "$c" >/dev/null; then
+            COLOUR_NAME="$c"; COLOUR_HEX="$c"; COLOUR_INDEX="$(basic_index "$c")"
         else
             case "$1" in
                 '#'*) COLOUR_HEX="$1" ;;
@@ -195,11 +225,14 @@ gray #b0b0b0 145'
     list_colours() {
         echo "Named shades:"
         printf '%s\n' "$PALETTE" | grep -v '^gray ' | while read -r n h i; do
-            printf '   %-10s %-9s zsh index %s\n' "$n" "$h" "$i"
+            printf '   %-12s %-9s zsh index %s\n' "$n" "$h" "$i"
         done
         echo
-        echo "Also accepted: $BASIC, a bright- variant of each,"
-        echo "a hex like '#ff8800' (quote it), or a 0-255 index like 208."
+        echo "Terminal colours, whose exact shade your terminal theme decides:"
+        echo "   $BASIC, and bright-green, bright-blue, ..."
+        echo
+        echo "Also a hex like '#ff8800' (quote it), or a 0-255 index like 208."
+        echo "Names can be typed loosely: a_c_machine color light green"
     }
 fi
 
@@ -335,7 +368,13 @@ show() {
     say "colour:   ${colour:-(none, shown in grey)}"
     say "saved in: $CONFIG"
     say "prompt:   $(prompt_kind)"
-    say "fleetkit: ${FLEETKIT:-(not found, the built-in colour names are used)}"
+    if [ -z "$FLEETKIT" ]; then
+        say "fleetkit: (not found, the built-in colour names are used)"
+    elif ! grep -q '^colour_key()' "$FLEETKIT/lib/colours.sh"; then
+        say "fleetkit: $FLEETKIT (older copy, so the built-in colour names are used. Update: git -C $FLEETKIT pull)"
+    else
+        say "fleetkit: $FLEETKIT"
+    fi
     say ""
     [ -n "$name" ] || say "Set a name:     $DEVKIT/install.sh   (it asks for one)"
     if [ -z "$(saved_colour)" ]; then
@@ -351,14 +390,17 @@ case "$cmd" in
     show) show ;;
     colors|colours) list_colours ;;
     color|colour)
-        [ $# -eq 2 ] || die "usage: a_c_machine color <colour>   (see: a_c_machine colors)"
-        valid_colour "$2" || die "'$2' is not a colour this command knows. See: a_c_machine colors"
+        [ $# -ge 2 ] || die "usage: a_c_machine color <colour>   (see: a_c_machine colors)"
+        shift; want="$*"    # "light green" may arrive as two words
+        valid_colour "$want" || die "'$want' is not a colour this command knows. See: a_c_machine colors"
+        resolve_colour "$want"
+        want="${COLOUR_NAME:-$want}"   # saved as the canonical name: light-green
         if $CHECK; then
-            say "  save MACHINE_COLOR=\"$2\" in $CONFIG"
+            say "  save MACHINE_COLOR=\"$want\" in $CONFIG"
             # Draw with the new colour without saving it.
-            new="$2"; saved_colour() { printf '%s' "$new"; }
+            new="$want"; saved_colour() { printf '%s' "$new"; }
         else
-            save_colour "$2"
+            save_colour "$want"
         fi
         draw
         ;;
