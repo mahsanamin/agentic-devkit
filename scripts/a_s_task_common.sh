@@ -623,6 +623,15 @@ a_task_emit_env_hygiene() {
     printf '    export PATH\n'
     printf 'fi\n'
     printf 'unset VIRTUAL_ENV UV UV_RUN_RECURSION_DEPTH PYTHONHOME PYTHONPATH\n'
+    # Drop the markers a Claude session puts on everything it spawns. When a
+    # session, or a zellij server a session started, launches the tab, these leak
+    # in and the new Claude takes itself for a helper of the old one. The worst
+    # effect is CLAUDE_CODE_CHILD_SESSION: Claude Code then saves no transcript,
+    # so the task session cannot be resumed or found once closed. It tests the
+    # variable for presence, so setting it to 0 does not help; it has to go. The
+    # list matches what Claude Code itself clears when it starts a detached
+    # process. Messaging is unaffected: the new session opens its own socket.
+    printf 'unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ATTENDED CLAUDE_PID\n'
     # Not `${TERM:-...}`: TERM is often SET to a value a full-screen program cannot
     # use. Observed both "unset" (server started from launchd) and "dumb" (inherited
     # from a non-interactive caller), and dumb is as useless to a TUI as no TERM.

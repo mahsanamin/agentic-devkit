@@ -216,6 +216,11 @@ else
             printf '    export PATH\n'
             printf 'fi\n'
             printf 'unset VIRTUAL_ENV UV UV_RUN_RECURSION_DEPTH PYTHONHOME PYTHONPATH\n'
+            # Drop the markers a Claude session puts on everything it spawns, or
+            # a Claude started in this tab takes itself for a helper and saves no
+            # transcript. Presence is what counts, so they are unset, not zeroed.
+            # Reasoning in a_task_emit_env_hygiene.
+            printf 'unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ATTENDED CLAUDE_PID\n'
             # Not `${TERM:-...}`: TERM is often SET to something a full-screen
             # program cannot use. Seen both unset (server from launchd) and "dumb"
             # (inherited from a non-interactive caller); dumb is as useless as none.
