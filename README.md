@@ -48,6 +48,11 @@ It will look at your actual machine and answer for your situation. When you are 
 **"set up my agentic devkit"** — or run `./install.sh` directly. It installs shared skills and
 native subagents for Claude, Codex, and AGY/Gemini, and tells you exactly what changed.
 
+For fewer approval interruptions, opt into [machine interaction modes](docs/agent-modes.md):
+`./install.sh --agent-mode agentic`. Modes preserve unrelated provider settings;
+`interactive` and `auto` cover developer-led and unattended work. Provider differences
+and project overrides are reported rather than silently enabling permission bypass.
+
 Later, useful things to say: **"my Claude config is a mess"** (`a_sk_tame_claude` audits and
 repairs it), or **"remember this"** (`a_sk_teach_claude` files what you just taught it in the
 right place, permanently).

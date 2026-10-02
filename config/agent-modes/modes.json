@@ -1,0 +1,20 @@
+{
+  "interactive": {
+    "description": "Developer present; permission escalations go to the user.",
+    "codex": {"approval_policy": "on-request", "approvals_reviewer": "user", "sandbox_mode": "workspace-write", "sandbox_workspace_write.network_access": false},
+    "claude": "default",
+    "gemini-cli": "default"
+  },
+  "agentic": {
+    "description": "Autonomous development; eligible escalations receive automatic review.",
+    "codex": {"approval_policy": "on-request", "approvals_reviewer": "auto_review", "sandbox_mode": "workspace-write", "sandbox_workspace_write.network_access": true},
+    "claude": "auto",
+    "gemini-cli": "auto_edit"
+  },
+  "auto": {
+    "description": "Unattended: permitted actions run; actions needing human approval are blocked.",
+    "codex": {"approval_policy": "never", "approvals_reviewer": "user", "sandbox_mode": "workspace-write", "sandbox_workspace_write.network_access": true},
+    "claude": "dontAsk",
+    "gemini-cli": null
+  }
+}

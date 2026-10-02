@@ -415,6 +415,10 @@ a_task_permission_mode() {
         printf '%s' "$A_TASK_PERMISSION_MODE"
         return 0
     fi
+    if [ -n "${A_AGENT_MODE:-}" ]; then
+        "$A_TASK_WT_DIR/a_c_agent_mode" resolve --provider claude --mode "$A_AGENT_MODE"
+        return $?
+    fi
     if command -v claude >/dev/null 2>&1 &&
        claude --help 2>/dev/null | grep -q '"auto"'; then
         printf 'auto'

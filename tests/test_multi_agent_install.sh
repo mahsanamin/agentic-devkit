@@ -19,7 +19,7 @@ trap 'rm -rf "$TEST_HOME"' EXIT
 export HOME="$TEST_HOME"
 export MY_WORKFLOW_DIR="$REPO_ROOT"
 export SHELL=/bin/bash
-unset A_AGENT_OVERLAY_DIR A_AGENT_ORG_OVERLAY_DIR A_ROOT_DIR A_MACHINE_NAME
+unset A_AGENT_OVERLAY_DIR A_AGENT_ORG_OVERLAY_DIR A_ROOT_DIR A_MACHINE_NAME A_AGENT_MODE
 # A fixed name, so the guidance build does not depend on the caller's shell.
 export MACHINE_NAME=TEST-BOX
 
@@ -143,4 +143,49 @@ grep -q 'rendered for \*\*Gemini\*\*, made by \*\*Google\*\*' "$HOME/.gemini/GEM
   || fail "Gemini global guidance has the wrong runtime identity"
 ! grep -q 'rendered for \*\*Claude Code\*\*' "$HOME/.codex/AGENTS.md" \
   || fail "Claude runtime identity leaked into Codex guidance"
+
+# Mode defaults are opt-in and preserve the memory builder's managed region.
+[ ! -f "$HOME/.codex/config.toml" ] || fail "ordinary install changed Codex permissions"
+MODE_TEST_PATH="$(dirname "$PYTHON_BIN"):$PATH"
+PATH="$MODE_TEST_PATH" "$REPO_ROOT/install.sh" --link-only --provider codex \
+  --agent-mode interactive --dry-run >/dev/null
+[ ! -f "$HOME/.codex/config.toml" ] || fail "mode dry run wrote config"
+PATH="$MODE_TEST_PATH" "$REPO_ROOT/install.sh" --link-only --provider codex \
+  --agent-mode interactive >/dev/null
+"$PYTHON_BIN" - "$HOME/.codex/config.toml" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    data = tomllib.load(f)
+assert data['approval_policy'] == 'on-request'
+assert data['approvals_reviewer'] == 'user'
+assert data['sandbox_workspace_write']['network_access'] is False
+PY
+"$REPO_ROOT/scripts/a_c_agent_memory" build >/dev/null
+grep -q 'agentic-devkit: interaction guidance' "$HOME/.codex/AGENTS.md" \
+  || fail "memory rebuild removed interaction guidance"
+
+# The local machine selection loads even when the shell was already initialized;
+# an explicit installer flag wins over it.
+MODE_ROOT="$TEST_HOME/mode-root"
+mkdir -p "$MODE_ROOT"
+printf '%s\n' '# fixture root' > "$MODE_ROOT/root.config"
+printf '%s\n' 'A_AGENT_MODE="auto"' > "$MODE_ROOT/root.local.config"
+PATH="$MODE_TEST_PATH" A_ROOT_DIR="$MODE_ROOT" "$REPO_ROOT/install.sh" \
+  --link-only --provider codex --agent-mode interactive >/dev/null
+grep -q 'approval_policy = "on-request"' "$HOME/.codex/config.toml" \
+  || fail "installer flag did not override machine mode"
+PATH="$MODE_TEST_PATH" A_ROOT_DIR="$MODE_ROOT" "$REPO_ROOT/install.sh" \
+  --link-only --provider codex >/dev/null
+grep -q 'approval_policy = "never"' "$HOME/.codex/config.toml" \
+  || fail "installer did not load local machine mode"
+
+# Shared task resolver obeys machine selection and keeps the explicit override.
+source "$REPO_ROOT/scripts/a_s_task_common.sh"
+export A_TASK_WT_DIR="$REPO_ROOT/scripts"
+[ "$(PATH="$MODE_TEST_PATH" A_AGENT_MODE=interactive a_task_permission_mode)" = default ] \
+  || fail "task resolver ignored interactive mode"
+[ "$(PATH="$MODE_TEST_PATH" A_AGENT_MODE=auto a_task_permission_mode)" = dontAsk ] \
+  || fail "task resolver ignored unattended mode"
+[ "$(A_AGENT_MODE=auto A_TASK_PERMISSION_MODE=acceptEdits a_task_permission_mode)" = acceptEdits ] \
+  || fail "task permission override lost precedence"
 echo "ok: multi-agent install and guidance"

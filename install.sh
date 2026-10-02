@@ -5,6 +5,7 @@
 #   ./install.sh              Wire shell + install Claude, Codex, and Gemini assets
 #   ./install.sh --provider X Install all, claude, codex, agy, gemini-cli, or gemini
 #   ./install.sh --link-only  Skip shell wiring; just (re)link agent assets
+#   ./install.sh --agent-mode MODE  Install interactive, agentic, or auto defaults
 #   ./install.sh -n           Dry run: print what would change, touch nothing
 #   ./install.sh -f           Force: repoint skill/agent links that point elsewhere
 #   ./install.sh -h           Show this help
@@ -37,6 +38,7 @@ LINK_ONLY=false
 DRY_RUN=false
 FORCE=false
 PROVIDER=all
+AGENT_MODE_ARG=""
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//; /^set -euo/d'; }
 
@@ -46,6 +48,9 @@ while [ "$#" -gt 0 ]; do
         --provider|--providers)
             [ "$#" -ge 2 ] || { echo -e "${RED}$1 needs a value${NC}"; exit 1; }
             PROVIDER="$2"; shift ;;
+        --agent-mode)
+            [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 1; }
+            AGENT_MODE_ARG="$2"; shift ;;
         -n|--dry-run)  DRY_RUN=true ;;
         -f|--force)    FORCE=true ;;
         -h|--help)     usage; exit 0 ;;
@@ -57,6 +62,10 @@ done
 case "$PROVIDER" in
     all|claude|codex|agy|gemini|gemini-cli) ;;
     *) echo -e "${RED}Unknown provider: $PROVIDER${NC}"; exit 1 ;;
+esac
+case "$AGENT_MODE_ARG" in
+    ""|interactive|agentic|auto) ;;
+    *) echo "Invalid --agent-mode: $AGENT_MODE_ARG" >&2; exit 1 ;;
 esac
 
 say()  { echo -e "$@"; }
@@ -282,7 +291,29 @@ load_machine_config() {
         [ -n "$name" ] && export A_MACHINE_NAME="$name"
     fi
     [ -n "${A_MACHINE_NAME:-}" ] && export MACHINE_NAME="$A_MACHINE_NAME"
+    # This setting is opt-in. Read it even when the shell already knows the
+    # machine name, and let an explicit installer flag win over machine defaults.
+    if [ -z "${A_AGENT_MODE:-}" ]; then
+        local mode_file="${profile:-/dev/null}"
+        [ -n "$root" ] && mode_file="$root/root.local.config"
+        A_AGENT_MODE="$(read_assignment A_AGENT_MODE "$mode_file")"
+    fi
+    [ -z "$AGENT_MODE_ARG" ] || A_AGENT_MODE="$AGENT_MODE_ARG"
+    case "${A_AGENT_MODE:-}" in
+        ""|interactive|agentic|auto) ;;
+        *) echo "Invalid A_AGENT_MODE: $A_AGENT_MODE" >&2; return 1 ;;
+    esac
+    [ -z "${A_AGENT_MODE:-}" ] || export A_AGENT_MODE
     return 0
+}
+
+install_agent_mode() {
+    [ -n "${A_AGENT_MODE:-}" ] || return 0
+    step "Agent mode ($A_AGENT_MODE)"
+    local flags=()
+    $DRY_RUN && flags+=(--dry-run)
+    "$REPO_ROOT/scripts/a_c_agent_mode" install --mode "$A_AGENT_MODE" \
+        --provider "$PROVIDER" ${flags[@]+"${flags[@]}"}
 }
 
 # Where the machine name is stored on this machine, for messages and for saving.
@@ -633,6 +664,7 @@ main() {
                 --provider "$(memory_provider)" 2>&1 | sed 's/^/  /'
         fi
     fi
+    install_agent_mode
     configure_prompt
     say "\n${GREEN}Done.${NC} ${DIM}Agent assets and guidance installed (provider: $PROVIDER).${NC}"
     run_doctor

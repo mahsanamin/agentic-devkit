@@ -47,6 +47,10 @@ if [ -z "$A_ROOT_DIR" ]; then
 fi
 
 ########################### Optional: task suite defaults ####
+# Machine permission defaults: interactive, agentic, or auto. Opt-in; unset
+# preserves provider settings. With a root repo, put this in root.local.config.
+# export A_AGENT_MODE='agentic'
+# Apply with ./install.sh; see docs/agent-modes.md for session overrides.
 # Default zellij session for every task start. Unset keeps tasks in this terminal.
 # export A_C_TASK_ZELLIJ_SESSION='work'
 # Default ticket project key, so a bare number resolves (123 -> PROJ-123).

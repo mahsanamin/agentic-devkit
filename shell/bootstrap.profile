@@ -46,6 +46,8 @@ export A_AGENT_BRAIN_DIR="${PRIVATE_BRAIN_DIR:-${A_AGENT_BRAIN_DIR:-}}"
 export A_MACHINE_NAME="${MACHINE_NAME:-${A_MACHINE_NAME:-}}"
 # Both names, in both modes: MACHINE_NAME is the key people set, and the prompt reads it.
 export MACHINE_NAME="$A_MACHINE_NAME"
+# Optional machine interaction mode; unset leaves provider defaults untouched.
+[ -z "${A_AGENT_MODE:-}" ] || export A_AGENT_MODE
 
 # Machine and org identity, used to find the org shell profile below.
 export a_company_name="${ORG_SLUG:-${a_company_name:-}}"

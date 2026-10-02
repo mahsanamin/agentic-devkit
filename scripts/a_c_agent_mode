@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""Install opt-in machine permission defaults without replacing user configuration."""
+
+import argparse
+import copy
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+try:
+    import tomllib
+except ImportError:
+    sys.exit("a_c_agent_mode requires Python 3.11+ (tomllib)")
+
+SOURCE = Path(__file__).resolve().parent.parent / "config" / "agent-modes"
+MODES = json.loads((SOURCE / "modes.json").read_text())
+BEGIN = "<!-- >>> agentic-devkit: interaction guidance >>> -->"
+END = "<!-- <<< agentic-devkit: interaction guidance <<< -->"
+
+
+def nested_get(data, path):
+    for key in path:
+        if not isinstance(data, dict) or key not in data:
+            return None
+        data = data[key]
+    return data
+
+
+def nested_set(data, path, value):
+    for key in path[:-1]:
+        data = data.setdefault(key, {})
+        if not isinstance(data, dict):
+            raise ValueError("configuration table is not an object")
+    data[path[-1]] = value
+
+
+def leaf_paths(data, prefix=()):
+    for key, value in data.items():
+        path = prefix + (key,)
+        if isinstance(value, dict) and value:
+            yield from leaf_paths(value, path)
+        else:
+            yield path
+
+
+def patch_toml(text, values):
+    """Edit complete TOML statements; preserve unrelated text and validate semantics.
+
+    Unusual inline-table layouts that mix owned and unowned keys are refused.
+    Parsing each complete statement prevents matching keys inside multiline strings.
+    """
+    original = tomllib.loads(text)
+    pending = {tuple(k.split(".")): v for k, v in values.items()}
+    expected = copy.deepcopy(original)
+    for path, value in pending.items():
+        nested_set(expected, path, value)
+    output, context, chunk = [], (), ""
+    for line in text.splitlines(keepends=True):
+        chunk += line
+        try:
+            parsed = tomllib.loads(chunk)
+        except tomllib.TOMLDecodeError:
+            continue
+        if chunk.lstrip().startswith("["):
+            context = next(iter(leaf_paths(parsed)))
+            if chunk.lstrip().startswith("[["):
+                context += ("<array>",)
+            output.append(chunk)
+        else:
+            paths = list(leaf_paths(parsed))
+            matches = {owned for p in paths for owned in pending
+                       if (context + p)[:len(owned)] == owned}
+            if matches:
+                owned = next(iter(matches))
+                if len(matches) != 1 or any((context + p)[:len(owned)] != owned for p in paths):
+                    raise ValueError("mode key shares an inline table; use a normal TOML table first")
+                value = pending.pop(owned)
+                key = chunk.split("=", 1)[0].strip()
+                output.append(f"{key} = {json.dumps(value)}\n")
+            else:
+                output.append(chunk)
+        chunk = ""
+    if chunk:
+        raise ValueError("could not safely split TOML statements")
+    # Missing root settings go before tables. Nested settings go into their table
+    # when one exists; otherwise append a new table (never redefine a dotted table).
+    result = "".join(output)
+    top = {p: v for p, v in pending.items() if len(p) == 1}
+    result = "".join(f"{p[0]} = {json.dumps(v)}\n" for p, v in top.items()) + result
+    for path, value in pending.items():
+        if len(path) == 1:
+            continue
+        table, key = path
+        # Locate a standalone table header, including quoted names.
+        pattern = rf'(?m)^\[\s*(?:{re.escape(table)}|"{re.escape(table)}")\s*\][^\n]*(?:\n|$)'
+        match = re.search(pattern, result)
+        if match:
+            result = result[:match.end()] + f"\n{key} = {json.dumps(value)}\n" + result[match.end():]
+        elif table not in original:
+            result += f"\n[{table}]\n{key} = {json.dumps(value)}\n"
+        else:
+            # Dotted tables can be extended by another dotted assignment at root.
+            result = f"{table}.{key} = {json.dumps(value)}\n" + result
+    if tomllib.loads(result) != expected:
+        raise ValueError("refusing a TOML edit that changes unrelated settings")
+    return result
+
+
+def guidance(text):
+    block = f"{BEGIN}\n{(SOURCE / 'guidance.md').read_text().rstrip()}\n{END}"
+    if BEGIN in text or END in text:
+        if text.count(BEGIN) != 1 or text.count(END) != 1 or text.index(BEGIN) > text.index(END):
+            raise ValueError("malformed interaction guidance markers")
+        start, end = text.index(BEGIN), text.index(END) + len(END)
+        return text[:start] + block + text[end:]
+    return text + ("\n\n" if text and not text.endswith("\n\n") else "") + block + "\n"
+
+
+def read(path):
+    return path.read_text() if path.exists() else ""
+
+
+def write(path, content, dry_run):
+    if read(path) == content:
+        print(f"unchanged: {path}")
+        return
+    if path.is_symlink():
+        raise ValueError(f"refusing to replace a symlink: {path}")
+    if dry_run:
+        print(f"would update: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        # Private backups may contain credentials; never print their contents.
+        fd, backup = tempfile.mkstemp(prefix=path.name + ".before-mode-", dir=path.parent)
+        os.close(fd)
+        shutil.copyfile(path, backup)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(content)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    print(f"updated: {path}")
+
+
+def paths(provider):
+    home = Path.home()
+    if provider == "codex":
+        base = Path(os.environ.get("CODEX_HOME", home / ".codex"))
+        return base / "config.toml", base / "AGENTS.md"
+    if provider == "claude":
+        base = Path(os.environ.get("CLAUDE_CONFIG_DIR", home / ".claude"))
+        return base / "settings.json", base / "CLAUDE.md"
+    return home / ".gemini" / "settings.json", home / ".gemini" / "GEMINI.md"
+
+
+def provider_values(provider, mode):
+    if provider == "agy" or MODES[mode].get(provider) is None:
+        raise ValueError(f"{provider}: {mode} has no supported mapping; settings left unchanged")
+    if provider == "gemini-cli" and mode == "agentic":
+        print("NOTE: Gemini auto_edit still asks for shell/tool approvals; it has no equivalent automatic reviewer.", file=sys.stderr)
+    if provider == "codex":
+        return MODES[mode][provider]
+    key = "permissions.defaultMode" if provider == "claude" else "general.defaultApprovalMode"
+    return {key: MODES[mode][provider]}
+
+
+def check_claude(mode):
+    if mode != "agentic":
+        return
+    if not shutil.which("claude"):
+        raise ValueError("Claude auto mode capability is unverified: install Claude first")
+    help_text = subprocess.run(["claude", "--help"], capture_output=True, text=True, timeout=15).stdout
+    if not re.search(r'["\']auto["\']', help_text):
+        raise ValueError("installed Claude does not advertise auto mode; upgrade or choose interactive")
+
+
+def check_codex(mode):
+    if mode != "agentic":
+        return
+    if not shutil.which("codex"):
+        raise ValueError("Codex automatic-review capability is unverified: install Codex first")
+    help_text = subprocess.run(["codex", "--help"], capture_output=True, text=True, timeout=15).stdout
+    if "--approve-for-me" not in help_text:
+        raise ValueError("installed Codex does not advertise automatic review; upgrade or choose interactive")
+
+
+def status(provider, project):
+    if provider == "agy":
+        print("agy: no supported permission adapter; settings unchanged")
+        return
+    config, _ = paths(provider)
+    raw = read(config)
+    data = tomllib.loads(raw) if provider == "codex" else json.loads(raw or "{}")
+    keys = list(provider_values(provider, "interactive"))
+    print(f"{provider}: user defaults in {config}")
+    matching = []
+    for name, definition in MODES.items():
+        settings = definition.get(provider)
+        if settings is None:
+            continue
+        expected = settings if provider == "codex" else {keys[0]: settings}
+        if all(nested_get(data, key.split(".")) == value for key, value in expected.items()):
+            matching.append(name)
+    print(f"  matching user mode: {', '.join(matching) if matching else 'custom or unset'}")
+    for key in keys:
+        print(f"  {key} = {json.dumps(nested_get(data, key.split('.')))}")
+    if provider == "codex":
+        print(f"  sandbox_workspace_write.writable_roots = {json.dumps(nested_get(data, ['sandbox_workspace_write', 'writable_roots']))}")
+    # Candidates only: trust, managed policy, CLI flags and active-session state
+    # are decided by the provider, not reconstructed by this diagnostic.
+    directory = project.resolve()
+    for parent in reversed([directory, *directory.parents]):
+        relative = {"codex": ".codex/config.toml", "claude": ".claude/settings.json", "gemini-cli": ".gemini/settings.json"}[provider]
+        candidates = [parent / relative]
+        if provider == "claude":
+            candidates.append(parent / ".claude/settings.local.json")
+        for candidate in candidates:
+            if candidate.exists() and candidate != config:
+                print(f"  potential project override: {candidate}")
+    print("  Active permissions not confirmed; project/trust/managed/CLI/session overrides may apply.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=["install", "status", "run", "resolve"])
+    parser.add_argument("--mode", choices=MODES, default=os.environ.get("A_AGENT_MODE"))
+    parser.add_argument("--provider", choices=["all", "codex", "claude", "gemini", "gemini-cli", "agy"], default="all")
+    parser.add_argument("--project", type=Path, default=Path.cwd())
+    parser.add_argument("--writable-root", action="append", default=[])
+    parser.add_argument("-n", "--dry-run", action="store_true")
+    # Arguments after -- belong to the provider, not this command.
+    argv = sys.argv[1:]
+    extra = []
+    if "--" in argv:
+        split = argv.index("--")
+        argv, extra = argv[:split], argv[split + 1:]
+    args = parser.parse_args(argv)
+    if args.action != "status" and args.mode not in MODES:
+        parser.error("set --mode or A_AGENT_MODE to interactive, agentic, or auto")
+    if extra and args.action != "run":
+        parser.error("provider arguments require run")
+    providers = ["codex", "claude", "gemini-cli", "agy"] if args.provider == "all" else (["gemini-cli", "agy"] if args.provider == "gemini" else [args.provider])
+    if args.action in ("run", "resolve") and len(providers) != 1:
+        parser.error("run/resolve requires one provider")
+    if args.writable_root and args.provider not in ("codex", "all"):
+        parser.error("--writable-root is supported for Codex only")
+    if args.action == "status":
+        for provider in providers:
+            status(provider, args.project)
+        return
+    changes = []
+    for provider in providers:
+        try:
+            values = provider_values(provider, args.mode)
+        except ValueError as error:
+            if len(providers) == 1:
+                raise
+            print(f"UNSUPPORTED: {error}", file=sys.stderr)
+            continue
+        if provider == "claude":
+            check_claude(args.mode)
+        if provider == "codex":
+            check_codex(args.mode)
+        if args.action == "resolve":
+            if provider == "codex":
+                print(json.dumps(values))
+            else:
+                print(MODES[args.mode][provider])
+            return
+        if args.action == "run":
+            if args.mode == "auto":
+                if provider == "codex" and (not extra or extra[0] != "exec"):
+                    parser.error("auto run requires a headless task: -- exec 'task'")
+                if provider == "claude" and not any(arg in ("-p", "--print") for arg in extra):
+                    parser.error("auto run requires a headless task: -- -p 'task'")
+            binary = "gemini" if provider == "gemini-cli" else provider
+            command = [binary]
+            if provider == "codex":
+                for key, value in values.items():
+                    command += ["-c", f"{key}={json.dumps(value)}"]
+                for root in args.writable_root:
+                    command += ["--add-dir", str(Path(root).expanduser().resolve())]
+            else:
+                command += ["--permission-mode" if provider == "claude" else "--approval-mode", MODES[args.mode][provider]]
+            command += extra
+            if args.dry_run:
+                import shlex
+                print(shlex.join(command))
+            else:
+                os.chdir(args.project)
+                os.execvp(binary, command)
+            return
+        config, instructions = paths(provider)
+        raw = read(config)
+        if provider == "codex":
+            existing = tomllib.loads(raw)
+            if args.writable_root:
+                roots = nested_get(existing, ["sandbox_workspace_write", "writable_roots"]) or []
+                values = dict(values, **{"sandbox_workspace_write.writable_roots": list(dict.fromkeys(roots + [str(Path(r).expanduser().resolve()) for r in args.writable_root]))})
+            rendered = patch_toml(raw, values)
+        else:
+            data = json.loads(raw or "{}")
+            for key, value in values.items():
+                nested_set(data, key.split("."), value)
+            rendered = json.dumps(data, indent=2) + "\n"
+        changes += [(config, rendered), (instructions, guidance(read(instructions)))]
+    # Validate every destination before modifying any provider.
+    for path, _ in changes:
+        if path.is_symlink():
+            raise ValueError(f"refusing to replace a symlink: {path}")
+    for path, content in changes:
+        write(path, content, args.dry_run)
+    print(f"Mode: {args.mode}. Restart clients to load defaults; existing sessions are unchanged.")
+    if args.mode == "auto":
+        print("Auto denies actions needing approval. Configure task access first; denied actions remain blocked.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        sys.exit(f"a_c_agent_mode: {error}")

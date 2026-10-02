@@ -465,7 +465,11 @@ _a_c_task_start_main() {
         # (--dangerously-skip-permissions); else a_task_permission_mode().
         if [ "$has_perm" -eq 1 ]; then :
         elif [ "$bypass_flag" -eq 1 ]; then cr_args+=(--dangerously-skip-permissions)
-        else cr_args+=(--permission-mode "$(a_task_permission_mode)"); fi
+        else
+            local permission_mode
+            permission_mode="$(a_task_permission_mode)" || return 1
+            cr_args+=(--permission-mode "$permission_mode")
+        fi
         [ "${#passthrough[@]}" -gt 0 ] && cr_args+=("${passthrough[@]}")
     fi
 
