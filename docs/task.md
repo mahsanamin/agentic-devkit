@@ -96,6 +96,12 @@ already on (so you can drive it from the app). The session gets the task name
 `--name`, so the zellij tab, the app and the peer registry all show the same
 string and another session can address it by that name.
 
+Remote Control is a per-machine setting, on by default. `a_c_remote_control off`
+turns it off for every session the launchers start on that machine (the session
+keeps its name, so peers can still message it); `a_c_remote_control on` turns it
+back on, and `a_c_remote_control` alone shows the current value. For one launch,
+`A_CLAUDE_REMOTE_CONTROL=off` in the environment overrides the saved setting.
+
 It defaults to `--permission-mode auto`, so an unattended session never sits on
 an approval prompt. In auto mode a genuinely risky action is refused and the
 refusal is handed to the model, which then carries on; nothing waits for a human.

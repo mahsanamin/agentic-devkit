@@ -108,7 +108,7 @@ Apply `a_r_l_pr_review`'s **Auto-post policy** verbatim. Compactly:
 - Post ONLY comments the draft marks **Action: Post** that are **Bug/Error**, **Security**, **Missing** (a required piece whose absence breaks things), or a **Question** that materially affects correctness. Never post praise, style nits, "consider X", or trade-off notes.
 - **Self-verify guard before each post:** confirm the exact code path the comment claims, confirm it's NEW code in this PR (not pre-existing), and **dedup** against the PR's existing comments (`gh api repos/{OWNER}/{REPO}/pulls/<N>/comments` and `.../issues/<N>/comments`) so nothing is reposted. Drop anything that fails the guard; note it in the report.
 - Post the survivors as ONE batch review via `gh api repos/{OWNER}/{REPO}/pulls/<N>/reviews`, GitHub inline-comment style with fix suggestions. **Verify they landed** (re-fetch the comments). A clean PR with zero bar-clearing comments posts nothing — that is success.
-- `post=draft`: post nothing; report the draft path and what it contained.
+- `post=draft`: post nothing; report the draft path and what it contained. The draft follows the SAME bar and the same self-verify guard as `auto`: only verified bar-clearing findings, as inline comments on file:line. No summary of what is already right, no thanks or praise, no list of checks that passed, no optional nits. If nothing clears the bar, the draft is an approval with a one-line body, not a comment.
 
 Running this skill with `post=auto` **is** the authorization to post (same standing intent as `a_r_l_pr_review`); do not re-impose a draft-only default.
 

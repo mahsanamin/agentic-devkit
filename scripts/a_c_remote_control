@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# a_c_remote_control - turn Remote Control on or off for the Claude sessions this
+# machine's launchers start (a_c_claude_remote, and everything built on it:
+# a_c_task_start -c, a_c_idea_start, a_c_review_pr, the issue and mdnest task starters).
+#
+# Usage:
+#   a_c_remote_control             show the current setting and where it is saved
+#   a_c_remote_control on          new sessions start with Remote Control (the default)
+#   a_c_remote_control off         new sessions start without it
+#   a_c_remote_control --get       print just "on" or "off" (for scripts)
+#
+#   --check                        say what would change, change nothing
+#
+# The setting is CLAUDE_REMOTE_CONTROL, saved next to MACHINE_NAME: root.local.config
+# with a root repo, otherwise the personal profile. No line means on.
+# One launch can override it with A_CLAUDE_REMOTE_CONTROL=on|off in the environment.
+# Sessions already running are not changed; this applies to the next launch.
+
+set -euo pipefail
+
+KEY=CLAUDE_REMOTE_CONTROL
+CHECK=false
+args=()
+for a in "$@"; do
+    case "$a" in
+        --check|-n|--dry-run) CHECK=true ;;
+        -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) args+=("$a") ;;
+    esac
+done
+set -- "${args[@]+"${args[@]}"}"
+
+die() { echo "a_c_remote_control: $*" >&2; exit 1; }
+
+# Last `[export ]KEY=value` assignment of KEY in FILE, quotes stripped. No eval.
+read_assignment() {
+    local key="$1" file="$2" line
+    [ -f "$file" ] || return 0
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$key=" "$file" | tail -n 1)" || true
+    line="${line#*=}"
+    line="${line%%#*}"
+    printf '%s' "$line" | sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//"
+}
+
+settings_profile() {
+    local f
+    for f in "$HOME/my_settings/a_configs.profile" "$HOME/my_settings/configs.profile"; do
+        [ -f "$f" ] && { echo "$f"; return 0; }
+    done
+    return 0
+}
+
+# Same file a_c_machine keeps MACHINE_NAME in.
+config_file() {
+    local profile root
+    profile="$(settings_profile)"
+    root="${A_ROOT_DIR:-}"
+    [ -n "$root" ] || root="$(read_assignment A_ROOT_DIR "${profile:-/dev/null}")"
+    root="${root/#\~/$HOME}"
+    if [ -n "$root" ] && [ -f "$root/root.config" ]; then
+        echo "$root/root.local.config"
+    else
+        echo "$profile"
+    fi
+}
+
+# on/true/yes/1 -> on, off/false/no/0 -> off, anything else -> empty.
+normalize() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        on|true|yes|1|enable|enabled)    echo on ;;
+        off|false|no|0|disable|disabled) echo off ;;
+        *) echo "" ;;
+    esac
+}
+
+CONFIG="$(config_file)"
+
+saved() {
+    local v
+    [ -n "$CONFIG" ] || { echo on; return 0; }
+    v="$(normalize "$(read_assignment "$KEY" "$CONFIG")")"
+    echo "${v:-on}"
+}
+
+save() {
+    local value="$1" tmp prefix=""
+    [ -n "$CONFIG" ] || die "no personal profile in ~/my_settings, so there is nowhere to save this. Run install.sh first."
+    if grep -Eq "^[[:space:]]*(export[[:space:]]+)?$KEY=" "$CONFIG"; then
+        tmp="$(mktemp)"
+        sed -E "s|^([[:space:]]*)(export[[:space:]]+)?$KEY=.*|\1\2$KEY=\"$value\"|" "$CONFIG" > "$tmp"
+        cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+    else
+        [ "$(basename "$CONFIG")" = root.local.config ] || prefix="export "
+        printf '\n# Remote Control for Claude sessions started by a_c_claude_remote. Set with: a_c_remote_control on|off\n%s%s="%s"\n' \
+            "$prefix" "$KEY" "$value" >> "$CONFIG"
+    fi
+}
+
+case "${1:-}" in
+    "")
+        echo "Remote Control for new sessions: $(saved)"
+        echo "Saved in: ${CONFIG:-nowhere yet (default is on)}"
+        override="$(normalize "${A_CLAUDE_REMOTE_CONTROL:-}")"
+        [ -z "$override" ] || echo "This shell overrides it: A_CLAUDE_REMOTE_CONTROL=$override"
+        ;;
+    --get)
+        override="$(normalize "${A_CLAUDE_REMOTE_CONTROL:-}")"
+        echo "${override:-$(saved)}"
+        ;;
+    on|off|true|false|enable|disable)
+        want="$(normalize "$1")"
+        current="$(saved)"
+        if [ "$current" = "$want" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$KEY=" "${CONFIG:-/dev/null}"; then
+            echo "Already $want."
+            exit 0
+        fi
+        if $CHECK; then
+            echo "Would set $KEY=\"$want\" in ${CONFIG:-<no config>} (now $current)."
+            exit 0
+        fi
+        save "$want"
+        echo "Remote Control for new sessions: $want (saved in $CONFIG)"
+        ;;
+    *)
+        die "unknown argument: $1 (use on, off, or no argument to show the setting)"
+        ;;
+esac

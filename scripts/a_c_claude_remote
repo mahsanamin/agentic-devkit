@@ -7,7 +7,8 @@
 #
 # Instead of starting `claude` and then typing `/remote-control`, this uses the
 # native `claude --remote-control` flag, so Remote Control is live from the first
-# second and your initial prompt still runs.
+# second and your initial prompt still runs. A machine can turn that off with
+# `a_c_remote_control off` (default on); the session then starts without it.
 #
 # The given directory is where the session starts (the script cd's into it before
 # launching, so your own shell stays put).
@@ -39,7 +40,7 @@ set -euo pipefail
 prog="${0##*/}"
 
 usage() {
-    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # Pre-authorize the SPECIFIC target directory for an unattended remote session so
@@ -224,8 +225,15 @@ if [[ -n "$name" && $_cr_has_claude_name -eq 0 ]]; then
 fi
 [[ -n "$prompt" ]] && cmd+=("$prompt")
 [[ ${#passthrough[@]} -gt 0 ]] && cmd+=("${passthrough[@]}")
-cmd+=(--remote-control)
-[[ -n "$name" ]] && cmd+=("$name")
+# Remote Control is a per-machine choice (a_c_remote_control on|off, default on).
+# Off: the session still gets its -n name, so peers can still message it.
+_cr_rc=on
+_cr_rc_tool="$(dirname "$0")/a_c_remote_control"
+[[ -x "$_cr_rc_tool" ]] && _cr_rc="$("$_cr_rc_tool" --get 2>/dev/null || echo on)"
+if [[ "$_cr_rc" != off ]]; then
+    cmd+=(--remote-control)
+    [[ -n "$name" ]] && cmd+=("$name")
+fi
 
 cd "$dir"
 
