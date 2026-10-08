@@ -56,9 +56,11 @@ Run everything from `dir`. Do the classification with raw git/gh (deterministic,
 
 4. **Act** (skip this step's removals entirely if `dry_run=true`):
    - For each REMOVE worktree, run from inside `$dir`:
-     `a_g_worktree_remove <branch-or-name> --verify`
-     `--verify` re-checks merged status (including squash-merge) and removes the worktree **and** its local branch without prompting; it refuses and exits non-zero if the branch is not actually merged. If it refuses but the PR is confirmed **MERGED** via `gh` (squash edge cases), re-run with `--force` instead. Never use `--force` on a KEEP item.
-   - When `force=true`, also remove the **Unmerged WIP** and **Closed-not-merged** items with `a_g_worktree_remove <name> --force`. Still never the dirty ones.
+     `git worktree remove <full-worktree-path>` (no `--force`, so git itself refuses a dirty one), then `git branch -d <branch>`.
+     `git branch -d` refuses a squash-merged branch because git cannot see the merge. Leave that branch in place and list it in the report; it no longer shows in `git worktree list`, so the goal is met. Delete it with `-D` only when the user asks.
+     Do not use `a_g_worktree_remove` here. It asks for a y/n confirmation even with `--verify`, and with no terminal attached it prints "Cancelled." and still exits 0, so a loop over it reports success while removing nothing. It also deletes the remote branch unless `--keep-remote` is passed.
+   - When `force=true`, also remove the **Unmerged WIP** and **Closed-not-merged** items the same way. Still never the dirty ones.
+   - After the pass, re-run `git worktree list` and confirm each removed path is gone. Never report a removal from an exit code alone.
    - **Prune stale registrations:** `git -C "$dir" worktree prune` (removes only registrations whose directory is missing; no work at risk, no prompt).
 
 5. **Report.** Print a table: each worktree, its branch, the decision (Removed / Kept / Pruned / Failed), and the one-line reason (e.g. "PR #602 merged", "uncommitted changes", "open PR #610", "unpushed commits, no merge"). End with counts: N removed, M kept, K pruned, and the current `git worktree list` after the pass.
@@ -66,5 +68,6 @@ Run everything from `dir`. Do the classification with raw git/gh (deterministic,
 ## Notes
 
 - **Squash-merge is the common case in many repos** (PRs squash into `main`), so the `gh` PR-state check is what makes this reliable; the local `--is-ancestor` check alone would miss squashed branches and wrongly keep them. Always consult `gh`.
-- The AA worktree layout is `.../WorkTrees/<project>/<branch>`; `a_g_worktree_remove` takes the worktree **name** (the last path segment / branch), not the full path, and acts on the current repo, so `cd "$dir"` first.
+- The AA worktree layout is `.../WorkTrees/<project>/<branch>`; take the full path from `git worktree list --porcelain`, and `cd "$dir"` first.
+- In zsh, never name a loop variable `path`: it is tied to `PATH`, and assigning it wipes the command search path for the rest of the loop.
 - Unattended/scheduled use: pass `dir` as the absolute main-clone path and leave `dry_run=false`. The safety rules above are what make an unattended run non-destructive to live work.
