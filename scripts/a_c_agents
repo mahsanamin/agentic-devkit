@@ -15,6 +15,8 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 AGENTS_SRC="${AGENTS_SRC:-${CLAUDE_AGENTS_SRC:-$REPO_ROOT/agents}}"
 RENDERER="$SCRIPT_DIR/a_s_render_agent"
+# shellcheck source=a_s_link_common.sh
+. "$SCRIPT_DIR/a_s_link_common.sh"
 
 PROVIDER="${AGENT_PROVIDER:-claude}"
 TARGET_DIR=""
@@ -82,11 +84,16 @@ install_one() {
             return
         fi
         if [ -e "$target" ] || [ -L "$target" ]; then
-            if ! $FORCE; then
+            if ! $FORCE && a_s_is_leftover_link "$target" "$name.md" agents; then
+                # A link left by a moved or retired checkout holds nothing to back up.
+                echo -e "  ${YELLOW}repointed${NC} $name ${DIM}(was -> $(readlink "$target"))${NC}"
+                $DRY_RUN || rm "$target"
+            elif ! $FORCE; then
                 echo -e "  ${YELLOW}skip${NC}      $name ${DIM}(target exists; use --force)${NC}"
                 return
+            else
+                $DRY_RUN || { mkdir -p "$BACKUP_DIR"; mv "$target" "$BACKUP_DIR/$(basename "$target").$(date +%Y%m%d-%H%M%S)"; }
             fi
-            $DRY_RUN || { mkdir -p "$BACKUP_DIR"; mv "$target" "$BACKUP_DIR/$(basename "$target").$(date +%Y%m%d-%H%M%S)"; }
         fi
         $DRY_RUN || ln -s "$source" "$target"
         echo -e "  ${GREEN}linked${NC}    $name ${DIM}-> $source${NC}"

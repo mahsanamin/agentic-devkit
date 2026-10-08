@@ -15,7 +15,9 @@
 #
 # Flags (for install/uninstall):
 #   -n, --dry-run    Print what would change without touching the filesystem
-#   -f, --force      Repoint a symlink that currently points somewhere else
+#   -f, --force      Repoint a symlink that points into another known repo
+#                    (links left behind by a moved or retired checkout, and
+#                    dangling links, are repointed without it)
 #   -h, --help       Show this help
 #
 # With no [name...], the command applies to every skill in the repo.
@@ -45,6 +47,8 @@ SKILLS_SRC="${SKILLS_SRC:-${CLAUDE_SKILLS_SRC:-$REPO_ROOT/skills}}"
 TARGET_DIR="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 # Backups live OUTSIDE the skills dir so Claude Code never scans them as skills.
 BACKUP_DIR="${CLAUDE_SKILLS_BACKUP_DIR:-${TARGET_DIR%/}.backups}"
+# shellcheck source=a_s_link_common.sh
+. "$SCRIPT_DIR/a_s_link_common.sh"
 
 DRY_RUN=false
 FORCE=false
@@ -104,7 +108,7 @@ install_one() {
             echo -e "  ${GREEN}linked${NC}    $name ${DIM}-> $want${NC}" ;;
         elsewhere:*)
             local cur="${state#elsewhere:}"
-            if $FORCE; then
+            if $FORCE || a_s_is_leftover_link "$target" "$name" skills; then
                 run rm "$target"
                 run ln -s "$want" "$target"
                 echo -e "  ${YELLOW}repointed${NC} $name ${DIM}(was -> $cur)${NC}"

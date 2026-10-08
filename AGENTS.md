@@ -22,7 +22,7 @@ provider; generated global files add the correct provider identity themselves.
 
 > **Work directly on `main` in this checkout - no feature branches, no worktree for this repo.** This is an adhoc, personal repo kept deliberately low-friction: edit, commit, and push straight to `main`. There is no `develop`, no feature-branch flow, and no PR step here; everything lands on `main`. This is intentional for a concrete reason: the live skills/agents are symlinks into THIS checkout, so a change made in a separate worktree does not go live until it is merged back and this checkout is updated. Editing here makes it live immediately. If a stray feature branch ever shows up, fold its wanted work into `main` and delete it.
 
-> **No AI attribution trailers on commits in this repo.** Leave off `Co-Authored-By` and generated-by lines, regardless of which agent performs the work.
+> **No AI attribution trailers on commits in this repo.** Leave off `Co-Authored-By` and generated-by lines, regardless of which agent performs the work. Commits are authored as the repo-local git identity (`git config user.name/user.email`), not a global or work one. If a globally installed agent hook blocks the commit for a missing trailer, commit with `--no-verify`: this repo has no git hooks of its own, so nothing else is skipped.
 
 ---
 

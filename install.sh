@@ -7,7 +7,8 @@
 #   ./install.sh --link-only  Skip shell wiring; just (re)link agent assets
 #   ./install.sh --agent-mode MODE  Install interactive, agentic, or auto defaults
 #   ./install.sh -n           Dry run: print what would change, touch nothing
-#   ./install.sh -f           Force: repoint skill/agent links that point elsewhere
+#   ./install.sh -f           Force: also repoint links into another known repo
+#                             (links from a moved or retired checkout are repointed anyway)
 #   ./install.sh -h           Show this help
 #
 # It is idempotent: safe to re-run any time (e.g. after `git pull`) to pick up
