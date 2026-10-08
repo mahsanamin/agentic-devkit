@@ -121,6 +121,16 @@ else
         fix "$DEVKIT/install.sh"
     fi
 fi
+# A settings file that still names an old or moved checkout loads that copy's shell
+# functions and prompt, not this devkit's, even though every link here is correct.
+if [ -n "$CONFIG" ]; then
+    wf="$(sed -nE "s/^[[:space:]]*export[[:space:]]+MY_WORKFLOW_DIR=['\"]?([^'\"]*)['\"]?.*/\1/p" "$CONFIG" | tail -1)"
+    wf="${wf/#\~/$HOME}"
+    if [ -n "$wf" ] && [ "$(cd -P "$wf" 2>/dev/null && pwd)" != "$(cd -P "$DEVKIT" && pwd)" ]; then
+        broken "MY_WORKFLOW_DIR in the settings file loads $wf, not this devkit"
+        fix "set MY_WORKFLOW_DIR='$DEVKIT' in $CONFIG, then: source ~/.zshrc"
+    fi
+fi
 [ -n "$CONFIG" ] && info "settings file: $CONFIG"
 
 # ------------------------------------------------------------------- machine
