@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests
+    # The scripts target macOS (bash 3.2, BSD tools), so the tests run there.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Shell tests
+        run: |
+          rc=0
+          for t in tests/*.sh; do
+            echo "::group::$t"
+            bash "$t" || { echo "::error::$t failed"; rc=1; }
+            echo "::endgroup::"
+          done
+          exit $rc
+      - name: Python tests
+        run: python -m unittest tests/test_agent_modes.py
+
+  release-source:
+    name: Release source
+    # main only takes releases: a PR into main must come from develop.
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the PR comes from develop
+        # Values arrive through env, never ${{ }} inside run: a fork names its own branch,
+        # and a crafted name would otherwise be executed as shell.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REF" != "develop" ] || [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+            echo "::error::PRs into main must come from this repo's develop branch. Open your PR against develop."
+            exit 1
+          fi

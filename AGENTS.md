@@ -20,9 +20,11 @@ explicitly asks to leave the others untouched.
 only. Shared memory sources must describe the machine and policy without claiming a runtime
 provider; generated global files add the correct provider identity themselves.
 
-> **Work directly on `main` in this checkout - no feature branches, no worktree for this repo.** This is an adhoc, personal repo kept deliberately low-friction: edit, commit, and push straight to `main`. There is no `develop`, no feature-branch flow, and no PR step here; everything lands on `main`. This is intentional for a concrete reason: the live skills/agents are symlinks into THIS checkout, so a change made in a separate worktree does not go live until it is merged back and this checkout is updated. Editing here makes it live immediately. If a stray feature branch ever shows up, fold its wanted work into `main` and delete it.
+<!-- release:workflow:begin -->
+> **Changes go through pull requests. Nobody pushes to `develop` or `main` directly.** Branch from `develop`, open a PR into `develop`, and wait for review and the required checks. `main` only moves through a release PR from `develop`, cut by the maintainer, usually once a week. The full rules are in [CONTRIBUTING.md](CONTRIBUTING.md). An agent working in a clone of this repo follows them too: it pushes its own branch and opens a PR, and never pushes to `develop` or `main`, even where a global rule says "push by default".
 
-> **Versioned releases.** `VERSION` holds the current release and `CHANGELOG.md` lists what each release changed. The public repository receives releases only, roughly weekly, with a patch release in between when a fix should not wait. Day-to-day commits land in the maintainer's working copy and ship with the next release, so do not push to the public repository directly.
+> **Versioned releases.** `VERSION` holds the current release and `CHANGELOG.md` lists what each release changed. Each release is a `vX.Y.Z` tag on `main` with a GitHub release. Skills and agents are symlinks into your checkout, so a merged change reaches your machine when you pull.
+<!-- release:workflow:end -->
 
 > **No AI attribution trailers on commits in this repo.** Leave off `Co-Authored-By` and generated-by lines, regardless of which agent performs the work. Commits are authored as the repo-local git identity (`git config user.name/user.email`), not a global or work one. If a globally installed agent hook blocks the commit for a missing trailer, commit with `--no-verify`: this repo has no git hooks of its own, so nothing else is skipped.
 
