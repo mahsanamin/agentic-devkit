@@ -6,8 +6,8 @@ These are the rules for everyone who changes this repository, people and agents 
 
 | Branch | What it holds | How it changes |
 |---|---|---|
-| `develop` | The next release. The default branch. | Pull requests only, with one approval and green checks |
-| `main` | The latest release. | Only a release PR from `develop`, cut by the maintainer |
+| `develop` | The next release. Where every contribution goes. | Pull requests only, with one approval and green checks |
+| `main` | The latest release. The default branch on GitHub. | Only a release PR from `develop`, cut by the maintainer |
 | anything else | Your work in progress | Push freely to your own branch or fork |
 
 Both `develop` and `main` refuse direct pushes and force pushes on GitHub, so a push straight to either one fails. That is expected: push your branch and open a PR.
@@ -21,8 +21,10 @@ Both `develop` and `main` refuse direct pushes and force pushes on GitHub, so a 
    for t in tests/*.sh; do bash "$t" || echo "FAIL $t"; done
    python3 -m unittest tests/test_agent_modes.py
    ```
-4. Open the PR into `develop`. Say what changed and why, and how you checked it. CI runs the same tests and must pass before the PR can merge.
+4. Open the PR into `develop`. GitHub suggests `main` because it is the default branch, so change the base to `develop`. Say what changed and why, and how you checked it. CI runs the same tests and must pass before the PR can merge.
 5. The maintainer reviews it. A PR that changes the direction of the toolkit (naming scheme, the source-of-truth model, provider parity) needs that discussed in an issue first.
+
+Anything merged into `develop` goes to `main` with the next release, so a PR must be ready to ship when it merges. Do not leave half-finished work on `develop`.
 
 PRs into `develop` are squash-merged, so the commit history on `develop` reads as one line per change.
 
