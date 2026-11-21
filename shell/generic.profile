@@ -9,6 +9,9 @@ fi
 # Both names, the same way bootstrap.profile does it. A standalone profile sources this
 # file directly and never loads bootstrap.profile, and readers use either name.
 export A_MACHINE_NAME="${MACHINE_NAME:-${A_MACHINE_NAME:-}}"
+# Older profiles name the private overlay A_CLAUDE_OVERLAY_DIR. Every tool reads the
+# provider-neutral name, so map it here once.
+[ -z "${A_AGENT_OVERLAY_DIR:-}" ] && [ -n "${A_CLAUDE_OVERLAY_DIR:-}" ] && export A_AGENT_OVERLAY_DIR="$A_CLAUDE_OVERLAY_DIR"
 export MACHINE_NAME="$A_MACHINE_NAME"
 
 ########################### Global Path Additions ####
@@ -75,6 +78,9 @@ source "$MY_WORKFLOW_DIR/sourced/doctor.sh"
 source "$MY_WORKFLOW_DIR/sourced/task.sh"
 # MACHINE_NAME in grey at the start of a zsh or bash prompt. A_PROMPT_MACHINE_NAME=0 turns it off.
 source "$MY_WORKFLOW_DIR/sourced/prompt.sh"
+# Linux without a desktop login: unlock the GNOME keyring once per boot, and make acli
+# fail fast instead of hanging while it is locked. A_KEYRING_AUTO_UNLOCK=0 turns off the prompt.
+source "$MY_WORKFLOW_DIR/sourced/keyring.sh"
 # Transitional back-compat aliases for renamed commands (old muscle-memory names).
 [ -f "$MY_WORKFLOW_DIR/sourced/compat.sh" ] && source "$MY_WORKFLOW_DIR/sourced/compat.sh"
 

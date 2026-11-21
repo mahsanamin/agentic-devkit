@@ -6,7 +6,8 @@
 # fixed once, here.
 #
 # Usage:
-#   a_c_zellij_tab <session> <tab> [--cwd DIR] [--cmd 'COMMAND'] [--no-focus] [-n]
+#   a_c_zellij_tab <session> <tab> [--cwd DIR] [--cmd 'COMMAND'] [--close-on-exit]
+#                  [--pid-file F] [--no-focus] [-n]
 #
 # Arguments:
 #   <session>   zellij session name; created detached if it is not running. A
@@ -22,6 +23,13 @@
 #                  just a shell sitting in DIR.
 #   --launcher F   (advanced) use ready-made executable F as the pane command
 #                  instead of building one from --cmd. Used by caller scripts.
+#   --close-on-exit  with --cmd: do not drop to a shell after CMD, and close the
+#                  tab when CMD exits. Lets a script close a tab by ending its
+#                  process, which works with no client attached (go-to-tab-name
+#                  plus close-tab needs one and hangs without it).
+#   --pid-file F   with --cmd: write the tab's launcher PID to F. It leads the
+#                  pane's process group, so `kill -TERM -<pid>` ends CMD and all
+#                  its children.
 #   --no-focus     create the tab but do not switch the attached client to it.
 #   -n, --dry-run  print what would happen; touch nothing.
 #   -h, --help     show this help.
@@ -51,13 +59,15 @@ prog="${0##*/}"
 
 usage() { sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; }
 
-session=""; tab=""; cwd=""; cmd=""; launcher_in=""; focus=1; dry=0
+session=""; tab=""; cwd=""; cmd=""; launcher_in=""; focus=1; dry=0; close_on_exit=0; pid_file=""
 positional=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --cwd)       cwd="${2:-}"; shift ;;
         --cmd)       cmd="${2:-}"; shift ;;
         --launcher)  launcher_in="${2:-}"; shift ;;  # use this ready-made executable as the pane command (skips building one)
+        --close-on-exit) close_on_exit=1 ;;
+        --pid-file)  pid_file="${2:-}"; shift ;;
         --no-focus)  focus=0 ;;
         -n|--dry-run) dry=1 ;;
         -h|--help)   usage; exit 0 ;;
@@ -241,8 +251,9 @@ else
             printf '    *) PATH=%s:"$PATH"; export PATH ;;\n' "$_zt_scripts_dir"
             printf 'esac\n'
             printf 'cd %q 2>/dev/null\n' "$cwd"
+            [ -n "$pid_file" ] && printf 'echo $$ > %q\n' "$pid_file"
             printf '%s\n' "$cmd"
-            printf 'exec "${SHELL:-/bin/zsh}" -i\n'
+            [ "$close_on_exit" -eq 1 ] || printf 'exec "${SHELL:-/bin/zsh}" -i\n'
         } > "$launcher"
         chmod +x "$launcher"
     fi
@@ -259,7 +270,11 @@ else
         # layout (the tab-bar plugin above), so keystrokes drive the tab bar and
         # Backspace/arrows navigate tabs instead of editing the shell line. Marking
         # the command pane focused puts the keyboard where the user expects it.
-        printf '        pane command="%s" focus=true\n' "$launcher"
+        if [ "$close_on_exit" -eq 1 ]; then
+            printf '        pane command="%s" focus=true close_on_exit=true\n' "$launcher"
+        else
+            printf '        pane command="%s" focus=true\n' "$launcher"
+        fi
         printf '        pane size=2 borderless=true {\n'
         printf '            plugin location="zellij:status-bar"\n'
         printf '        }\n'

@@ -27,7 +27,8 @@ if [ -n "${ZSH_VERSION:-}" ]; then
         [ -n "${_A_PROMPT_PREFIX:-}" ] && PROMPT="${PROMPT#"$_A_PROMPT_PREFIX"}"
         _A_PROMPT_PREFIX=""
         _a_prompt_machine_skip && return 0
-        [[ "$PROMPT" == *"$MACHINE_NAME"* ]] && return 0
+        # Case-insensitive: a hand-written "Host-name" still counts as showing "HOST-NAME".
+        [[ "${(L)PROMPT}" == *"${(L)MACHINE_NAME}"* ]] && return 0
         PROMPT="${prefix}${PROMPT}"
         _A_PROMPT_PREFIX="$prefix"
         # Stay last, so a theme's own precmd that rebuilds PROMPT runs before this one.
@@ -41,7 +42,14 @@ elif [ -n "${BASH_VERSION:-}" ]; then
         [ -n "${_A_PROMPT_PREFIX:-}" ] && PS1="${PS1#"$_A_PROMPT_PREFIX"}"
         _A_PROMPT_PREFIX=""
         _a_prompt_machine_skip && return 0
-        [[ "$PS1" == *"$MACHINE_NAME"* ]] && return 0
+        local nocase=0
+        shopt -q nocasematch && nocase=1
+        shopt -s nocasematch
+        if [[ "$PS1" == *"$MACHINE_NAME"* ]]; then
+            [ "$nocase" = 1 ] || shopt -u nocasematch
+            return 0
+        fi
+        [ "$nocase" = 1 ] || shopt -u nocasematch
         PS1="${prefix}${PS1}"
         _A_PROMPT_PREFIX="$prefix"
     }

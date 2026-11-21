@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manage the canonical subagent library for Claude, Codex, AGY, and Gemini CLI.
+# Manage the canonical subagent library for Claude, Codex, AGY, Gemini CLI, and OpenCode.
 
 set -euo pipefail
 
@@ -26,13 +26,13 @@ FORCE=false
 
 usage() {
     cat <<'EOF'
-Usage: a_c_agents [--provider claude|codex|agy|gemini-cli] ACTION [name...] [flags]
+Usage: a_c_agents [--provider claude|codex|agy|gemini-cli|opencode] ACTION [name...] [flags]
 
 Actions: install, uninstall, status, list
 Flags:   -n/--dry-run, -f/--force, -h/--help
 
 The canonical sources are agents/*.md. Claude receives source symlinks; Codex,
-AGY/Antigravity, and Gemini CLI receive generated provider-native definitions.
+AGY/Antigravity, Gemini CLI, and OpenCode receive generated provider-native definitions.
 EOF
 }
 
@@ -47,7 +47,7 @@ discover_agents() {
 normalize_provider() {
     case "$PROVIDER" in
         gemini) PROVIDER=agy ;;
-        claude|codex|agy|gemini-cli) ;;
+        claude|codex|agy|gemini-cli|opencode) ;;
         *) echo -e "${RED}Unknown provider: $PROVIDER${NC}" >&2; exit 2 ;;
     esac
     case "$PROVIDER" in
@@ -55,6 +55,7 @@ normalize_provider() {
         codex) TARGET_DIR="${CODEX_AGENTS_DIR:-$HOME/.codex/agents}" ;;
         agy) TARGET_DIR="${AGY_AGENTS_DIR:-$HOME/.gemini/config/agents}" ;;
         gemini-cli) TARGET_DIR="${GEMINI_CLI_AGENTS_DIR:-$HOME/.gemini/agents}" ;;
+        opencode) TARGET_DIR="${OPENCODE_AGENTS_DIR:-$HOME/.config/opencode/agents}" ;;
     esac
     BACKUP_DIR="${AGENTS_BACKUP_DIR:-${TARGET_DIR%/}.backups}"
 }

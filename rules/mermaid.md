@@ -1,8 +1,8 @@
 # Mermaid syntax that renders (canonical)
 
 Single source of truth for writing Mermaid that survives the parser, wherever the diagram ends
-up: mdnest, Confluence, GitHub, an artifact, or a repo doc. Colors and palette are a separate
-concern and live with each target (mdnest: `rules/mdnest.md`). Read this before writing a
+up: mdnest, Confluence, GitHub, an artifact, or a repo doc. Colors: mdnest has its own palette
+(`rules/mdnest.md`); everywhere else, use the palette at the end of this file. Read this before writing a
 diagram, and run `a_s_mermaid_lint` on the file before publishing it.
 
 Every rule here was checked against mermaid 12 by parsing and rendering the example. "Breaks"
@@ -111,3 +111,17 @@ statement.
   `gantt` for timelines, `block-beta` for layered scope.
 - Keep one direction (`flowchart LR` or `TB`) and short labels. Use `<br/>` for a line break,
   which works in both flowchart labels and sequence message text.
+
+## Palette outside mdnest (GitHub, Confluence, artifacts)
+
+Set `fill`, `stroke`, AND `color` together on every styled node. Setting only `fill` falls back
+to the theme's text color, which is unreadable in one theme or the other. Pastel fills such as
+`#d4edda` assume a light theme and fail in dark mode, so do not use them. White text on all of:
+
+- green `fill:#1f7a3a,stroke:#0f4d24,color:#ffffff` for new, success, highlight
+- amber `fill:#b45309,stroke:#7c3a06,color:#ffffff` for warning and recovery
+- red `fill:#b91c1c,stroke:#7f1414,color:#ffffff` for danger and blockers
+- blue `fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff` for info and accent
+- slate `fill:#334155,stroke:#1e293b,color:#ffffff` for neutral emphasis
+
+Inside mdnest, do not set `color:` at all: it computes readable text per fill.

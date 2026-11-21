@@ -155,7 +155,15 @@ if [[ $want_bypass -eq 1 ]] && command -v python3 >/dev/null 2>&1; then
 import json, os
 try:
     with open(os.environ["A_CJ"]) as f:
-        print("yes" if json.load(f).get("bypassPermissionsModeAccepted") is True else "no")
+        ok = json.load(f).get("bypassPermissionsModeAccepted") is True
+    # Newer Claude records the one-time bypass acceptance in ~/.claude/settings.json.
+    if not ok:
+        try:
+            with open(os.path.expanduser("~/.claude/settings.json")) as f:
+                ok = json.load(f).get("skipDangerousModePermissionPrompt") is True
+        except Exception:
+            pass
+    print("yes" if ok else "no")
 except Exception:
     print("unknown")
 PY2

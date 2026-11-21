@@ -35,14 +35,63 @@ flowchart LR
 
 | Command | What it does |
 |---|---|
-| `a_c_task_start [-r repo] [-t ticket] [-f feature] [-b base] [-c] [-p prompt] [-z session] [--prefix name] [--no-prefix] [--label text] [-y] [--dry-run] [-- claude args]` | Pick a repo (the repo you're currently in is pinned first as `current =>`, then the most-recently-worked-in repos under `cd_w` ranked by last commit; or a name / full path), turn a Jira ticket into a branch `PROJ-123-feature-name`, create a worktree via `a_g_worktree_init`, cd in, and register the task. `-b` forks from that base branch (e.g. `main` or `story/PROJ-123-foo`) and skips `a_g_worktree_init`'s base picker; omit it to be prompted. Before creating anything it asks `Proceed? [Y/n]`; `-y` (or a non-interactive run) skips that (see "Confirmation & auto mode"). With `-r -t -f -b -y` set it runs with no prompts at all. `-c` then launches a Remote-Control Claude session in the new worktree (see below). `-z` opens the worktree in a named zellij session/tab instead of the current terminal (see below). The tab and the Claude session are both named `<prefix>-<ticket>-<feature>`, e.g. `ios-abc-123-list-filter` (see "Task name"). `--dry-run` prints the plan and the name and creates nothing. |
-| `a_c_task_resume [ticket\|branch]` | Jump back into an active task's worktree. No argument -> numbered menu with live dirty / ahead-behind state. |
+| `a_c_task_start [-r repo] [-t ticket] [-f feature] [-b base] [-c] [-p prompt] [-z session] [--prefix name] [--no-prefix] [--label text] [-y] [--dry-run] [--provider claude\|codex] [-m model] [-- native args]` | Pick a repo (the repo you're currently in is pinned first as `current =>`, then the most-recently-worked-in repos under `cd_w` ranked by last commit; or a name / full path), turn a Jira ticket into a branch `PROJ-123-feature-name`, create a worktree via `a_g_worktree_init`, cd in, and register the task. `-b` forks from that base branch (e.g. `main` or `story/PROJ-123-foo`) and skips `a_g_worktree_init`'s base picker; omit it to be prompted. Before creating anything it asks `Proceed? [Y/n]`; `-y` (or a non-interactive run) skips that (see "Confirmation & auto mode"). With `-r -t -f -b -y` set it runs with no prompts at all. `-c` then launches the selected provider in the new worktree (Claude by default; see below). `-z` opens the worktree in a named zellij session/tab instead of the current terminal (see below). The tab and the Claude session are both named `<prefix>-<ticket>-<feature>`, e.g. `ios-abc-123-list-filter` (see "Task name"). `--dry-run` prints the plan and the name and creates nothing. |
+| `a_c_task_resume [ticket\|branch] [-c] [--provider claude\|codex]` | Jump back into an active task's worktree. No argument -> numbered menu with live dirty / ahead-behind state. |
 | `a_c_task_list` | Read-only table of all active tasks and their worktree state. |
 | `a_c_task_finish [ticket\|branch] [-v] [-f] [--keep-remote]` | Remove the worktree + branch via `a_g_worktree_remove` and drop the task from the registry. Flags pass straight through (`-v` verifies merged first). |
 
+## Select the coding provider
+
+Claude remains the default for new tasks. `--provider claude|codex` selects and
+launches that provider. The legacy `-c`/`--claude` flags launch whichever provider
+is selected. `-p`, `--task-file`, `--task-text`, `-m` and arguments after `--`
+also imply a launch. Without launch flags, start and resume only change directory.
+
+```bash
+# Start Codex in a dedicated task tab, using a specific native model name
+a_c_task_start -r myrepo -t PROJ-123 -f login -b main --provider codex -m my-model -z work
+
+# Forward native options unchanged, including a model name containing spaces
+a_c_task_start -r myrepo -t PROJ-123 -f login --provider codex -- --model "my model" --search
+
+# Return to the worktree and launch the provider saved for it
+a_c_task_resume PROJ-123 -c
+
+# Change and remember the provider used for later launches
+a_c_task_resume PROJ-123 --provider claude -p "review the current diff"
+```
+
+Selection order is explicit `--provider`, the saved provider for that worktree,
+`A_TASK_PROVIDER`, then `claude`. The saved choice lives under
+`$A_TASK_HOME/providers/` (default `~/.a_tasks/providers/`), keyed by the absolute
+worktree path. Older registry rows remain compatible. Repeating start on an
+existing worktree uses its saved choice. Resume without launch flags still only
+changes directory. Resume with launch flags starts an interactive session in that
+worktree; it does not restore a previous conversation. Model and other native
+arguments apply to the current launch and must be supplied again when needed.
+
+Claude launches through `a_c_claude_remote` and keeps the Remote Control,
+session naming and permission behavior described below. Codex launches its native
+interactive CLI from the worktree. It defaults to `--sandbox workspace-write`
+and `--ask-for-approval never`. When `A_AGENT_MODE` is set and no native
+permission override or bypass was supplied, Codex uses the existing
+`a_c_agent_mode resolve` mapping and capability checks instead. Invalid or
+unsupported modes fail without substituting another mode. A native sandbox or approval flag after `--`
+overrides that default independently. `--approve-for-me` and
+`--dangerously-bypass-approvals-and-sandbox` replace both defaults. `--bypass`
+uses the selected provider's native bypass flag, unless native permission flags
+were supplied. Claude permission flags are rejected for Codex and Codex permission
+flags are rejected for Claude. Missing CLIs and unsupported providers fail rather
+than launching a different provider. This adapter currently supports Claude and
+Codex; Gemini CLI and AGY have no task-launch adapter here.
+
+The Claude-specific sections below apply when Claude is selected. Both providers
+use the same `a_c_zellij_tab` path for tab creation. Claude session messaging
+addresses are only printed for Claude launches.
+
 ## Task sources: the "front" scripts
 
-`a_c_task_start` is the generic engine (worktree + registry + launch Claude). On
+`a_c_task_start` is the generic engine (worktree + registry + launch the selected provider). On
 top of it sit thin **fronts**, one per task source. Each one fetches from its own
 source, then calls the same engine, so everything downstream (worktree, zellij,
 permission posture, idempotency) behaves identically no matter where the task

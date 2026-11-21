@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# a_c_claude_loose - make ~/.claude/settings.json loose, so Claude Code stops asking.
+#
+#   a_c_claude_loose            Apply: accept edits, allow common tools, deny a few destructive commands
+#   a_c_claude_loose --status   Show what is set now
+#   a_c_claude_loose --undo     Restore the newest backup made by this command
+#   a_c_claude_loose -n         Dry run: print the result, change nothing
+#
+# It merges into the existing file and keeps every other key. A backup is written next to the
+# file first. It does NOT turn on bypassPermissions, and the deny list stays on.
+# Auto-mode safety checks are separate from this file and are not changed here.
+set -euo pipefail
+
+SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+command -v jq >/dev/null || { echo "jq is missing: mise use -g jq@latest" >&2; exit 1; }
+
+ALLOW='["Bash","Read","Edit","Write","Glob","Grep","WebFetch","WebSearch","NotebookEdit"]'
+DENY='["Bash(rm -rf /)","Bash(rm -rf /:*)","Bash(rm -rf ~)","Bash(rm -rf ~/:*)","Bash(git push --force:*)","Bash(git push -f:*)","Bash(sudo rm:*)","Bash(mkfs:*)","Bash(dd if=:*)"]'
+
+mode=apply
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --status) mode=status ;;
+    --undo) mode=undo ;;
+    -n|--dry-run) mode=dry ;;
+    -h|--help) sed -n 2,11p "$0"; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+mkdir -p "$(dirname "$SETTINGS")"
+[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+
+merge() {
+  jq --argjson allow "$ALLOW" --argjson deny "$DENY" '
+    .permissions.defaultMode = "acceptEdits"
+    | .permissions.allow = ((.permissions.allow // []) + $allow | unique)
+    | .permissions.deny  = ((.permissions.deny  // []) + $deny  | unique)
+  ' "$SETTINGS"
+}
+
+case "$mode" in
+  status)
+    jq '{defaultMode: .permissions.defaultMode, allow: .permissions.allow, deny: .permissions.deny}' "$SETTINGS" ;;
+  dry)
+    merge ;;
+  undo)
+    latest=$(ls -1t "$SETTINGS".bak-loose-* 2>/dev/null | head -1 || true)
+    [ -n "$latest" ] || { echo "no backup found next to $SETTINGS" >&2; exit 1; }
+    cp -p "$latest" "$SETTINGS"; echo "restored $SETTINGS from $latest" ;;
+  apply)
+    backup="$SETTINGS.bak-loose-$(date +%Y%m%d%H%M%S)"
+    cp -p "$SETTINGS" "$backup"
+    tmp=$(mktemp "$SETTINGS.XXXXXX")
+    merge > "$tmp" && mv "$tmp" "$SETTINGS"
+    echo "loosened $SETTINGS (backup: $backup)"
+    echo "restart Claude Code to load it. Undo: a_c_claude_loose --undo" ;;
+esac

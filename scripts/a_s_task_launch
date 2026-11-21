@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Internal provider adapter. Args: provider name worktree prompt bypass -- native args
+set -u
+base="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+A_C_TASK_BASE="$(cd "$base/.." && pwd)"
+. "$base/a_s_task_common.sh"
+[ "$#" -ge 6 ] || { echo 'Task launcher requires provider, name, worktree, prompt, bypass, --' >&2; exit 2; }
+provider="$1"; name="$2"; worktree="$3"; prompt="$4"; bypass="$5"; shift 5
+[ "$1" = -- ] || exit 2
+shift
+a_task_validate_provider "$provider" || exit 2
+command -v "$provider" >/dev/null 2>&1 || { echo "Required provider CLI not found: $provider" >&2; exit 127; }
+cd "$worktree" || exit 1
+args=(); has_perm=0
+case "$provider" in
+    claude)
+        for arg in "$@"; do
+            case "$arg" in
+                --sandbox|--sandbox=*|--ask-for-approval|--ask-for-approval=*|--dangerously-bypass-approvals-and-sandbox|--approve-for-me)
+                    echo "Codex permission flag is invalid for Claude: $arg" >&2; exit 2 ;;
+                --permission-mode|--permission-mode=*|--dangerously-skip-permissions) has_perm=1 ;;
+            esac
+        done
+        args=(-n "$name" "$worktree")
+        [ -z "$prompt" ] || args+=("$prompt")
+        args+=(--)
+        if [ "$has_perm" -eq 0 ]; then
+            if [ "$bypass" = 1 ]; then args+=(--dangerously-skip-permissions)
+            else
+                mode="$(a_task_permission_mode)" || exit 1
+                args+=(--permission-mode "$mode")
+            fi
+        fi
+        exec bash "$base/a_c_claude_remote" "${args[@]}" "$@"
+        ;;
+    codex)
+        has_sandbox=0; has_approval=0
+        for arg in "$@"; do
+            case "$arg" in
+                --permission-mode|--permission-mode=*|--dangerously-skip-permissions|--allow-dangerously-skip-permissions)
+                    echo "Claude permission flag is invalid for Codex: $arg" >&2; exit 2 ;;
+                -s|--sandbox|--sandbox=*) has_sandbox=1 ;;
+                -a|--ask-for-approval|--ask-for-approval=*) has_approval=1 ;;
+                --approve-for-me|--dangerously-bypass-approvals-and-sandbox) has_perm=1 ;;
+            esac
+        done
+        if [ "$has_perm" -eq 0 ] && [ "$has_sandbox" -eq 0 ] && [ "$has_approval" -eq 0 ] \
+           && [ "$bypass" = 0 ] && [ -n "${A_AGENT_MODE:-}" ]; then
+            # Reuse the installed mode mapping, including its capability checks.
+            mode_json="$("$base/a_c_agent_mode" resolve --provider codex --mode "$A_AGENT_MODE")" || exit 1
+            mode_lines="$(printf '%s' "$mode_json" | python3 -c 'import json,sys; print("\n".join(k+"="+json.dumps(v) for k,v in json.load(sys.stdin).items()))')" || exit 1
+            while IFS= read -r setting; do args+=(-c "$setting"); done <<< "$mode_lines"
+            has_perm=1
+        fi
+        if [ "$has_perm" -eq 0 ]; then
+            if [ "$bypass" = 1 ] && [ "$has_sandbox" -eq 0 ] && [ "$has_approval" -eq 0 ]; then
+                args+=(--dangerously-bypass-approvals-and-sandbox)
+            else
+                [ "$has_sandbox" -eq 1 ] || args+=(--sandbox workspace-write)
+                [ "$has_approval" -eq 1 ] || args+=(--ask-for-approval never)
+            fi
+        fi
+        args+=("$@")
+        [ -z "$prompt" ] || args+=(-- "$prompt")
+        exec codex "${args[@]}"
+        ;;
+esac

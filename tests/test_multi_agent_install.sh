@@ -19,7 +19,7 @@ trap 'rm -rf "$TEST_HOME"' EXIT
 export HOME="$TEST_HOME"
 export MY_WORKFLOW_DIR="$REPO_ROOT"
 export SHELL=/bin/bash
-unset A_AGENT_OVERLAY_DIR A_AGENT_ORG_OVERLAY_DIR A_ROOT_DIR A_MACHINE_NAME A_AGENT_MODE
+unset A_AGENT_OVERLAY_DIR A_CLAUDE_OVERLAY_DIR A_AGENT_ORG_OVERLAY_DIR A_ROOT_DIR A_MACHINE_NAME A_AGENT_MODE
 # A fixed name, so the guidance build does not depend on the caller's shell.
 export MACHINE_NAME=TEST-BOX
 
@@ -144,6 +144,18 @@ grep -q 'rendered for \*\*Gemini\*\*, made by \*\*Google\*\*' "$HOME/.gemini/GEM
 ! grep -q 'rendered for \*\*Claude Code\*\*' "$HOME/.codex/AGENTS.md" \
   || fail "Claude runtime identity leaked into Codex guidance"
 
+# The body is rendered once into the shared file; Claude imports it instead of carrying a copy.
+SHARED="$HOME/.agents/AGENTS.md"
+grep -q '^### Knowledge placement' "$SHARED" || fail "shared guidance body missing"
+! grep -q 'rendered for \*\*' "$SHARED" || fail "runtime identity leaked into the shared body"
+grep -qx "@$SHARED" "$HOME/.claude/CLAUDE.md" || fail "Claude guidance does not import the shared body"
+! grep -q '^### Knowledge placement' "$HOME/.claude/CLAUDE.md" || fail "Claude guidance still carries a full copy"
+grep -q '^### Knowledge placement' "$HOME/.codex/AGENTS.md" || fail "Codex lost its full copy"
+A_AGENT_MEMORY_IMPORT="" CLAUDE_MEMORY_FILE="$TEST_HOME/full-claude.md" \
+  "$REPO_ROOT/scripts/a_c_agent_memory" build --provider claude >/dev/null
+grep -q '^### Knowledge placement' "$TEST_HOME/full-claude.md" \
+  || fail "an empty A_AGENT_MEMORY_IMPORT did not fall back to a full copy"
+
 # Mode defaults are opt-in and preserve the memory builder's managed region.
 [ ! -f "$HOME/.codex/config.toml" ] || fail "ordinary install changed Codex permissions"
 MODE_TEST_PATH="$(dirname "$PYTHON_BIN"):$PATH"
@@ -188,4 +200,34 @@ export A_TASK_WT_DIR="$REPO_ROOT/scripts"
   || fail "task resolver ignored unattended mode"
 [ "$(A_AGENT_MODE=auto A_TASK_PERMISSION_MODE=acceptEdits a_task_permission_mode)" = acceptEdits ] \
   || fail "task permission override lost precedence"
+# OpenCode: native agents, AGENTS.md as an alias of the shared guidance, imports listed
+# in opencode.json, and unrelated config (providers, keys) left exactly as it was.
+OC="$HOME/.config/opencode"
+mkdir -p "$OC"
+printf '%s\n' '{"provider":{"x":{"options":{"apiKey":"keep-me"}}},"instructions":["/user/own.md"]}' > "$OC/opencode.json"
+"$REPO_ROOT/install.sh" --link-only --provider opencode >/dev/null
+[ -L "$OC/AGENTS.md" ] && [ "$(readlink "$OC/AGENTS.md")" = "$HOME/.agents/AGENTS.md" ] \
+  || fail "OpenCode AGENTS.md is not a link to the shared guidance"
+for f in "$REPO_ROOT"/agents/*.md; do
+  [ "$(basename "$f")" = README.md ] && continue
+  oc="$OC/agents/$(basename "$f")"
+  [ -f "$oc" ] || fail "OpenCode agent missing: $(basename "$f")"
+  grep -q '^mode: subagent$' "$oc" || fail "OpenCode agent is not a subagent: $(basename "$f")"
+  if grep -q '^model:\|^tools:\|^name:' "$oc"; then fail "Claude-only frontmatter in $(basename "$f")"; fi
+done
+"$PYTHON_BIN" - "$OC/opencode.json" "$HOME/.agents/AGENTS.md" <<'PY' || fail "opencode.json instructions wrong"
+import json, re, sys
+d = json.load(open(sys.argv[1]))
+assert d["provider"]["x"]["options"]["apiKey"] == "keep-me"
+ins = d["instructions"]
+assert "/user/own.md" in ins
+assert sys.argv[2] not in ins  # loaded through the AGENTS.md alias, not twice
+for imp in re.findall(r"^@(/\S+)$", open(sys.argv[2]).read(), re.M):
+    assert imp in ins, imp
+PY
+# A second run changes nothing and does not duplicate entries.
+"$REPO_ROOT/install.sh" --link-only --provider opencode >/dev/null
+"$PYTHON_BIN" -c "import json,sys;i=json.load(open(sys.argv[1]))['instructions'];assert len(i)==len(set(i))" \
+  "$OC/opencode.json" || fail "OpenCode instructions duplicated on rerun"
+
 echo "ok: multi-agent install and guidance"

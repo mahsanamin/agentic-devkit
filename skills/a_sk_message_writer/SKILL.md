@@ -51,6 +51,30 @@ Your job is to:
 - Never blame another team.
 - Never sound defensive.
 
+## Lessons from real corrections
+
+This list grows. When the user corrects a draft, add the lesson here in one line, so the next
+message is better. Keep each line general: no names, companies or projects.
+
+- **Every phrase must be literally true.** "Two things from your side" is wrong when one of the
+  two belongs to another team. Check each word against who actually owns what.
+- **Cut lines that add nothing.** "Went through X against the code" or "Here's the plan" carry
+  no information. If removing a line changes nothing, remove it.
+- **Leave out routine work.** Do not tell the reader things that are obviously part of the job
+  (translations, testing, coordination). They add noise.
+- **On work you own, state decisions.** Ask the requester only for product or UX choices and for
+  things owned by someone else, and name that owner.
+- **Answer every open question.** Check all of the recipient's recent messages, not only the
+  one being replied to.
+- **Reply where the user wants it.** If the user asks for a direct message, do not put it in a
+  thread, and the reverse.
+- **Do not invent a contrast.** "We push, no webhook needed" set up two options that are really
+  the same thing. Answer with what is actually different, or just say what happens.
+- **Leave out ownership notes nobody asked about.** Name an owner only when the reader needs to
+  know whom to ask.
+- **Details go in the system of record.** When a ticket holds the full notes, the chat message
+  points to it and carries only the asks.
+
 ## Self-check before producing any message
 
 Ask yourself:

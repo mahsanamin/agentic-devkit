@@ -2,9 +2,10 @@
 #
 # install.sh - bootstrap agentic-devkit on this machine, in one command.
 #
-#   ./install.sh              Wire shell + install Claude, Codex, and Gemini assets
-#   ./install.sh --provider X Install all, claude, codex, agy, gemini-cli, or gemini
+#   ./install.sh              Wire shell + install Claude, Codex, Gemini, and OpenCode assets
+#   ./install.sh --provider X Install all, claude, codex, agy, gemini-cli, gemini, or opencode
 #   ./install.sh --link-only  Skip shell wiring; just (re)link agent assets
+#   ./install.sh --shell-only  Repair and check shell wiring only
 #   ./install.sh --agent-mode MODE  Install interactive, agentic, or auto defaults
 #   ./install.sh -n           Dry run: print what would change, touch nothing
 #   ./install.sh -f           Force: also repoint links into another known repo
@@ -13,7 +14,7 @@
 #
 # It is idempotent: safe to re-run any time (e.g. after `git pull`) to pick up
 # new skills/agents. It NEVER overwrites an existing shell config and only ever
-# APPENDS a single guarded source line to your shell rc - your personal config
+# maintains a guarded handoff in your shell rc - your personal config
 # is left intact.
 #
 # Two layers get installed:
@@ -36,6 +37,7 @@ done
 REPO_ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 LINK_ONLY=false
+SHELL_ONLY=false
 DRY_RUN=false
 FORCE=false
 PROVIDER=all
@@ -46,6 +48,7 @@ usage() { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//; /^set -euo/d'; }
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --link-only)   LINK_ONLY=true ;;
+        --shell-only)  SHELL_ONLY=true ;;
         --provider|--providers)
             [ "$#" -ge 2 ] || { echo -e "${RED}$1 needs a value${NC}"; exit 1; }
             PROVIDER="$2"; shift ;;
@@ -61,9 +64,13 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$PROVIDER" in
-    all|claude|codex|agy|gemini|gemini-cli) ;;
+    all|claude|codex|agy|gemini|gemini-cli|opencode) ;;
     *) echo -e "${RED}Unknown provider: $PROVIDER${NC}"; exit 1 ;;
 esac
+if $LINK_ONLY && $SHELL_ONLY; then
+    echo '--link-only and --shell-only cannot be combined' >&2
+    exit 1
+fi
 case "$AGENT_MODE_ARG" in
     ""|interactive|agentic|auto) ;;
     *) echo "Invalid --agent-mode: $AGENT_MODE_ARG" >&2; exit 1 ;;
@@ -86,20 +93,20 @@ detect_rc() {
 wire_shell() {
     step "Shell wiring"
 
-    # (a) Already wired in this shell? Then there is nothing to do.
+    # (a) Report inherited wiring, but still establish persistent startup config.
     if [ -n "${MY_WORKFLOW_DIR:-}" ]; then
         say "  ${GREEN}●${NC} already wired ${DIM}(MY_WORKFLOW_DIR=$MY_WORKFLOW_DIR)${NC}"
         if [ "$(cd -P "$MY_WORKFLOW_DIR" 2>/dev/null && pwd)" != "$REPO_ROOT" ]; then
-            say "  ${YELLOW}▲${NC} it points at a different checkout than this one ($REPO_ROOT)"
+            say "  ${YELLOW}▲${NC} this terminal still uses another checkout; open a new terminal after the install"
         fi
-        return
     fi
 
     # Pick the shell rc to wire.
     local rc; rc="$(detect_rc)"
 
-    # (b) Does the rc already source a my_settings profile? Assume that wires us.
-    if [ -f "$rc" ] && grep -Eq 'my_settings/.*\.profile' "$rc"; then
+    # (b) Preserve existing profile wiring. ensure_shell_hook below checks commands
+    # at shell startup; the presence of this line alone does not prove they load.
+    if [ -f "$rc" ] && grep -Eq '^[^#]*(source|\.)[[:space:]].*my_settings/[^ ]*\.profile' "$rc"; then
         say "  ${GREEN}●${NC} $rc already sources a my_settings profile ${DIM}(leaving it untouched)${NC}"
         say "  ${DIM}open a new shell (or 'source $rc') if you haven't since it was added${NC}"
         return
@@ -150,10 +157,111 @@ wire_shell() {
     fi
 }
 
+# A profile can depend on a root repo that is absent, or an exported path can be
+# stale. Keep a guarded handoff in the rc even in those cases. It runs after the
+# user's config and only bootstraps when this checkout's commands did not load.
+ensure_shell_hook() {
+    local rc block tmp begin end
+    rc="$(detect_rc)"
+    begin='# >>> agentic-devkit shell hook >>>'
+    end='# <<< agentic-devkit shell hook <<<'
+    block="$(printf '%s\n' "$begin"
+        printf 'if [ "${MY_WORKFLOW_DIR:-}" != %q ] || [ "$(command -v a_c_doctor)" != %q ] || ! command -v a_c_workflow_doctor >/dev/null 2>&1; then\n' "$REPO_ROOT" "$REPO_ROOT/scripts/a_c_doctor"
+        printf '    export MY_WORKFLOW_DIR=%q\n' "$REPO_ROOT"
+        printf '%s\n' '    export DEVKIT_DIR="$MY_WORKFLOW_DIR"' '    source "$MY_WORKFLOW_DIR/shell/bootstrap.profile"' 'fi' "$end")"
+    if [ -f "$rc" ] && grep -Fq "$begin" "$rc" &&
+        [ "$(sed -n "/^$begin\$/,/^$end\$/p" "$rc")" = "$block" ]; then
+        say "  ${GREEN}●${NC} shell command fallback already wired"
+        return 0
+    fi
+    if $DRY_RUN; then
+        say "  ${DIM}would wire guarded command fallback${NC} in $rc ${DIM}-> $REPO_ROOT${NC}"
+        return 0
+    fi
+    tmp="$(mktemp)"
+    if [ -f "$rc" ]; then
+        local bak
+        bak="$(mktemp "$rc.bak-XXXXXXXX")"
+        (umask 077; cp -p "$rc" "$bak") && chmod go-rwx "$bak"
+        sed "/^$begin\$/,/^$end\$/d" "$rc" > "$tmp"
+    fi
+    printf '\n%s\n' "$block" >> "$tmp"
+    cat "$tmp" > "$rc"
+    rm -f "$tmp"
+    say "  ${GREEN}wired${NC} guarded command fallback in $rc ${DIM}-> $REPO_ROOT${NC}"
+}
+
+# ---------------------------------------------------------------------------
+# 1b. Make the machine config point at THIS checkout.
+# ---------------------------------------------------------------------------
+# Running install.sh from a checkout means "use this one". If the config still names
+# another path (an older clone, a moved or deleted folder), every new shell would load
+# that path instead, or fail when it is gone, and nothing would say why. So repoint it,
+# keep a backup, and say what changed.
+adopt_this_checkout() {
+    local profile root cur target key prefix=""
+    profile="$(settings_profile)"
+    [ -n "$profile" ] || return 0
+    root="${A_ROOT_DIR:-}"
+    [ -n "$root" ] || root="$(read_assignment A_ROOT_DIR "$profile")"
+
+    if [ -n "$root" ] && [ -f "$root/root.config" ]; then
+        # Root-repo machine: the path is DEVKIT_DIR, and a machine-only override goes
+        # in root.local.config, so the shared root.config is never edited from here.
+        key=DEVKIT_DIR
+        target="$root/root.local.config"
+        cur="$(set +u; [ -f "$target" ] && . "$target" >/dev/null 2>&1; . "$root/root.config" >/dev/null 2>&1; printf '%s' "${DEVKIT_DIR:-}")"
+    else
+        key=MY_WORKFLOW_DIR
+        target="$profile"
+        prefix="export "
+        cur="$(read_assignment MY_WORKFLOW_DIR "$profile")"
+    fi
+    [ -n "$cur" ] || return 0
+    [ "$(cd -P "$cur" 2>/dev/null && pwd)" = "$REPO_ROOT" ] && return 0
+
+    step "Devkit path"
+    if [ -d "$cur" ]; then
+        say "  ${YELLOW}▲${NC} $key pointed at another checkout: $cur"
+    else
+        say "  ${YELLOW}▲${NC} $key pointed at $cur, which does not exist"
+    fi
+    if $DRY_RUN; then
+        say "  ${DIM}would set${NC} $key=$REPO_ROOT ${DIM}in $target (with a backup)${NC}"
+    else
+        # The config can hold tokens, so the backup is readable by the owner only.
+        if [ -f "$target" ]; then
+            local bak; bak="$target.bak-$(date +%Y%m%d%H%M%S)"
+            (umask 077; cp -p "$target" "$bak") && chmod go-rwx "$bak"
+        fi
+        save_assignment "$key" "$REPO_ROOT" "$target" "$prefix"
+        say "  ${GREEN}repointed${NC} $key=$REPO_ROOT ${DIM}in $target (old file kept as $target.bak-*)${NC}"
+        [ "$key" = DEVKIT_DIR ] && say "  ${DIM}this is a machine-only override; change DEVKIT_DIR in root.config too if every machine should use this path${NC}"
+    fi
+    export MY_WORKFLOW_DIR="$REPO_ROOT"
+
+    # Scheduled jobs are not ours to rewrite, but they would keep running the old copy.
+    local pl hits=""
+    for pl in "$HOME"/Library/LaunchAgents/*.plist; do
+        [ -f "$pl" ] && grep -q "$cur/" "$pl" && hits="$hits $pl"
+    done
+    if [ -n "$hits" ]; then
+        say "  ${YELLOW}▲${NC} these launchd jobs still run scripts from $cur. Point them at $REPO_ROOT and reload them:"
+        for pl in $hits; do say "      $pl"; done
+    fi
+    [ -d "$cur" ] && say "  ${DIM}$cur is no longer used by this machine; remove it when you are sure nothing in it is unpushed${NC}"
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # 2. Link skills + agents (delegates to the granular installers).
 # ---------------------------------------------------------------------------
 has_provider() {
+    # `all` covers OpenCode only on a machine that has it installed or configured.
+    if [ "$1" = opencode ] && [ "$PROVIDER" = all ]; then
+        command -v opencode >/dev/null 2>&1 || [ -d "$HOME/.config/opencode" ]
+        return
+    fi
     [ "$PROVIDER" = all ] || [ "$PROVIDER" = "$1" ] \
         || { [ "$PROVIDER" = gemini ] && { [ "$1" = agy ] || [ "$1" = gemini-cli ]; }; }
 }
@@ -201,11 +309,18 @@ link_agents() {
         step "Subagents (Gemini CLI)"
         "$REPO_ROOT/scripts/a_c_agents" --provider gemini-cli install ${flags[@]+"${flags[@]}"}
     fi
+
+    # OpenCode reads ~/.claude/skills and ~/.agents/skills itself, so skills need no step.
+    if has_provider opencode; then
+        step "Subagents (OpenCode)"
+        "$REPO_ROOT/scripts/a_c_agents" --provider opencode install ${flags[@]+"${flags[@]}"}
+    fi
 }
 
 # Configured overlays are part of the same agent environment. Installing the
 # core from Claude, Codex, or Gemini must not leave another provider or an
 # overlay behind. Overlay installers receive the same explicit scope and flags.
+OVERLAY_FAILED=""
 install_configured_overlays() {
     local flags=() overlay seen=""
     $DRY_RUN && flags+=(--dry-run)
@@ -218,14 +333,23 @@ install_configured_overlays() {
         case " $seen " in *" $overlay "*) continue ;; esac
         seen="$seen $overlay"
         step "Configured overlay ($(basename "$overlay"))"
-        AGENT_SKIP_MEMORY=1 "$overlay/install.sh" --provider "$PROVIDER" \
-            ${flags[@]+"${flags[@]}"}
+        # An overlay installer uses this checkout's commands (a_c_skills, a_c_agents).
+        # Hand them over explicitly: on a new or moved machine the calling shell has not
+        # loaded this checkout yet, so they are not on its PATH.
+        # A failing overlay must not stop the rest of the install, and must not pass
+        # silently either: finish, then say which one failed and what to try.
+        if ! PATH="$REPO_ROOT/scripts:$PATH" MY_WORKFLOW_DIR="$REPO_ROOT" AGENT_SKIP_MEMORY=1 \
+            "$overlay/install.sh" --provider "$PROVIDER" ${flags[@]+"${flags[@]}"}; then
+            OVERLAY_FAILED="$OVERLAY_FAILED $overlay"
+            say "  ${RED}✗${NC} the installer of $(basename "$overlay") failed; continuing with the rest"
+        fi
     done
 }
 
 memory_provider() {
     case "$PROVIDER" in
         agy|gemini|gemini-cli) echo gemini ;;
+        opencode) echo claude ;;
         *) echo "$PROVIDER" ;;
     esac
 }
@@ -260,6 +384,34 @@ settings_profile() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# Repos that were moved. A folder the config names is gone, but a repo with the
+# same name is nearby (next to this checkout, next to the old folder). Ask before
+# repointing each one; without a terminal, print the one command that does it.
+# ---------------------------------------------------------------------------
+RELOCATED=false
+relocate_moved_repos() {
+    local relocate="$REPO_ROOT/scripts/a_s_relocate_repos" list
+    [ -x "$relocate" ] || return 0
+    list="$("$relocate" --list)" && return 0
+    step "Moved repos"
+    if $DRY_RUN || [ ! -t 0 ]; then
+        printf '%s\n' "$list" | while IFS="$(printf '\t')" read -r key old file found; do
+            if [ -n "$found" ]; then
+                say "  ${YELLOW}▲${NC} $key=$old is gone; found it at ${found//|/ or }"
+            else
+                say "  ${YELLOW}▲${NC} $key=$old is gone, and no copy was found nearby"
+            fi
+        done
+        $DRY_RUN || say "  Repoint them in one go: ${GREEN}$REPO_ROOT/scripts/a_c_doctor --fix${NC}"
+        return 0
+    fi
+    "$relocate" --ask || true
+    # The calling shell may still export the old paths; read the files again.
+    unset A_ROOT_DIR
+    RELOCATED=true
+}
+
 load_machine_config() {
     local profile root
     profile="$(settings_profile)"
@@ -268,9 +420,9 @@ load_machine_config() {
 
     if [ -n "$root" ] && [ -f "$root/root.config" ]; then
         export A_ROOT_DIR="$root"
-        # Not loaded by the shell yet? Then do what shell/bootstrap.profile does:
-        # local first, then root.config, then map the roles.
-        if [ -z "${MY_WORKFLOW_DIR:-}" ]; then
+        # Not loaded by the shell yet, or loaded with paths that were just moved? Then do
+        # what shell/bootstrap.profile does: local first, then root.config, then map the roles.
+        if [ -z "${MY_WORKFLOW_DIR:-}" ] || $RELOCATED; then
             set +u
             [ -f "$root/root.local.config" ] && source "$root/root.local.config"
             source "$root/root.config"
@@ -292,6 +444,11 @@ load_machine_config() {
         [ -n "$name" ] && export A_MACHINE_NAME="$name"
     fi
     [ -n "${A_MACHINE_NAME:-}" ] && export MACHINE_NAME="$A_MACHINE_NAME"
+    # Older profiles name the private overlay A_CLAUDE_OVERLAY_DIR.
+    if [ -z "${A_AGENT_OVERLAY_DIR:-}" ]; then
+        A_AGENT_OVERLAY_DIR="${A_CLAUDE_OVERLAY_DIR:-$(read_assignment A_CLAUDE_OVERLAY_DIR "${profile:-/dev/null}")}"
+        [ -z "$A_AGENT_OVERLAY_DIR" ] || export A_AGENT_OVERLAY_DIR
+    fi
     # This setting is opt-in. Read it even when the shell already knows the
     # machine name, and let an explicit installer flag win over machine defaults.
     if [ -z "${A_AGENT_MODE:-}" ]; then
@@ -306,6 +463,14 @@ load_machine_config() {
     esac
     [ -z "${A_AGENT_MODE:-}" ] || export A_AGENT_MODE
     return 0
+}
+
+install_claude_settings() {
+    has_provider claude || return 0
+    step "Claude Code settings"
+    local flags=()
+    $DRY_RUN && flags+=(--dry-run)
+    "$REPO_ROOT/scripts/a_c_claude_settings" apply ${flags[@]+"${flags[@]}"}
 }
 
 install_agent_mode() {
@@ -645,6 +810,16 @@ main() {
     $DRY_RUN && say "${YELLOW}(dry run - nothing will change)${NC}"
 
     $LINK_ONLY || wire_shell
+    relocate_moved_repos
+    adopt_this_checkout
+    $LINK_ONLY || ensure_shell_hook
+    if $SHELL_ONLY; then
+        $DRY_RUN || "$REPO_ROOT/scripts/a_c_doctor" --shell-only --offline
+        return
+    fi
+    if ! $LINK_ONLY && ! $DRY_RUN; then
+        "$REPO_ROOT/scripts/a_c_doctor" --shell-only --offline
+    fi
     load_machine_config
     link_agents
     install_configured_overlays
@@ -664,7 +839,14 @@ main() {
             MY_WORKFLOW_DIR="$REPO_ROOT" "$REPO_ROOT/scripts/a_c_agent_memory" build \
                 --provider "$(memory_provider)" 2>&1 | sed 's/^/  /'
         fi
+        if has_provider opencode; then
+            local oc_flags=()
+            $DRY_RUN && oc_flags+=(--dry-run)
+            "$REPO_ROOT/scripts/a_s_opencode_config" ${oc_flags[@]+"${oc_flags[@]}"} 2>&1 | sed 's/^/  /'
+        fi
     fi
+    # Settings first, so an explicit agent mode still decides permissions.defaultMode.
+    install_claude_settings
     install_agent_mode
     configure_prompt
     say "\n${GREEN}Done.${NC} ${DIM}Agent assets and guidance installed (provider: $PROVIDER).${NC}"
@@ -673,8 +855,21 @@ main() {
         suggest_extras
     fi
 
+    if [ -n "$OVERLAY_FAILED" ]; then
+        local o
+        say ""
+        for o in $OVERLAY_FAILED; do
+            say "${RED}Overlay install failed:${NC} $o"
+            say "  ${DIM}its installer is usually just older than this devkit. Update it, then run this again:${NC}"
+            say "    ${GREEN}git -C \"$o\" pull && \"$REPO_ROOT/install.sh\"${NC}"
+        done
+    fi
+
     if $DRY_RUN; then
         :
+    elif $RELOCATED; then
+        say ""
+        say "${YELLOW}Repo paths changed.${NC} Open a new terminal (or ${GREEN}source $(detect_rc)${NC}), then restart your agent CLI."
     elif [ -n "${MY_WORKFLOW_DIR:-}" ]; then
         say "${DIM}Shell already active in this terminal.${NC} ${DIM}Restart your agent CLI to reload instructions and skills.${NC}"
     else
@@ -688,3 +883,4 @@ main() {
 }
 
 main
+[ -z "$OVERLAY_FAILED" ]

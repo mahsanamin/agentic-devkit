@@ -57,6 +57,7 @@ a_c_agents --provider gemini-cli install
 | `a_sag_verification_step_generator` | sonnet | Ticket into a numbered, API-first verification checklist |
 | `a_sag_prompt_engineer` | sonnet | Write/optimize prompts, agent/skill instructions, tool descriptions |
 | `a_sag_repo_pitch` | sonnet | Rewrite a repo's README/landing page for first-time clarity, ship as a PR |
+| `a_sag_github_issue_filer` | sonnet | Draft grouped GitHub issues and, after approval of the exact list, file them and add them to a Project board |
 
 ### Autonomous-build harness (Plan, Build, Review, Merge)
 | Agent | Model | Role |
@@ -93,6 +94,8 @@ a_c_agents --provider gemini-cli install
 | `a_sag_claude_session_finder` | haiku | Find a Claude Code session on this machine (live or closed) from a rough description; return the exact `claude --resume` command. Read-only |
 | `a_sag_confluence_finder` | haiku | Search one project's Confluence space and return the matching pages with links. Read-only |
 | `a_sag_jira` | haiku | Do Jira work in a cheap, disposable context: fetch issues, run JQL, and (only when asked) create/comment/transition/assign/link. Keeps noisy Atlassian MCP calls off the main context. Read by default |
+| `a_sag_slack_reader` | sonnet | Read Slack in a cheap context: channels, threads, search, canvases. Read-only, never posts |
+| `a_sag_slack_writer` | sonnet | Write to Slack: drafts by default, sends or schedules only on an explicit instruction |
 
 ### Notes / external writing
 | Agent | Model | Role |

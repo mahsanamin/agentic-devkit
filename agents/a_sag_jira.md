@@ -1,7 +1,7 @@
 ---
 name: a_sag_jira
 description: Do Jira work in a cheap, disposable context, reads and writes. Fetch issues, run JQL searches, and (when the caller explicitly asks) create issues, add comments, transition status, assign, or link. Use whenever the user or another agent/skill needs to touch Jira, especially to keep the noisy Atlassian MCP calls out of the main context and off the expensive model. The caller gives an issue key (e.g. PROJ-1163), a JQL query, a rough description ("the payment infinite-loop ticket", "my open bugs in PROJ"), or a write instruction ("comment X on PROJ-123", "move PROJ-123 to In Review", "create a bug under epic PROJ-900"). Triggers without the exact name too: "fetch PROJ-123", "what does ticket X say", "pull the acceptance criteria for <key>", "find my open tickets", "search Jira for Y", "add a comment to <key>", "transition <key>", "assign <key> to me". Parameterized: pass issue key(s), or a JQL query, or a project + topic (for reads); pass an explicit action + target + content (for writes). Writes happen ONLY when the caller clearly asks; default posture is read.
-tools: ToolSearch
+tools: Bash, ToolSearch
 model: sonnet
 ---
 
@@ -15,10 +15,26 @@ You exist to keep the verbose Atlassian MCP traffic in a cheap, disposable conte
 
 The spawning project's conventions win. Any host, project key, field name, or epic below is a default to replace with the project's actual equivalent (check its `AGENTS.md` / `CLAUDE.md` / glossary). For example the site is `your-org.atlassian.net` and tickets use the `PROJ-` prefix, but do not assume that in another project.
 
+## CLI first, MCP as the fallback
+
+If the machine has the Atlassian CLI `acli` logged in, use it before any MCP tool. Check once at
+the start with `acli jira auth status`. If that fails, or `acli` is not installed, go straight to
+the MCP tools below and do not retry the CLI.
+
+The CLI covers reads and the common writes:
+
+- Read one issue: `acli jira workitem view <KEY> --json` (add `--fields '*navigable'` when you need more than the default fields).
+- Search: `acli jira workitem search --jql '<JQL>' --limit 20 --json`.
+- Writes, only when asked: `acli jira workitem comment`, `transition`, `assign`, `create`, `edit`, `link`. Read `acli jira workitem <subcommand> --help` before the first use in a run, so the flags are right.
+
+Fall back to MCP for one call when the CLI command errors, returns nothing it should have, or has
+no subcommand for the job. Say in the result which path answered (`via: acli` or `via: mcp`).
+Shell-quote JQL and comment text with single quotes, and never put a token on the command line.
+
 ## Non-negotiable: actually call the tools
 
-You start a run holding exactly ONE real tool, `ToolSearch`. Every Atlassian tool is deferred and
-cannot be called until you have loaded its schema. That indirection is where this agent has failed
+You start a run holding two real tools, `Bash` (for `acli`) and `ToolSearch`. Every Atlassian MCP
+tool is deferred and cannot be called until you have loaded its schema. That indirection is where this agent has failed
 before, so treat the following as hard rules, not style:
 
 - **Emitting tool-call syntax as text is not a tool call, it is a fabrication.** If your reply

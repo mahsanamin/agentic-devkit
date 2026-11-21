@@ -95,7 +95,9 @@ source ~/.zshrc     # activate it in this terminal
 
 That is the whole install. The default is deliberately cross-provider no matter which agent runs
 it: core assets, configured overlays, and generated global guidance are refreshed together. It is
-safe to re-run, preserves handwritten guidance, and never overwrites your shell config. Then
+safe to re-run and preserves handwritten guidance and shell settings. It maintains a guarded
+startup hook so commands still load if an existing profile depends on a missing root repo,
+and verifies command loading in a fresh shell. Then
 **restart your agent CLIs** so they reload their assets.
 
 Check it worked:
@@ -130,7 +132,16 @@ If you also have a private overlay (see below), update it the same way — `git 
 loads the devkit, that the machine has a name, that the folders behind `cd_p` / `cd_w` / `cd_g`
 exist, whether the devkit, the overlays or the root repo have updates waiting (it fetches from
 each origin, `--offline` skips that), that every skill and agent is linked, and that the agent
-guidance matches its sources. Everything it flags comes with the command that fixes it.
+guidance matches its sources. Missing assets, links aimed at an old checkout, and stale generated
+guidance all point to the same machine-specific `install.sh` command, which refreshes them
+together. Truly orphaned links still point to `a_c_doctor --fix`, which removes only links no
+configured repo provides.
+Use `a_c_doctor --fix --shell-only` to repair and verify command loading without refreshing
+agent assets. If the command is unavailable, run `./install.sh --shell-only` from this checkout.
+For an overlay, use `a_c_doctor set private overlay` or `a_c_doctor set org overlay`. Doctor
+goes straight to the matching local path prompt, then asks for the Git URL only if the folder
+needs cloning. Leave the path blank to skip. For a missing root repo, run
+`a_c_doctor --configure root`.
 `a_c_workflow_doctor` adds the checks that need your live shell, such as functions loaded from
 the wrong clone, and then runs `a_c_doctor`.
 
@@ -169,7 +180,7 @@ layers:
 
 Only the core is required. Add the others when you feel the need.
 
-`a_c_agent_memory` composes all three global instruction files from those sources:
+`a_c_agent_memory` renders those sources once into `~/.agents/AGENTS.md`. Claude's global file imports it; Codex and Gemini get full copies of the same render:
 
 ```bash
 a_c_agent_memory status   # what sources exist, are all files in sync?

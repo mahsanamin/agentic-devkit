@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Merge the devkit's layered Claude Code settings into ~/.claude/settings.json.
+
+Layers, applied in order (a later layer wins on a scalar, lists are unioned):
+
+    1. <devkit>/config/claude-settings/settings.json      generic base, every machine
+    2. <private overlay>/config/claude-settings.json       personal additions
+    3. <org overlay>/config/claude-settings.json           company additions
+    4. <overlay>/machine/<MACHINE_NAME>.claude-settings.json  one machine only
+
+Missing layers are skipped. Strings may use ${VAR} for any root.config value
+(DEVKIT_DIR, ORG_REPOS_DIR, HOME, ...); a list entry whose variable is unset on
+this machine is dropped, so a path-bound rule never lands half-resolved.
+
+Applying keeps every key the layers do not mention. Permission and autoMode
+lists are unioned with what is already there, so rules approved locally survive;
+every other managed value replaces the local one. The old file is backed up as
+settings.json.before-settings-* next to it.
+
+Settings only name plugins; they do not install them. So apply also registers
+each managed marketplace (re-adding one whose source changed) and installs each
+enabled plugin that is missing, through the claude CLI. A failure, such as no
+access to a private marketplace repo, is a warning, not an error.
+
+    a_c_claude_settings apply [--dry-run] [--no-plugins]
+                                            merge the layers, then install missing plugins
+    a_c_claude_settings show                print the merged layers
+    a_c_claude_settings diff                show what apply would change
+    a_c_claude_settings layers              list the layer files and whether they exist
+    a_c_claude_settings replicate           print the commands for another machine
+"""
+
+import argparse
+import difflib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+DEVKIT = Path(__file__).resolve().parent.parent
+# Lists unioned with the live file instead of replaced, so local approvals survive.
+UNION_PATHS = {
+    ("permissions", "allow"),
+    ("permissions", "deny"),
+    ("permissions", "ask"),
+    ("permissions", "additionalDirectories"),
+    ("autoMode", "allow"),
+    ("autoMode", "soft_deny"),
+}
+CONFIG_KEYS = ("DEVKIT_DIR", "PRIVATE_DEVKIT_DIR", "ORG_DEVKIT_DIR", "MACHINE_NAME",
+               "ORG_REPOS_DIR", "PERSONAL_REPOS_DIR", "GLOBAL_REPOS_DIR", "AGENTIC_SETUP_DIR",
+               "ROOT_BASE_DIR", "ORG_BRAIN_DIR", "PRIVATE_BRAIN_DIR")
+# Objects that describe one thing as a whole: a managed one replaces the local one,
+# so a marketplace switched from a directory to GitHub keeps no stale "path".
+REPLACE_PATHS = {("statusLine",), ("extraKnownMarketplaces", "*")}
+UNSET = object()
+
+
+def replaced(path):
+    return any(len(p) == len(path) and all(a in ("*", b) for a, b in zip(p, path)) for p in REPLACE_PATHS)
+
+
+def machine_config():
+    """Root config values, read the way shell/bootstrap.profile reads them."""
+    values = {key: os.environ.get(key, "") for key in CONFIG_KEYS}
+    root = os.environ.get("A_ROOT_DIR", "")
+    if root and Path(root, "root.config").is_file():
+        script = ('set +u; [ -f "$1/root.local.config" ] && . "$1/root.local.config"; . "$1/root.config"; '
+                  + "; ".join(f'printf "%s\\0" "${{{key}:-}}"' for key in CONFIG_KEYS))
+        out = subprocess.run(["bash", "-c", script, "_", root], capture_output=True, text=True, check=True).stdout
+        values.update({k: v for k, v in zip(CONFIG_KEYS, out.split("\0")) if v})
+    values["PRIVATE_DEVKIT_DIR"] = values["PRIVATE_DEVKIT_DIR"] or os.environ.get("A_AGENT_OVERLAY_DIR", "")
+    values["ORG_DEVKIT_DIR"] = values["ORG_DEVKIT_DIR"] or os.environ.get("A_AGENT_ORG_OVERLAY_DIR", "")
+    values["MACHINE_NAME"] = values["MACHINE_NAME"] or os.environ.get("A_MACHINE_NAME", "")
+    # The running script is the devkit in use, whatever an older config says.
+    values["DEVKIT_DIR"] = str(DEVKIT)
+    values["HOME"] = str(Path.home())
+    return values
+
+
+def layer_files(config):
+    files = [DEVKIT / "config" / "claude-settings" / "settings.json"]
+    overlays = [config[k] for k in ("PRIVATE_DEVKIT_DIR", "ORG_DEVKIT_DIR") if config[k]]
+    files += [Path(o, "config", "claude-settings.json") for o in overlays]
+    if config["MACHINE_NAME"]:
+        files += [Path(o, "machine", f"{config['MACHINE_NAME']}.claude-settings.json") for o in overlays]
+    return files
+
+
+def expand(value, config):
+    if isinstance(value, str):
+        missing = []
+
+        def sub(match):
+            found = config.get(match.group(1)) or os.environ.get(match.group(1), "")
+            if not found:
+                missing.append(match.group(1))
+            return found
+
+        result = re.sub(r"\$\{([A-Z_][A-Z0-9_]*)\}", sub, value)
+        if missing:
+            print(f"skipped (unset {', '.join(missing)}): {value}", file=sys.stderr)
+            return UNSET
+        return result
+    if isinstance(value, list):
+        return [v for v in (expand(item, config) for item in value) if v is not UNSET]
+    if isinstance(value, dict):
+        return {k: v for k, v in ((k, expand(item, config)) for k, item in value.items()) if v is not UNSET}
+    return value
+
+
+def union(left, right):
+    return left + [item for item in right if item not in left]
+
+
+def merge(base, layer, path=(), union_all=True):
+    """Deep-merge layer into base. Between layers every list is unioned; against the
+    live file only UNION_PATHS are, so a managed list like autoMode.environment
+    replaces a stale local one."""
+    for key, value in layer.items():
+        here = path + (key,)
+        if isinstance(value, dict) and isinstance(base.get(key), dict) and not replaced(here):
+            merge(base[key], value, here, union_all)
+        elif isinstance(value, list) and isinstance(base.get(key), list) and (union_all or here in UNION_PATHS):
+            base[key] = union(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def managed(config):
+    result = {}
+    for path in layer_files(config):
+        if path.is_file():
+            try:
+                layer = json.loads(path.read_text())
+            except json.JSONDecodeError as error:
+                raise ValueError(f"malformed layer {path}: {error}")
+            merge(result, expand(layer, config))
+    return result
+
+
+def settings_path():
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+
+
+def render(data):
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def planned(config):
+    path = settings_path()
+    current_text = path.read_text() if path.exists() else "{}\n"
+    try:
+        current = json.loads(current_text or "{}")
+    except json.JSONDecodeError as error:
+        raise ValueError(f"refusing to edit malformed {path}: {error}")
+    return path, current_text, render(merge(json.loads(json.dumps(current)), managed(config), union_all=False))
+
+
+def apply(config, dry_run):
+    path, before, after = planned(config)
+    if before == after:
+        print(f"unchanged: {path}")
+        return
+    if path.is_symlink():
+        raise ValueError(f"refusing to replace a symlink: {path}")
+    if dry_run:
+        print(f"would update: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        # Private backups may contain credentials; never print their contents.
+        fd, backup = tempfile.mkstemp(prefix=path.name + ".before-settings-", dir=path.parent)
+        os.close(fd)
+        shutil.copyfile(path, backup)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(after)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    print(f"updated: {path} (restart Claude Code to load it)")
+
+
+def marketplace_argument(source):
+    kind = source.get("source")
+    if kind == "github":
+        return source.get("repo")
+    if kind == "directory":
+        return source.get("path")
+    return source.get("url")
+
+
+def same_source(wanted, registered):
+    return all(registered.get(k) == v for k, v in wanted.items() if k in ("source", "repo", "path", "url"))
+
+
+def claude_json(*args):
+    out = subprocess.run(["claude", "plugin", *args, "--json"], capture_output=True, text=True, timeout=120)
+    return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else []
+
+
+def run_claude(args, dry_run):
+    print(("would run: " if dry_run else "running: ") + "claude " + " ".join(args))
+    if dry_run:
+        return
+    out = subprocess.run(["claude", *args], capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL)
+    if out.returncode != 0:
+        detail = (out.stderr or out.stdout).strip().splitlines()
+        print(f"warning: failed, skipped: {detail[-1] if detail else 'exit ' + str(out.returncode)}", file=sys.stderr)
+
+
+def sync_plugins(config, dry_run):
+    """Make the managed marketplaces and enabled plugins exist on this machine."""
+    if not shutil.which("claude"):
+        print("claude CLI not found; plugins not installed", file=sys.stderr)
+        return
+    wanted = managed(config)
+    if dry_run:
+        # Even `claude plugin list` initializes a fresh home. Read its registry
+        # files directly so a preview cannot create provider configuration.
+        plugins = settings_path().parent / "plugins"
+        def registry(name):
+            path = plugins / name
+            return json.loads(path.read_text()) if path.exists() else {}
+        registered = {name: entry.get("source", {})
+                      for name, entry in registry("known_marketplaces.json").items()}
+        installed = set(registry("installed_plugins.json").get("plugins", {}))
+    else:
+        registered = {m.get("name"): m for m in claude_json("marketplace", "list")}
+        installed = {p.get("id") for p in claude_json("list")}
+    for name, entry in wanted.get("extraKnownMarketplaces", {}).items():
+        source = entry.get("source", {})
+        argument = marketplace_argument(source)
+        if not argument or (name in registered and same_source(source, registered[name])):
+            continue
+        if name in registered:
+            run_claude(["plugin", "marketplace", "remove", name], dry_run)
+        run_claude(["plugin", "marketplace", "add", argument], dry_run)
+    for plugin, enabled in wanted.get("enabledPlugins", {}).items():
+        if enabled is True and plugin not in installed:
+            run_claude(["plugin", "install", plugin], dry_run)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", choices=["apply", "show", "diff", "layers", "replicate"])
+    parser.add_argument("-n", "--dry-run", action="store_true")
+    parser.add_argument("--no-plugins", action="store_true", help="only write settings.json")
+    args = parser.parse_args()
+    config = machine_config()
+    if args.command == "apply":
+        apply(config, args.dry_run)
+        if not args.no_plugins:
+            sync_plugins(config, args.dry_run)
+    elif args.command == "show":
+        sys.stdout.write(render(managed(config)))
+    elif args.command == "diff":
+        path, before, after = planned(config)
+        sys.stdout.writelines(difflib.unified_diff(
+            before.splitlines(True), after.splitlines(True), str(path), str(path) + " (after apply)"))
+    elif args.command == "layers":
+        for path in layer_files(config):
+            print(f"{'found  ' if path.is_file() else 'absent '} {path}")
+    else:
+        # Paths differ per machine, so print the role variables, not this box's paths.
+        print("On a machine that already has the devkit installed, run:\n")
+        print('git -C "$DEVKIT_DIR" pull')
+        for key in ("PRIVATE_DEVKIT_DIR", "ORG_DEVKIT_DIR"):
+            if config[key]:
+                print(f'[ -n "${key}" ] && git -C "${key}" pull')
+        print("a_c_claude_settings apply")
+        print("\nOr pull and rerun ./install.sh in the devkit, which applies them too.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        sys.exit(f"a_c_claude_settings: {error}")
