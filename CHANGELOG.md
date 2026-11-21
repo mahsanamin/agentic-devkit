@@ -2,6 +2,10 @@
 
 One entry per release. The newest is at the top.
 
+## v1.2.1 (2026-11-21)
+
+- a_c_task_start: a ticket is optional, and Jira is not assumed (fixes #5)
+
 ## v1.2.0 (2026-11-21)
 
 - Keep a private checkout path and a machine name out of public files

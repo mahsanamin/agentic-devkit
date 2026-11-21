@@ -106,10 +106,11 @@ reaches other people, re-check every negative claim: a wrong "not done" reads as
 subagent actually looked at before repeating it. "Not on `development`" is not "not done": check
 open PRs and release branches first.
 
-**"Is it done" is judged against the ticket, not the brief.** Read the ticket's own Done when list,
-its Out of scope section and its latest comments before answering. A session brief, another
-session's goal, or your own research can describe more than the ticket asks for, and that extra is
-not a reason to say "not done".
+**"Is it done" is judged against the ticket, not the brief.** When the work has a ticket or
+issue, read its own Done when list, its Out of scope section and its latest comments before
+answering. A session brief, another session's goal, or your own research can describe more than
+the ticket asks for, and that extra is not a reason to say "not done". When there is no ticket,
+judge against what the user actually asked for.
 
 ### Before sending a value to more places, find who reads it
 

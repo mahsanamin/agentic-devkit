@@ -307,18 +307,27 @@ a_c_task_start -y -r myrepo -t 942 -f "list filter" -b main -c -p "read the tick
 
 ## Branch naming
 
-**A ticket is mandatory.** Passed with `-t` it is normalized; omitted, the script prompts and
-**cancels on an empty answer**, so there is no unticketed path. Maintenance work with no natural
-ticket needs one created first — `a_c_idea_start` takes no ticket but makes a scratch directory,
-not a repo worktree, so it is not a substitute.
+**A ticket is optional.** Not every project uses Jira, and some work has no ticket at all.
 
-`<TICKET>-<feature-slug>`. The ticket is normalized: `PROJ-123`, `proj123`, a bare
-`123` (which takes the default project key — `A_TASK_DEFAULT_KEY` overrides it, and the fallback
-is set in `scripts/a_s_task_common.sh`, so read it there rather than assuming), or a pasted
-Jira browse URL like `https://your-org.atlassian.net/browse/PROJ-1009` all resolve
-to the key. The feature text is slugified (lowercased, non-alphanumeric runs
-collapse to single dashes). Example: ticket `123` + "Add login page" ->
-`PROJ-123-add-login-page`.
+- `-t` accepts a Jira key or browse link (`PROJ-123`, `proj123`,
+  `https://your-org.atlassian.net/browse/PROJ-1009`), a GitHub issue (`#12`, `owner/repo#12`, or
+  the issue link, which become `GH-12`), or any other tracker's id (a ClickUp or Linear id is kept
+  as it is, cleaned into a slug). A bare `123` takes `A_TASK_DEFAULT_KEY` when that is set, else
+  it becomes `GH-123` in a repo hosted on GitHub.
+- Without `-t`, the script asks for a ticket only when the repo has a tracker it can see: Jira
+  credentials or `A_TASK_DEFAULT_KEY` for Jira, an `origin` on github.com for GitHub. Press Enter
+  for no ticket. `A_TASK_TRACKERS=none` turns the question off; `A_TASK_TRACKERS="jira github"`
+  sets the list by hand.
+- It never asks with `-y`, without a terminal, or when a brief is passed with `--task-file` or
+  `--task-text`.
+- With no ticket, the task is named from `-f`, or from the first line of the brief, or the script
+  asks for a short name. That name is the task id: the branch is `feature/<name>`, and
+  `a_c_task_resume <name>` resumes it. With none of these in auto mode, it stops and says so.
+
+Branches are `<prefix>/<ticket>-<feature-slug>`, or `<prefix>/<task-name>` with no ticket. The
+feature text is slugified (lowercased, non-alphanumeric runs collapse to single dashes). Example:
+ticket `123` with `A_TASK_DEFAULT_KEY=PROJ` + "Add login page" -> `feature/proj-123-add-login-page`.
+The prefix is `hotfix` for a Jira bug or a GitHub issue labelled as a bug, and `feature` otherwise.
 
 ## Jira auto-fill (optional)
 
@@ -326,6 +335,7 @@ When Jira credentials are present, `a_c_task_start` fetches the ticket's title
 and pre-fills the feature name (press Enter to accept the suggested slug, or type
 your own). Without credentials it silently falls back to the manual prompt, so
 the feature is purely additive. `-f/--feature` skips the fetch entirely.
+A GitHub issue (`GH-12`) is read the same way through `gh` when it is installed and signed in.
 
 Put these in `~/.my_secrets` or `~/.a_secs` (both sourced by `generic.profile`,
 neither ever committed):

@@ -183,6 +183,25 @@ exit 1
         start('PROJ-11', '--provider', 'claude', '-z', 'work',
               extra={'SHELL': str(bindir / 'test-shell'), 'TAB_CAPTURE': str(tab_capture), 'A_AGENT_MODE': 'agentic'})
         check(last()['provider'] == 'claude' and 'auto' in last()['args'], f'{shell}: detached launcher resolves modes without workflow env')
+        # No ticket: the task is named from -f or the brief, and nothing asks for a ticket.
+        write(bindir / 'gh', '#!/usr/bin/env bash\nexit 1\n')
+        def start_free(*args, **kwargs):
+            return invoke('a_c_task_start', '-r', repo, '-b', 'main', '-y', '--provider', 'codex', *args, **kwargs)
+        start_free('-f', 'Docs migration')
+        check(last()['cwd'].endswith('/feature-docs-migration'), f'{shell}: ticketless task named from -f: {last()}')
+        invoke('a_c_task_resume', 'docs-migration', '-c')
+        check(last()['cwd'].endswith('/feature-docs-migration'), f'{shell}: ticketless task resumes by name')
+        start_free('--task-text', '# Move the old notes\nthen tidy up')
+        check(last()['cwd'].endswith('/feature-move-the-old-notes'), f'{shell}: ticketless task named from the brief: {last()}')
+        count = len(calls())
+        result = start_free(success=False)
+        check(len(calls()) == count and 'No ticket and no task name' in result.stdout + result.stderr,
+              f'{shell}: no ticket and no name fails clearly')
+        # Other trackers: a GitHub issue reference and an id that is not a Jira key.
+        start('#42', '--provider', 'codex')
+        check(last()['cwd'].endswith('/feature-gh-42-login'), f'{shell}: GitHub issue reference: {last()}')
+        start('CU-86c0abc', '--provider', 'codex')
+        check(last()['cwd'].endswith('/feature-cu-86c0abc-login'), f'{shell}: other tracker id kept whole: {last()}')
         print(f'PASS: {shell} task provider integration')
 print(f'Passed {checks} assertions; no model/API calls')
 PY
