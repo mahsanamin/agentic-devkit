@@ -38,8 +38,9 @@ fi
 # elsewhere.
 A_TASK_WT_DIR="${A_TASK_WT_DIR:-${A_C_TASK_BASE:-${A_C_WORKFLOW_DIR:-${MY_WORKFLOW_DIR:-}}}/scripts}"
 
-# Default Jira project key, used when the user types a bare ticket number.
-A_TASK_DEFAULT_KEY="${A_TASK_DEFAULT_KEY:-WU}"
+# Default Jira project key, used when the user types a bare ticket number. Empty by
+# default: set it only where Jira is the tracker.
+A_TASK_DEFAULT_KEY="${A_TASK_DEFAULT_KEY:-}"
 
 # Matrix "digital rain" splash for a_c_task_start. Delegates to the standalone
 # bash script scripts/a_s_task_fx, run as its OWN process so the bash-only
@@ -153,43 +154,78 @@ a_task_slug() {
 # "PROJ-123" / "wu123" / "WU123", or a pasted Jira URL such as
 # https://your-org.atlassian.net/browse/PROJ-1009 (and with ?query/#fragment).
 # Echoes "KEY-NUM" or fails (rc 1).
+# Which issue trackers this repo can use, space separated: "jira" and/or "github".
+# Empty means none, so a task starts without asking for a ticket. A_TASK_TRACKERS
+# overrides the detection ("none" turns the ticket prompt off).
+a_task_trackers() {
+    local repo="${1:-.}" out="" url
+    if [ -n "${A_TASK_TRACKERS:-}" ]; then
+        [ "$A_TASK_TRACKERS" = "none" ] || printf '%s' "$A_TASK_TRACKERS"
+        return 0
+    fi
+    if [ -n "${A_TASK_DEFAULT_KEY:-}" ] || { [ -n "${A_JIRA_EMAIL:-}" ] && [ -n "${A_JIRA_TOKEN:-}" ]; }; then
+        out="jira"
+    fi
+    url="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+    case "$url" in *github.com*) out="${out:+$out }github" ;; esac
+    printf '%s' "$out"
+}
+
+# Title and labels of GitHub issue <num> in <repo>, as "title<TAB>labels". Needs gh;
+# fails quietly without it, offline, or when the issue does not exist.
+a_task_gh_issue() {
+    local repo="$1" num="$2"
+    command -v gh >/dev/null 2>&1 || return 1
+    (cd "$repo" 2>/dev/null && gh issue view "$num" --json title,labels \
+        -q '.title + "\t" + ([.labels[].name] | join(" "))' 2>/dev/null)
+}
+
+# Normalize what the user typed as a ticket into a task id. Returns 1 only for empty
+# input. Accepted forms:
+#   PROJ-123, proj123, a Jira browse URL      -> PROJ-123
+#   123 (bare number)                         -> <A_TASK_DEFAULT_KEY>-123 when a key is set,
+#                                                GH-123 when the repo is on GitHub
+#                                                (A_TASK_GITHUB=1, set by a_c_task_start)
+#   #12, owner/repo#12, a GitHub issue URL    -> GH-12
+#   anything else (a ClickUp, Linear, or other tracker id, a note id) -> a clean slug
 a_task_norm_ticket() {
     local raw defkey cand key num
     raw="$(printf '%s' "$1" | tr -d '[:space:]')"
     [ -z "$raw" ] && return 1
     defkey="$(printf '%s' "${2:-$A_TASK_DEFAULT_KEY}" | tr '[:lower:]' '[:upper:]')"
 
-    # bare number -> default project key
+    # bare number -> default Jira key, else a GitHub issue, else the number itself
     case "$raw" in
         ''|*[!0-9]*) : ;;
-        *) printf '%s-%s' "$defkey" "$raw"; return 0 ;;
+        *)
+            if [ -n "$defkey" ]; then printf '%s-%s' "$defkey" "$raw"
+            elif [ "${A_TASK_GITHUB:-0}" = "1" ]; then printf 'GH-%s' "$raw"
+            else printf '%s' "$raw"; fi
+            return 0 ;;
     esac
 
-    # Pull an embedded KEY-NUM token out (e.g. from a pasted Jira URL). The LAST
-    # match wins, so a host like foo-2.example.com can't shadow .../browse/PROJ-9.
-    # If there is no dashed token, treat the whole input as the candidate (so
-    # "WU123" without a dash still works via the optional-dash regex below).
-    cand="$(printf '%s' "$raw" | grep -oE '[A-Za-z]{1,15}-[0-9]+' | tail -1)"
-    [ -z "$cand" ] && cand="$raw"
+    # GitHub issue: #12, owner/repo#12, or .../issues/12
+    num="$(printf '%s' "$raw" | sed -nE 's,^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#([0-9]+)$,\2,p; s,^.*github[^/]*/[^/]+/[^/]+/issues/([0-9]+)([/?#].*)?$,\1,p' | head -1)"
+    if [ -n "$num" ]; then printf 'GH-%s' "$num"; return 0; fi
 
-    # When the pattern does not match, sed leaves the string unchanged, so an
-    # extracted part equal to the whole candidate means "no match".
-    key="$(printf '%s' "$cand" | sed -E 's/^([A-Za-z]+)-?([0-9]+)$/\1/')"
-    num="$(printf '%s' "$cand" | sed -E 's/^([A-Za-z]+)-?([0-9]+)$/\2/')"
-    if [ -n "$key" ] && [ -n "$num" ] && [ "$key" != "$cand" ] && [ "$num" != "$cand" ]; then
+    # Jira key, alone or inside a pasted URL. The key must be a whole token, so an id like
+    # CU-86c0abc is not cut down to CU-86. The LAST match wins, so a host like
+    # foo-2.example.com can't shadow .../browse/PROJ-9.
+    cand="$(printf '%s' "$raw" | grep -oE '(^|[^A-Za-z0-9])[A-Za-z]{1,15}-[0-9]+([^A-Za-z0-9]|$)' | tail -1 \
+        | sed -E 's/^[^A-Za-z]+//; s/[^0-9]+$//')"
+    # Without a dash (proj123) only when that is the whole input.
+    [ -z "$cand" ] && printf '%s' "$raw" | grep -qE '^[A-Za-z]{1,15}[0-9]+$' && cand="$raw"
+    if [ -n "$cand" ]; then
+        key="$(printf '%s' "$cand" | sed -E 's/^([A-Za-z]+)-?([0-9]+)$/\1/')"
+        num="$(printf '%s' "$cand" | sed -E 's/^([A-Za-z]+)-?([0-9]+)$/\2/')"
         printf '%s-%s' "$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')" "$num"
         return 0
     fi
-    # Free-form task id for NON-Jira sources (mdnest notes, ad-hoc tasks). Off by
-    # default so the interactive Jira prompt still rejects typos and re-asks; a
-    # front that legitimately has no Jira key sets A_TASK_FREEFORM_TICKET=1 and we
-    # accept a clean slug as the branch id verbatim.
-    if [ "${A_TASK_FREEFORM_TICKET:-0}" = "1" ]; then
-        local ff
-        ff="$(printf '%s' "$raw" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
-        [ -n "$ff" ] && { printf '%s' "$ff"; return 0; }
-    fi
-    return 1
+
+    # Any other tracker's id, or a note id: keep it as a clean slug.
+    cand="$(printf '%s' "$raw" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+    [ -n "$cand" ] || return 1
+    printf '%s' "$cand"
 }
 
 # Fetch a Jira issue's summary (title) for <key>, to pre-fill a feature name.

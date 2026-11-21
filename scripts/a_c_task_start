@@ -8,7 +8,10 @@
 #        [--dry-run] [-- native-provider-args]
 #
 # -r/--repo selects a repository; omitted, use the picker (current repo with -y).
-# -t/--ticket accepts a ticket, bare number, or browse URL.
+# -t/--ticket is optional. It accepts a Jira key or link, a GitHub issue (#12 or its link),
+# a bare number, or any other tracker's id. Without -t the script asks only when the repo has
+# a tracker (Jira set up, or a GitHub remote), and Enter means no ticket. With no ticket the
+# task is named from -f, or the first line of --task-file/--task-text.
 # -f/--feature supplies the branch feature slug. -b/--base chooses its base.
 # -c/--claude launches the selected provider. Legacy default: Claude Remote Control.
 # --provider explicitly selects and launches claude or codex. Otherwise reuse the
@@ -27,12 +30,15 @@
 # --dry-run prints the plan, creates nothing, and launches nothing. -h shows help.
 # Arguments after -- pass unchanged to the selected provider and imply -c.
 #
-# Existing tasks are reused. The task name is <repo-prefix>-<ticket>-<feature>,
+# Existing tasks are reused. The task name is <repo-prefix>-<ticket>-<feature> (with no ticket,
+# <repo-prefix>-<task name>),
 # lowercased; aliases come from A_TASK_PREFIX_ALIASES. See docs/task.md for details.
 # The script is sourced by sourced/task.sh so the worktree cd stays in your shell.
 #
 # Examples:
 # a_c_task_start -r myrepo -t PROJ-123 -f login -b main -c
+# a_c_task_start -r myrepo -t '#42' -b main -c
+# a_c_task_start -r myrepo -f "docs migration" -b main -c -z work --task-file brief.md
 # a_c_task_start -r myrepo -t PROJ-123 -f login --provider codex -m my-model
 # a_c_task_start -r myrepo -t PROJ-123 -f login --provider codex -z work -- --search
 #
@@ -117,38 +123,64 @@ _a_c_task_start_main() {
         echo -e "${A_T_RED}Not a git repository: $repo${A_T_NC}"; return 1
     fi
 
-    # 2. ticket --------------------------------------------------------------
-    local ticket="" raw
+    # 2. ticket (optional) ---------------------------------------------------
+    # A ticket is asked for only when the repo has a tracker set up (Jira credentials or
+    # a default key, or a GitHub remote). Enter at the prompt, -y, a task brief, or no
+    # tracker at all starts the task without one; the feature name then names it.
+    local ticket="" raw trackers hint="" A_TASK_GITHUB=0
+    trackers="$(a_task_trackers "$repo")"
+    case " $trackers " in *" github "*) A_TASK_GITHUB=1 ;; *) A_TASK_GITHUB=0 ;; esac
     if [ -n "$ticket_arg" ]; then
-        ticket="$(a_task_norm_ticket "$ticket_arg")" \
+        ticket="$(A_TASK_GITHUB="$A_TASK_GITHUB" a_task_norm_ticket "$ticket_arg")" \
             || { echo -e "${A_T_RED}Invalid ticket: $ticket_arg${A_T_NC}"; return 1; }
-    else
-        while [ -z "$ticket" ]; do
-            printf "Jira ticket or URL (PROJ-123, 123 -> %s-123, or paste the link): " "$A_TASK_DEFAULT_KEY" >&2
-            read -r raw
-            [ -z "$raw" ] && { echo -e "${A_T_YELLOW}Cancelled.${A_T_NC}"; return 1; }
-            ticket="$(a_task_norm_ticket "$raw")" \
-                || { echo -e "${A_T_RED}Could not parse '$raw'. Try PROJ-123 or 123.${A_T_NC}"; ticket=""; }
-        done
+    elif [ -n "$trackers" ] && [ "$auto_flag" -eq 0 ] && [ -t 0 ] \
+            && [ -z "$task_file_arg" ] && [ -z "$task_text_arg" ]; then
+        case " $trackers " in *" jira "*) hint="PROJ-123 or a Jira link" ;; esac
+        case " $trackers " in *" github "*) hint="${hint:+$hint, }#12 or a GitHub issue link" ;; esac
+        printf "Ticket (%s, any other tracker's id), or Enter for none: " "$hint" >&2
+        read -r raw
+        if [ -n "$raw" ]; then
+            ticket="$(A_TASK_GITHUB="$A_TASK_GITHUB" a_task_norm_ticket "$raw")" \
+                || { echo -e "${A_T_RED}Could not read '$raw' as a ticket.${A_T_NC}"; return 1; }
+        fi
     fi
 
     # 3. feature -> branch ---------------------------------------------------
-    local feat slug branch summary suggested
+    local feat slug branch summary suggested gh_info="" itype btype ticketless=0
+    case "$ticket" in GH-*) gh_info="$(a_task_gh_issue "$repo" "${ticket#GH-}" 2>/dev/null)" ;; esac
     if [ -n "$feat_arg" ]; then
         feat="$feat_arg"
-    else
-        # Pre-fill the feature name from the Jira ticket title when Jira creds
-        # are configured (A_JIRA_EMAIL/A_JIRA_TOKEN). Silent manual fallback
-        # when unconfigured, offline, or the ticket is not found.
-        suggested=""
-        summary="$(a_task_jira_summary "$ticket" 2>/dev/null)"
-        if [ -n "$summary" ]; then
-            suggested="$(a_task_slug "$summary")"
-            echo -e "  ${A_T_DIM}Jira ${ticket}:${A_T_NC} $summary" >&2
+    elif [ -z "$ticket" ]; then
+        # No ticket: the task is named from the brief's first line, or asked for.
+        if [ -n "$task_text_arg" ]; then
+            feat="$(printf '%s\n' "$task_text_arg" | sed -E 's/^[#[:space:]]+//' | grep -m1 . || true)"
+        elif [ -n "$task_file_arg" ] && [ -r "$task_file_arg" ]; then
+            feat="$(sed -E 's/^[#[:space:]]+//' "$task_file_arg" | grep -m1 . || true)"
         fi
-        if [ "$auto_flag" -eq 1 ]; then
-            # Auto mode: take the Jira-title slug (or ticket-only if no title /
-            # no Jira creds) without prompting.
+        if [ -z "$feat" ] && [ "$auto_flag" -eq 0 ] && [ -t 0 ]; then
+            printf "Short name for this task (e.g. add login page): " >&2
+            read -r feat
+        fi
+        [ -n "$(a_task_slug "$feat")" ] || {
+            echo -e "${A_T_RED}No ticket and no task name. Pass -f <name>, -t <ticket>, or --task-file <brief>.${A_T_NC}"
+            return 1
+        }
+    else
+        # Pre-fill the feature name from the ticket title: Jira when its credentials are
+        # set (A_JIRA_EMAIL/A_JIRA_TOKEN), a GitHub issue when gh can read it. Silent
+        # manual fallback when unconfigured, offline, or the ticket is not found.
+        suggested=""
+        case "$ticket" in
+            GH-*) summary="$(printf '%s' "$gh_info" | cut -f1)" ;;
+            *)    summary="$(a_task_jira_summary "$ticket" 2>/dev/null)" ;;
+        esac
+        if [ -n "$summary" ]; then
+            suggested="$(a_task_slug "$summary" | cut -c1-60 | sed -E 's/-+$//')"
+            echo -e "  ${A_T_DIM}${ticket}:${A_T_NC} $summary" >&2
+        fi
+        if [ "$auto_flag" -eq 1 ] || [ ! -t 0 ]; then
+            # Auto mode: take the title slug (or ticket-only if there is no title)
+            # without prompting.
             feat="$suggested"
             [ -n "$suggested" ] && echo -e "  ${A_T_DIM}feature (auto):${A_T_NC} $suggested" >&2
         elif [ -n "$suggested" ]; then
@@ -161,20 +193,30 @@ _a_c_task_start_main() {
         fi
     fi
     slug="$(a_task_slug "$feat")"
+    if [ -z "$ticket" ]; then
+        # No ticket: the slug is the task id, so the branch is <prefix>/<slug>.
+        ticketless=1
+        ticket="$(printf '%s' "$slug" | cut -c1-50 | sed -E 's/-+$//')"
+        slug=""
+    fi
     # Branch naming: <prefix>/<lowercased-ticket>[-<slug>], where the prefix is
     # "hotfix" for bug/defect tickets and "feature" for everything else. The type
-    # comes from the Jira issue type when creds are available and falls back to
-    # "feature" when it can't be fetched (offline / no creds / freeform id).
-    # Override explicitly with A_TASK_BRANCH_TYPE=feature|hotfix.
-    local itype btype
+    # comes from the Jira issue type or the GitHub issue labels when they can be read,
+    # and falls back to "feature". Override with A_TASK_BRANCH_TYPE=feature|hotfix.
     if [ -n "${A_TASK_BRANCH_TYPE:-}" ]; then
         btype="$A_TASK_BRANCH_TYPE"
+    elif [ -n "$gh_info" ]; then
+        case " $(printf '%s' "$gh_info" | cut -f2 | tr '[:upper:]' '[:lower:]') " in
+            *bug*|*defect*|*regression*|*incident*|*hotfix*) btype="hotfix" ;;
+            *) btype="feature" ;;
+        esac
     else
-        itype="$(a_task_jira_issuetype "$ticket" 2>/dev/null)"
+        itype=""
+        case "$ticket" in [A-Z]*-[0-9]*) itype="$(a_task_jira_issuetype "$ticket" 2>/dev/null)" ;; esac
         btype="$(a_task_branch_type "$itype")"
     fi
     branch="$(a_task_branch_name "$ticket" "$slug" "$btype")"
-    if [ -z "$slug" ]; then
+    if [ "$ticketless" -eq 0 ] && [ -z "$slug" ]; then
         echo -e "${A_T_YELLOW}No feature name given; branch is ticket-only:${A_T_NC} $branch"
     fi
 

@@ -42,9 +42,11 @@ The reasoning is for when he asks why, pushes back, or is deciding rather than d
 If the answer is nothing, say "Nothing." and stop. When work is finished, say "It's done." first,
 then at most one line of proof. Do not tack on side items he has to decode.
 
-A follow-up exists only as a ticket. A note in a PR body or comment disappears with the PR, so
-never present it as a follow-up. If something really needs doing later, create the ticket (or ask
-"this needs a ticket, want me to create it?"); otherwise leave it out.
+A note in a PR body or comment disappears with the PR, so never present it as a follow-up. If
+something really needs doing later, put it where the project tracks work: the tracker it already
+uses (Jira, GitHub issues, ClickUp, or another), or ask "this needs a ticket, want me to create
+it?". Check which tracker the project uses first, and never assume Jira. If the project has no
+tracker, say the follow-up once, plainly, in the reply. Otherwise leave it out.
 
 ## "Give me the URL" means the URL, on its own
 
