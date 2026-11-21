@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for a_c_disk_cleanup (safe disk space reclaim).
+
+  Runs the cleanup DAILY at 03:00: caches, old logs, brew leftovers, the
+  npm / pip caches (deep tier), and Docker in its safe mode. Safe mode never
+  touches running containers or volumes; see both script headers for the
+  full contract. Replaces the older Docker-only com.ahsan.docker-cleanup.
+
+  Install / manage (first point ProgramArguments at your own checkout):
+    cp launchd/com.ahsan.disk-cleanup.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.ahsan.disk-cleanup.plist 2>/dev/null
+    launchctl load   ~/Library/LaunchAgents/com.ahsan.disk-cleanup.plist
+    launchctl list | grep disk-cleanup        # confirm it is registered
+    launchctl start  com.ahsan.disk-cleanup   # run it now, on demand
+
+  Change the schedule: edit StartCalendarInterval below, then unload + load.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ahsan.disk-cleanup</string>
+
+    <!-- -y: no prompt, launchd has no terminal. Drop deep to keep npm/pip caches. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ahsan/path/to/agentic-devkit/scripts/a_c_disk_cleanup</string>
+        <string>--apply</string>
+        <string>--deep</string>
+        <string>-y</string>
+    </array>
+
+    <!-- launchd starts with a bare PATH; give it docker, brew, npm (nvm: bump on a node upgrade) + the usual dirs. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/Users/ahsan/.nvm/versions/node/v24.15.0/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Daily 03:00. A run missed while asleep fires on next wake. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- launchd's own capture (the scripts also tee to ~/Library/Logs). -->
+    <key>StandardOutPath</key>
+    <string>/Users/ahsan/Library/Logs/a_c_disk_cleanup.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ahsan/Library/Logs/a_c_disk_cleanup.launchd.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

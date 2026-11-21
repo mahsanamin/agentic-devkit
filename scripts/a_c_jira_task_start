@@ -16,6 +16,7 @@
 #     a_c_github_issue_fix  a GitHub issue      -> auto start + read-the-issue.
 #                           Unlike this front it needs no -r: an issue URL names
 #                           its own repo, so it resolves the clone itself.
+#     a_c_github_issue_start is a compatibility name for a_c_github_issue_fix.
 #
 #   a_c_jira_task_start <ticket-url | PROJ-123 | 123> -r <repo> [feature] [options]
 #

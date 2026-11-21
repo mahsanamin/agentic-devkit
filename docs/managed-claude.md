@@ -93,7 +93,7 @@ public repo is not something you want to discover later.
 that is hand-typed and version-controlled nowhere. Skills and agents survive a laptop swap; the
 rules do not. That is the last unmanaged thing in an otherwise managed setup.
 
-`a_c_agent_memory` fixes it by composing every provider's native global file from sources that do live in git:
+`a_c_agent_memory` fixes it by composing the guidance from sources that do live in git. It renders the body once, into `~/.agents/AGENTS.md`. Claude's `~/.claude/CLAUDE.md` is a short stub that adds the runtime identity and imports that file. Codex and Gemini cannot import it, so they get full copies of the same render (`A_AGENT_MEMORY_IMPORT` picks which providers get the stub; empty means full copies everywhere).
 
 | Block | Source | Layer |
 |---|---|---|

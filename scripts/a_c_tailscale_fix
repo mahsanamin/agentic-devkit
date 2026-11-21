@@ -1,0 +1,191 @@
+#!/bin/bash
+# a_c_tailscale_fix: repair a Tailscale node whose tunnel is up but whose OS
+# route into it is gone.
+#
+# The symptom: `tailscale status` lists the peer as active and `tailscale ping`
+# gets a pong, but a plain `ping`, ssh or curl to the peer's 100.x address times
+# out. `tailscale ping` goes through the daemon, so it works without any OS
+# route. Everything else follows the routing table, and when the route for the
+# Tailscale range (100.64.0.0/10) has dropped out, the OS sends those packets to
+# the LAN gateway, which throws them away. A long-running daemon can lose that
+# route after heavy memory pressure, a sleep, or a network change, and it does
+# not put it back on its own.
+#
+# The check: ask the OS which interface it would use for a Tailscale address.
+# If that is not the tunnel interface holding this node's 100.x address, the
+# route is broken. The fix restarts the daemon, which rebuilds all of its
+# routes, then checks again.
+#
+# Usage:
+#   a_c_tailscale_fix [peer]            check, restart the daemon if broken, verify
+#   a_c_tailscale_fix [peer] --check    only report; exit 1 if broken
+#   a_c_tailscale_fix [peer] --route    re-add the missing route instead of restarting
+#   a_c_tailscale_fix [peer] --force    restart even when the route looks fine
+#   a_c_tailscale_fix -h                show this help
+#
+# Arguments:
+#   [peer]   a peer's 100.x address or name to ping as the final proof.
+#            [default: none, only the route is checked]
+#
+# Options:
+#   -c, --check   diagnose only, change nothing.                       [default: off]
+#   -r, --route   add 100.64.0.0/10 on the tunnel interface instead of
+#                 restarting the daemon. No connections drop, but other
+#                 routes the daemon manages (subnets, exit node) are not
+#                 rebuilt.                                             [default: off]
+#   -f, --force   restart the daemon even if the route looks right.    [default: off]
+#   -h, --help    show this help
+#
+# Restarting and adding a route need root, so this asks for your sudo password.
+# On macOS it restarts the running launchd daemon (Homebrew's
+# homebrew.mxcl.tailscale or the standalone com.tailscale.tailscaled) with
+# `launchctl kickstart -k`; on Linux it runs `systemctl restart tailscaled`.
+# Homebrew refuses to run under sudo, so `sudo brew services restart` does not
+# work. A node run by the Mac App Store app (a network extension, no daemon)
+# cannot be restarted from here: quit and reopen the app instead.
+#
+# Examples:
+#   a_c_tailscale_fix                   # fix it if broken
+#   a_c_tailscale_fix 100.101.102.103   # same, then prove it by pinging that peer
+#   a_c_tailscale_fix --check           # is the route broken right now?
+
+set -u
+prog="${0##*/}"
+usage() { sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Tailscale's own service address. It always sits inside 100.64.0.0/10, so the
+# route the OS picks for it is the route every peer gets.
+PROBE=100.100.100.100
+CGNAT=100.64.0.0/10
+
+mode=fix peer=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -c|--check) mode=check ;;
+    -r|--route) mode=route ;;
+    -f|--force) mode=force ;;
+    -h|--help)  usage; exit 0 ;;
+    -*)         echo "$prog: unknown option: $1" >&2; exit 2 ;;
+    *)          peer="$1" ;;
+  esac
+  shift
+done
+
+command -v tailscale >/dev/null 2>&1 || { echo "$prog: tailscale not found on PATH" >&2; exit 3; }
+os="$(uname -s)"
+
+# The tunnel interface is whichever one holds this node's 100.x address.
+tunnel_if() {
+  local ip; ip="$(tailscale ip -4 2>/dev/null | head -1)"
+  [ -n "$ip" ] || return 1
+  if [ "$os" = Darwin ]; then
+    ifconfig | awk -v ip="$ip" '/^[a-z]/ {i=$1; sub(":","",i)} $1=="inet" && $2==ip {print i; exit}'
+  else
+    ip -o -4 addr show | awk -v ip="$ip" '{split($4,a,"/")} a[1]==ip {print $2; exit}'
+  fi
+}
+
+# The interface the OS would send a Tailscale address out of.
+route_if() {
+  if [ "$os" = Darwin ]; then
+    route -n get "$PROBE" 2>/dev/null | awk '$1=="interface:" {print $2}'
+  else
+    ip route get "$PROBE" 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="dev") {print $(i+1); exit}}'
+  fi
+}
+
+route_ok() {
+  local t r; t="$(tunnel_if)"; r="$(route_if)"
+  [ -n "$t" ] && [ "$t" = "$r" ]
+}
+
+report() {
+  local t r; t="$(tunnel_if)"; r="$(route_if)"
+  echo "tunnel interface: ${t:-none (is tailscale up?)}"
+  echo "route for $CGNAT goes out: ${r:-none}"
+  if [ -n "$t" ] && [ "$t" = "$r" ]; then echo "route: OK"; else echo "route: BROKEN"; fi
+}
+
+ping_peer() {
+  [ -n "$peer" ] || return 0
+  local w=-W; [ "$os" = Darwin ] && w=-t
+  if ping -c 2 "$w" 5 "$peer" >/dev/null 2>&1; then
+    echo "ping $peer: OK"
+  else
+    echo "ping $peer: FAILED"
+    echo "  try: tailscale ping $peer   (if that pongs, the OS path is still wrong)"
+    return 1
+  fi
+}
+
+# Every launchd job that looks like a Tailscale daemon, as "pid label".
+mac_daemons() {
+  launchctl print system 2>/dev/null |
+    awk '$1 ~ /^([0-9]+|-)$/ && NF>=3 && tolower($3) ~ /tailscale/ {print $1, $3}'
+}
+
+restart_daemon() {
+  if [ "$os" = Darwin ]; then
+    local running count
+    running="$(mac_daemons | awk '$1 ~ /^[0-9]+$/ && $1>0 && $2 !~ /NetworkExtension|network-extension/ {print $2; exit}')"
+    count="$(mac_daemons | wc -l | tr -d ' ')"
+    if [ -z "$running" ]; then
+      echo "$prog: no running tailscaled launchd job found." >&2
+      echo "  If the Tailscale app runs this node, quit and reopen the app." >&2
+      return 1
+    fi
+    [ "$count" -gt 1 ] && echo "note: $count Tailscale launchd entries are registered; more than one manager can fight over routes:" && mac_daemons | sed 's/^/  /'
+    echo "restarting system/$running"
+    sudo launchctl kickstart -k "system/$running"
+  else
+    echo "restarting tailscaled"
+    sudo systemctl restart tailscaled
+  fi
+}
+
+add_route() {
+  local t; t="$(tunnel_if)"
+  [ -n "$t" ] || { echo "$prog: no tunnel interface, so no route to add. Restart instead." >&2; return 1; }
+  echo "adding $CGNAT via $t"
+  if [ "$os" = Darwin ]; then
+    sudo route -n add -net "$CGNAT" -interface "$t"
+  else
+    sudo ip route replace "$CGNAT" dev "$t"
+  fi
+}
+
+# The daemon needs a moment after a restart to bring the tunnel and routes back.
+wait_for_route() {
+  local _
+  for _ in $(seq 1 20); do route_ok && return 0; sleep 1; done
+  return 1
+}
+
+report
+case "$mode" in
+  check)
+    route_ok && ping_peer; exit $? ;;
+  fix)
+    if route_ok; then
+      ping_peer && { echo "nothing to fix"; exit 0; }
+      echo "route is fine but the peer did not answer; rerun with --force to restart anyway"
+      exit 1
+    fi
+    restart_daemon || exit 1 ;;
+  force)
+    restart_daemon || exit 1 ;;
+  route)
+    route_ok && { echo "route already in place"; ping_peer; exit $?; }
+    add_route || exit 1 ;;
+esac
+
+if wait_for_route; then
+  echo "--- after"
+  report
+  ping_peer
+else
+  echo "--- after"
+  report
+  echo "$prog: the route did not come back within 20s" >&2
+  exit 1
+fi

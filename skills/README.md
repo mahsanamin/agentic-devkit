@@ -40,6 +40,7 @@ Background for all three: [`docs/managed-claude.md`](../docs/managed-claude.md).
 
 | Skill | What it does |
 |-------|--------------|
+| `a_sk_blog_writer` | Plan, draft, or edit blog posts that are very easy to understand: lead with the answer, short sentences, lists and visuals, sourced claims. Follows the repo's own blog rules when present; self-checks with `scripts/a_s_blog_lint`. |
 | `a_sk_message_writer` | Draft / sharpen professional work messages (Slack, email, escalations) from a VP of Engineering standpoint. |
 | `a_sk_routine_instruction_writer` | Turn a rough task description into a clean, self-contained instruction prompt for an autonomous or scheduled routine. |
 | `a_sk_review_pr` | Review a GitHub PR end-to-end from just its URL: resolve the repo to your existing local clone (cache, then a `cd_w` scan, never a duplicate clone, via `scripts/a_s_resolve_repo`), worktree the PR's real head branch updated to latest, run the project's `review-pr` (or the global `global-pr-reviewer`), auto-post the bar-clearing comments, then tear the worktree and local branch down (remote never touched). Params: `pr` (URL / `owner/repo#N`), `post`, `reviewer`. |

@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Add shared guidance to OpenCode V2 without copying it or touching provider settings."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dry-run", action="store_true")
+args = parser.parse_args()
+home = Path.home()
+config = home / ".config/opencode/opencode.json"
+shared = home / ".agents/AGENTS.md"
+if not shared.is_file():
+    if args.dry_run:
+        print(f"would configure OpenCode instructions after shared guidance is built: {shared}")
+        raise SystemExit(0)
+    raise SystemExit(f"Shared guidance not found: {shared}")
+
+# OpenCode does not interpret @imports. Resolve absolute file imports from the
+# shared guidance into separate instructions. The shared file remains the one
+# source for its body, and imports update automatically whenever setup runs.
+imports = [Path(p) for p in re.findall(r"^@(/[^\n\r]+)$", shared.read_text(), re.M)]
+managed = [str(p) for p in imports if p.is_file()]
+config.parent.mkdir(parents=True, exist_ok=True)
+# Global guidance: alias to the shared file, as Claude imports it. No copy.
+agents_md = config.parent / "AGENTS.md"
+if agents_md.is_symlink() and agents_md.resolve() == shared.resolve():
+    pass
+elif agents_md.exists() and not agents_md.is_symlink():
+    print(f"skip AGENTS.md: {agents_md} is a real file; move it aside to link the shared guidance")
+elif not args.dry_run:
+    if agents_md.is_symlink():
+        agents_md.unlink()
+    agents_md.symlink_to(shared)
+data = json.loads(config.read_text()) if config.exists() else {}
+existing = data.get("instructions", [])
+# Only remove paths previously managed by this helper, retaining any user entries.
+state = config.parent / ".devkit-instructions.json"
+previous = json.loads(state.read_text()) if state.exists() else []
+def same(p):
+    return os.path.realpath(os.path.expanduser(p))
+
+drop = {same(p) for p in previous + managed} | {same(str(shared))}
+new = [p for p in existing if same(p) not in drop] + managed
+data["instructions"] = new
+if "$schema" not in data:
+    data["$schema"] = "https://opencode.ai/config.json"
+if args.dry_run:
+    print(f"would configure OpenCode instructions: {len(managed)} shared/import files")
+else:
+    # Do not print or rewrite credential values outside this config object.
+    config.write_text(json.dumps(data, indent=2) + "\n")
+    os.chmod(config, 0o600)
+    state.write_text(json.dumps(managed, indent=2) + "\n")
+    print(f"configured OpenCode instructions: {len(managed)} shared/import files")

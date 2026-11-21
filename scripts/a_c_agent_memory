@@ -8,11 +8,16 @@
 #                    [-n|--dry-run] [-F|--force]
 #
 # The content still comes from memory/core-rules.md plus the optional private
-# overlay and brain. Each provider gets its native global instruction filename:
+# overlay and brain. It is rendered ONCE, into a provider-neutral shared file, and
+# each provider gets its native global instruction filename:
 #
-#   Claude Code  ~/.claude/CLAUDE.md
-#   Codex        ~/.codex/AGENTS.md
-#   Gemini/AGY   ~/.gemini/GEMINI.md
+#   shared       ~/.agents/AGENTS.md     the whole body, no runtime identity
+#   Claude Code  ~/.claude/CLAUDE.md     runtime identity + @import of the shared file
+#   Codex        ~/.codex/AGENTS.md      full copy (Codex cannot import files)
+#   Gemini/AGY   ~/.gemini/GEMINI.md     full copy (Gemini limits absolute imports)
+#
+# A_AGENT_MEMORY_IMPORT lists the providers that get the import stub (default
+# "claude"). Set it empty to give every provider a full copy, as before.
 #
 # Existing hand-written text outside the managed markers is preserved in each
 # file by a_c_claude_memory. That older command remains the single-file engine
@@ -74,7 +79,27 @@ runtime_for() {
   esac
 }
 
+SHARED_FILE="${AGENT_SHARED_MEMORY_FILE:-$HOME/.agents/AGENTS.md}"
+IMPORTERS=" ${A_AGENT_MEMORY_IMPORT-claude} "
+
+part_for() {
+  case "$IMPORTERS" in *" $1 "*) echo stub ;; *) echo full ;; esac
+}
+
 rc=0
+# The shared body goes first: a stub that imports it must never point at a stale copy.
+need_shared=0
+for p in "${providers[@]}"; do
+  if [ "$(part_for "$p")" = stub ]; then need_shared=1; fi
+done
+if [ "$need_shared" -eq 1 ]; then
+  printf '\n==> shared (%s)\n' "$SHARED_FILE"
+  AGENT_MEMORY_PART=body \
+    MY_WORKFLOW_DIR="$CORE_DIR" \
+    CLAUDE_MEMORY_FILE="$SHARED_FILE" \
+    "$ENGINE" ${args[@]+"${args[@]}"} || rc=$?
+fi
+
 for p in "${providers[@]}"; do
   target="$(target_for "$p")"
   runtime="$(runtime_for "$p")"
@@ -82,6 +107,8 @@ for p in "${providers[@]}"; do
   runtime_maker="${runtime#*|}"
   printf '\n==> %s (%s)\n' "$p" "$target"
   AGENT_RUNTIME_PROVIDER="$p" \
+    AGENT_MEMORY_PART="$(part_for "$p")" \
+    AGENT_SHARED_MEMORY_FILE="$SHARED_FILE" \
     AGENT_RUNTIME_NAME="$runtime_name" \
     AGENT_RUNTIME_MAKER="$runtime_maker" \
     MY_WORKFLOW_DIR="$CORE_DIR" \

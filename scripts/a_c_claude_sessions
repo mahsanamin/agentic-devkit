@@ -83,7 +83,8 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 HOME = os.path.expanduser("~")
-PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
+CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I
 )
@@ -1456,7 +1457,7 @@ def _json_feed(ttl=4):
 # so a refresh only parses what was appended since. The first build is the only
 # expensive one.
 # --------------------------------------------------------------------------- #
-INDEX_DB = os.path.expanduser("~/.claude/.cache/session-search.db")
+INDEX_DB = os.path.join(CLAUDE_DIR, ".cache", "session-search.db")
 
 # Per session. Generous enough to hold a long conversation's prompts, bounded so
 # one runaway session cannot dominate the index.

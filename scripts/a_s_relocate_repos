@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+#
+# a_s_relocate_repos - find configured repos that were moved, and point the config at them.
+#
+# Usage:
+#   a_s_relocate_repos --list    one line per missing repo: KEY<TAB>old path<TAB>file<TAB>found paths (|-separated)
+#   a_s_relocate_repos --ask     ask before fixing each one (falls back to --list without a terminal)
+#   a_s_relocate_repos --apply   fix every missing repo that was found in exactly one place
+#
+# A repo counts as moved when its configured folder is gone and a folder with the same name,
+# holding the same kind of repo, exists somewhere nearby: next to this devkit, next to where
+# it used to be, or in the repo tiers. Every rewrite keeps a backup of the file it changes.
+#
+# Exit status: 0 when nothing is missing (or everything missing was fixed), 1 otherwise.
+
+set -uo pipefail
+
+MODE="${1:---list}"
+case "$MODE" in --list|--ask|--apply) ;; *) echo "usage: a_s_relocate_repos --list|--ask|--apply" >&2; exit 2 ;; esac
+if [ "$MODE" = --ask ] && [ ! -t 0 ]; then MODE=--list; fi
+
+DEVKIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+read_assignment() {
+    local key="$1" file="$2" line
+    [ -f "$file" ] || return 0
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$key=" "$file" | tail -n 1)" || true
+    line="${line#*=}"
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//")"
+    printf '%s' "${line/#\~/$HOME}"
+}
+
+# Replace KEY's line in FILE, or append one. Backs the file up first, owner-readable only.
+save_assignment() {
+    local key="$1" value="$2" file="$3" prefix="$4" tmp bak
+    if [ -f "$file" ]; then
+        bak="$file.bak-$(date +%Y%m%d%H%M%S)"
+        [ -e "$bak" ] || { (umask 077; cp -p "$file" "$bak") && chmod go-rwx "$bak"; }
+    fi
+    if [ -f "$file" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$key=" "$file"; then
+        tmp="$(mktemp)"
+        awk -v key="$key" -v line="$prefix$key=\"$value\"" '
+            $0 ~ "^[[:space:]]*(export[[:space:]]+)?" key "=" { print line; next } { print }
+        ' "$file" > "$tmp" && cat "$tmp" > "$file"
+        rm -f "$tmp"
+    else
+        printf '%s%s="%s"\n' "$prefix" "$key" "$value" >> "$file"
+    fi
+}
+
+# Does DIR hold the kind of repo KIND names?
+has_marker() {
+    local dir="$1" kind="$2"
+    case "$kind" in
+        root)    [ -f "$dir/root.config" ] ;;
+        devkit)  [ -f "$dir/install.sh" ] && [ -f "$dir/scripts/a_c_doctor" ] ;;
+        overlay) [ -d "$dir/skills" ] || [ -d "$dir/agents" ] ;;
+        *)       [ -e "$dir/.git" ] ;;
+    esac
+}
+
+# Every folder named like OLD that holds a KIND repo, one per line.
+find_candidates() {
+    local old="${1%/}" kind="$2" base anc roots=() r c seen=" "
+    base="$(basename "$old")"
+    anc="$(dirname "$old")"
+    while [ -n "$anc" ] && [ "$anc" != / ] && [ ! -d "$anc" ]; do anc="$(dirname "$anc")"; done
+    roots+=("$(dirname "$DEVKIT")" "$(dirname "$(dirname "$DEVKIT")")")
+    [ "$anc" != / ] && roots+=("$anc" "$(dirname "$anc")")
+    for r in "${a_dir_p_repos:-}" "${a_dir_w_repos:-}" "${a_dir_g_repos:-}" \
+             "${PERSONAL_REPOS_DIR:-}" "${ORG_REPOS_DIR:-}" "${GLOBAL_REPOS_DIR:-}" "$HOME"; do
+        [ -n "$r" ] && roots+=("$r")
+    done
+    for r in "${roots[@]}"; do
+        [ -d "$r" ] && [ "$r" != / ] || continue
+        find "$r" -maxdepth 3 \( -name node_modules -o -name .git -o -name Library -o -name .Trash \) -prune \
+            -o -type d -name "$base" -print 2>/dev/null
+    done | while IFS= read -r c; do
+        c="$(cd -P "$c" 2>/dev/null && pwd)" || continue
+        case "$seen" in *" $c "*) continue ;; esac
+        seen="$seen$c "
+        has_marker "$c" "$kind" && printf '%s\n' "$c"
+    done
+}
+
+PROFILE=""
+for f in "$HOME/my_settings/a_configs.profile" "$HOME/my_settings/configs.profile"; do
+    [ -f "$f" ] && { PROFILE="$f"; break; }
+done
+[ -n "$PROFILE" ] || exit 0
+
+missing=0 fixed=0
+
+# Handle one configured path. Prints, asks or applies depending on MODE.
+check_key() {
+    local key="$1" value="$2" kind="$3" file="$4" prefix="$5" found n answer
+    [ -n "$value" ] && [ ! -d "$value" ] || return 0
+    missing=$((missing+1))
+    found="$(find_candidates "$value" "$kind" | paste -sd '|' -)"
+    n=0; [ -n "$found" ] && n="$(printf '%s\n' "$found" | awk -F'|' '{ print NF }')"
+    case "$MODE" in
+        --list)
+            printf '%s\t%s\t%s\t%s\n' "$key" "$value" "$file" "$found" ;;
+        --apply)
+            [ "$n" -eq 1 ] || return 0
+            save_assignment "$key" "$found" "$file" "$prefix"
+            echo "  moved   $key: $value -> $found  (in $file, backup kept)"
+            fixed=$((fixed+1)) ;;
+        --ask)
+            if [ "$n" -eq 0 ]; then
+                echo "  $key=$value does not exist, and no moved copy was found nearby."
+                return 0
+            fi
+            echo "  $key=$value does not exist."
+            if [ "$n" -eq 1 ]; then
+                read -r -p "  Found it at $found. Use that? [Y/n] " answer || answer=n
+                case "$answer" in ""|y|Y|yes) ;; *) return 0 ;; esac
+            else
+                echo "  Found more than one copy:"
+                local i=1 c
+                while IFS= read -r c; do echo "    $i) $c"; i=$((i+1)); done <<EOF
+$(printf '%s' "$found" | tr '|' '\n')
+EOF
+                read -r -p "  Which one? (number, Enter to skip) " answer || answer=
+                [[ "$answer" =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] && [ "$answer" -lt "$i" ] || return 0
+                found="$(printf '%s' "$found" | tr '|' '\n' | sed -n "${answer}p")"
+            fi
+            save_assignment "$key" "$found" "$file" "$prefix"
+            echo "  saved   $key=\"$found\" in $file (backup kept)"
+            fixed=$((fixed+1)) ;;
+    esac
+    [ "$MODE" = --list ] || export "$key=$found"
+}
+
+ROOT="$(read_assignment A_ROOT_DIR "$PROFILE")"
+if [ -n "$ROOT" ]; then
+    check_key A_ROOT_DIR "$ROOT" root "$PROFILE" "export "
+    if [ "$MODE" = --list ]; then
+        # Report the rest against the copy that was found, so one run lists every move.
+        if [ ! -f "$ROOT/root.config" ]; then
+            c="$(find_candidates "$ROOT" root)"
+            [ -n "$c" ] && [ "$(printf '%s\n' "$c" | wc -l | tr -d ' ')" -eq 1 ] && ROOT="$c"
+        fi
+    else
+        ROOT="$(read_assignment A_ROOT_DIR "$PROFILE")"
+    fi
+fi
+
+if [ -n "$ROOT" ] && [ -f "$ROOT/root.config" ]; then
+    # Read every path the root defines, in a clean subshell so stale exports do not win.
+    LOCAL="$ROOT/root.local.config"
+    vals="$(env -i HOME="$HOME" PATH="$PATH" bash -c '
+        set +u
+        [ -f "$1/root.local.config" ] && . "$1/root.local.config" >/dev/null 2>&1
+        . "$1/root.config" >/dev/null 2>&1
+        for k in ROOT_DIR DEVKIT_DIR PRIVATE_DEVKIT_DIR ORG_DEVKIT_DIR ORG_BRAIN_DIR PRIVATE_BRAIN_DIR AGENT_FRAMEWORK_DIR \
+                 PERSONAL_REPOS_DIR ORG_REPOS_DIR GLOBAL_REPOS_DIR; do
+            printf "%s=%s\n" "$k" "${!k:-}"
+        done' _ "$ROOT")"
+    get() { printf '%s\n' "$vals" | sed -n "s/^$1=//p"; }
+    PERSONAL_REPOS_DIR="$(get PERSONAL_REPOS_DIR)" ORG_REPOS_DIR="$(get ORG_REPOS_DIR)" GLOBAL_REPOS_DIR="$(get GLOBAL_REPOS_DIR)"
+    # ROOT_DIR describes the root repo itself; the profile already found it.
+    rd="$(get ROOT_DIR)"
+    if [ -n "$rd" ] && [ ! -d "$rd" ]; then
+        if [ "$MODE" = --list ]; then printf '%s\t%s\t%s\t%s\n' ROOT_DIR "$rd" "$LOCAL" "$ROOT"; missing=$((missing+1))
+        else save_assignment ROOT_DIR "$ROOT" "$LOCAL" ""; echo "  moved   ROOT_DIR: $rd -> $ROOT  (in $LOCAL, backup kept)"; fi
+    fi
+    check_key DEVKIT_DIR          "$(get DEVKIT_DIR)"          devkit  "$LOCAL" ""
+    check_key PRIVATE_DEVKIT_DIR  "$(get PRIVATE_DEVKIT_DIR)"  overlay "$LOCAL" ""
+    check_key ORG_DEVKIT_DIR      "$(get ORG_DEVKIT_DIR)"      overlay "$LOCAL" ""
+    check_key ORG_BRAIN_DIR       "$(get ORG_BRAIN_DIR)"       git     "$LOCAL" ""
+    check_key PRIVATE_BRAIN_DIR   "$(get PRIVATE_BRAIN_DIR)"   git     "$LOCAL" ""
+    check_key AGENT_FRAMEWORK_DIR "$(get AGENT_FRAMEWORK_DIR)" git     "$LOCAL" ""
+elif [ -z "$ROOT" ]; then
+    # Standalone profile. Only literal paths are rewritten; a line built from other
+    # variables is the user's own wiring and is left alone.
+    for spec in MY_WORKFLOW_DIR:devkit A_AGENT_OVERLAY_DIR:overlay A_AGENT_ORG_OVERLAY_DIR:overlay A_AGENT_BRAIN_DIR:git; do
+        key="${spec%%:*}" v="$(read_assignment "${spec%%:*}" "$PROFILE")"
+        case "$v" in *'$'*) continue ;; esac
+        check_key "$key" "$v" "${spec#*:}" "$PROFILE" "export "
+    done
+fi
+
+if [ "$MODE" != --list ] && [ "$fixed" -gt 0 ]; then
+    echo "  Open a new terminal (or: source ~/.zshrc) so your shell picks up the new paths."
+fi
+[ "$missing" -eq "$fixed" ]

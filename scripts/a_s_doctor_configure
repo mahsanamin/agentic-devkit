@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Guided local repository configuration, called by a_c_doctor --configure.
+set -euo pipefail
+DEVKIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROLE="${1:-}"
+case "$ROLE" in root|private-overlay|org-overlay|overlay) ;; *) echo 'Choose root, overlay, private-overlay or org-overlay' >&2; exit 2 ;; esac
+
+read_assignment() {
+    local line
+    [ -f "$2" ] || return 0
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$1=" "$2" | tail -n 1 || true)"
+    line="${line#*=}"
+    printf '%s' "$line" | sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//"
+}
+PROFILE=""
+for f in "$HOME/my_settings/a_configs.profile" "$HOME/my_settings/configs.profile"; do
+    [ ! -f "$f" ] || { PROFILE="$f"; break; }
+done
+ROOT="${A_ROOT_DIR:-$(read_assignment A_ROOT_DIR "${PROFILE:-/dev/null}")}"
+if [ "$ROLE" = overlay ]; then
+    echo 'Type private, organization, or skip.'
+    read -r -p 'Overlay role: ' selected || selected=skip
+    case "$(printf %s "$selected" | tr "[:upper:]" "[:lower:]")" in
+        private|personal) ROLE=private-overlay ;;
+        org|organization) ROLE=org-overlay ;;
+        skip|'') echo 'Skipped; existing settings and warnings are preserved.'; exit 0 ;;
+        *) echo 'Type private, organization, or skip.' >&2; exit 2 ;;
+    esac
+fi
+if [ "$ROLE" = root ]; then
+    KEY=A_ROOT_DIR; REMOTE_KEY=A_ROOT_REMOTE; FILE="$PROFILE"; CURRENT="$ROOT"
+else
+    if [ -n "$ROOT" ] && [ -f "$ROOT/root.config" ]; then
+        # Isolated: load the role contract without leaking unrelated config output.
+        CURRENT="$(set +u; [ ! -f "$ROOT/root.local.config" ] || source "$ROOT/root.local.config"; source "$ROOT/root.config";
+            if [ "$ROLE" = private-overlay ]; then printf '%s' "${PRIVATE_DEVKIT_DIR:-}"; else printf '%s' "${ORG_DEVKIT_DIR:-}"; fi)"
+        FILE="$ROOT/root.local.config"
+        if [ "$ROLE" = private-overlay ]; then KEY=PRIVATE_DEVKIT_DIR; REMOTE_KEY=PRIVATE_DEVKIT_REMOTE
+        else KEY=ORG_DEVKIT_DIR; REMOTE_KEY=ORG_DEVKIT_REMOTE; fi
+    else
+        FILE="$PROFILE"
+        if [ "$ROLE" = private-overlay ]; then KEY=A_AGENT_OVERLAY_DIR; REMOTE_KEY=A_AGENT_OVERLAY_REMOTE
+        else KEY=A_AGENT_ORG_OVERLAY_DIR; REMOTE_KEY=A_AGENT_ORG_OVERLAY_REMOTE; fi
+        CURRENT="$(read_assignment "$KEY" "${PROFILE:-/dev/null}")"
+    fi
+fi
+echo "$ROLE: $KEY = local directory; $REMOTE_KEY = Git clone URL (HTTPS or SSH)."
+read -r -p "$KEY (local path; leave blank to skip): " dir || dir=
+[ -n "$dir" ] || { echo 'Skipped; existing settings and warnings are preserved.'; exit 0; }
+
+# Preserve literal values, including spaces, quotes, dollar signs and backticks.
+save_assignment() {
+    local key="$1" value="$2" file="$3" line tmp existing
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//\$/\\\$}"
+    value="${value//\`/\\\`}"
+    printf -v line 'export %s="%s"' "$key" "$value"
+    tmp="$(mktemp)"
+    printf '%s\n' "$line" > "$tmp"
+    if [ -f "$file" ]; then
+        while IFS= read -r existing || [ -n "$existing" ]; do
+            [[ "$existing" =~ ^[[:space:]]*(export[[:space:]]+)?$key= ]] || printf '%s\n' "$existing" >> "$tmp"
+        done < "$file"
+    fi
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+}
+dir="${dir/#\~/$HOME}"
+[[ "$dir" = /* ]] || { echo "$KEY must be an absolute local path." >&2; exit 2; }
+if [ ! -d "$dir" ]; then
+    if [ "$ROLE" != root ] && [ -n "$ROOT" ] && [ -f "$ROOT/root.config" ]; then
+        remote="$(set +u; [ ! -f "$ROOT/root.local.config" ] || source "$ROOT/root.local.config"; source "$ROOT/root.config"; printf '%s' "${!REMOTE_KEY:-}")"
+    else
+        remote="$(read_assignment "$REMOTE_KEY" "${FILE:-/dev/null}")"
+    fi
+    read -r -p "$REMOTE_KEY (Git clone URL; blank uses saved value '$remote'): " url || exit 2
+    url="${url:-$remote}"
+    [ -n "$url" ] || { echo "$REMOTE_KEY is required to clone $KEY." >&2; exit 2; }
+    git clone -- "$url" "$dir"
+else
+    url="$(git -C "$dir" remote get-url origin 2>/dev/null || true)"
+fi
+if [ "$ROLE" = root ]; then
+    [ -f "$dir/root.config" ] || { echo "$KEY must contain root.config." >&2; exit 2; }
+else
+    [ -d "$dir/skills" ] || [ -d "$dir/agents" ] || { echo "$KEY must contain skills/ or agents/." >&2; exit 2; }
+fi
+if [ -z "$FILE" ]; then
+    "$DEVKIT/install.sh" --shell-only
+    FILE="$HOME/my_settings/configs.profile"
+fi
+if [ -f "$FILE" ]; then
+    bak="$(mktemp "$FILE.bak-XXXXXXXX")"
+    cp -p "$FILE" "$bak"
+    chmod go-rwx "$bak"
+fi
+save_assignment "$KEY" "$dir" "$FILE"
+save_assignment "$REMOTE_KEY" "$url" "$FILE"
+echo "Saved $KEY and $REMOTE_KEY in $FILE (backup preserved)."
+# Re-evaluate values on the next shell startup rather than inheriting old roles.
+env -u A_ROOT_DIR -u MY_WORKFLOW_DIR -u DEVKIT_DIR "$DEVKIT/install.sh" --shell-only
+echo 'Run ./install.sh to refresh provider assets, then source your shell rc or open a new terminal.'

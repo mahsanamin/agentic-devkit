@@ -12,7 +12,8 @@ a_c_docker_cleanup --dry-run   # preview what would be removed
 a_c_docker_cleanup             # safe cleanup
 a_c_docker_cleanup --aggressive  # also remove unused tagged images + all build cache
 ```
-A weekly launchd schedule ships in `launchd/com.ahsan.docker-cleanup.plist`.
+A daily 03:00 launchd schedule ships in `launchd/com.ahsan.disk-cleanup.plist`; it runs
+`a_c_disk_cleanup --apply --deep -y`, which includes `a_c_docker_cleanup` in safe mode.
 
 ### Reclaim Space From Caches and Junk
 `a_c_disk_cleanup` clears only what tools wrote on their own and will regenerate: updater
@@ -115,6 +116,21 @@ org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m
 org.gradle.daemon.idletimeout=1800000
 ```
 
+
+### Uninstall an App or Tool Completely
+Dragging an app to the Trash leaves its data and often its icon behind. `a_c_uninstall <name>`
+finds the app, its bundle ids, and every matching leftover in `~/Library` and `/Library`, shows
+the plan, asks, then **moves** it all to the Trash (nothing is deleted outright). It also quits
+the app first and clears stale LaunchServices records, the usual reason a removed app's icon
+keeps appearing. Browser extensions, Homebrew packages and installer receipts are reported with
+the command to remove them, never touched.
+```bash
+a_c_uninstall languagetool -n    # dry run: the plan only
+a_c_uninstall languagetool       # plan, confirm (or pick items one by one), move to Trash
+```
+Root-owned items need sudo and app containers are protected by macOS, so whatever it cannot
+move is printed at the end. Re-run it yourself in a terminal (it prompts for sudo; give the
+terminal Full Disk Access for containers) or drag those to the Trash in Finder.
 
 ### Show Hidden Files
 ```bash

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Compatibility name for the current GitHub issue task launcher.
+# Usage: a_c_github_issue_start [the same arguments as a_c_github_issue_fix]
+set -euo pipefail
+here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "$here/a_c_github_issue_fix" "$@"

@@ -1,98 +1,60 @@
 # Committing and pushing (canonical)
 
-How to finish a piece of work. Imported into global `~/.claude/CLAUDE.md`. If a rule changes,
-change it here, not in the machine's copy.
+How to finish a piece of work. Imported into the global guidance; change it here.
 
 ## The default is: commit AND push, without asking
 
-**As of 2026-08-07.** Finish the work, verify the build and tests, commit, push. Do not ask "want
-me to commit?", do not stop at "nothing pushed yet", do not end a turn by handing over a
-`git push origin <branch>` command. The base-harness default of "commit or push only when the
-user asks" does not apply here; asking every time is friction on a workflow already opted into.
+Finish the work, verify the build and tests, commit, push. Do not ask "want me to commit?", and do
+not end a turn by handing over a push command. This overrides the harness default of "commit or
+push only when asked".
 
-**Push wherever a push is allowed, and "allowed" means one thing only: the branch is not the
-repository's default branch.** Nothing else narrows it.
-
-- A shared integration branch is pushable. `staging`, `develop`, `release/*`, `story/*`, an epic
-  branch, a branch other people also commit to: all pushable. **Being shared is not a reason to
-  stop.**
-- The older wording said "pushing a feature branch is pre-authorized". Read that as "any branch
-  that is not the default branch". It was never meant to exclude integration branches.
-- Recorded 2026-08-21, after resolving a merge conflict on a `staging` branch, committing it, and
-  then stopping to hand over the push command because `staging` looked like a shared action. It is
-  not. That turn ended with finished, verified work sitting locally for no reason, twice.
-
-**Never report a task as done while a commit sits unpushed.** If one of the hard gates below
-genuinely stopped the push, name the gate and give the one-line command. Otherwise the push is part
-of "done".
+**Any branch that is not the repository's default branch is pushable**, including shared
+integration branches (`staging`, `develop`, `release/*`, `story/*`, an epic branch). Being shared
+is not a reason to stop. Never report a task as done while a commit sits unpushed: if a gate below
+stopped the push, name the gate and give the one-line command.
 
 ## The hard gates (these, and nothing else, stop a push)
 
-- **Never commit or push on `main` / `master` / the default branch**, except in an adhoc
-  single-maintainer repo that declares itself push-to-default in its own root `AGENTS.md` /
-  `CLAUDE.md`. That declaration is the authorization — do not infer the exception from a repo
-  looking personal, and do not carry a list of such repos here, because the list would rot on
-  every machine that has not pulled. This repo is one of them. Everywhere else, branch or
-  worktree first, always. Recorded 2026-09-04.
-- **Merging a PR is the user's call, never automatic.** Open the PR, let CI and review comments
-  land, then hand it over.
-- **Force-push is gated separately.** `--force`, `-f`, and a `+refspec` push are never allowed
-  anywhere. `--force-with-lease` is fine on a personal feature branch, never on the default branch,
-  `develop`, `release/*`, or `story/*`. If a guard blocks it, say so and hand over the bare command
-  rather than stalling silently.
-- **Open a PR only when the task was heading there.** Do not create one speculatively.
-- **Could not verify it? Do not push.** Say what is unverified and why, and let the user decide.
-  Verified means the project's own gates actually ran and passed — a suite that was skipped, a
-  module that would not compile, or a check blocked by a stale credential is a gap, not a pass.
-  Never let a green summary line stand in for a suite that never ran. Recorded 2026-08-25, after a
-  `staging` merge where the push was correctly held because one module could not compile against a
-  stale S3 token.
-- **A push that fails on `Permission denied (publickey)` is the user's to run, not mine to debug.**
-  A non-interactive shell has no ssh-agent, so once that agent dies mid-session nothing
-  authenticates, in ANY repo, including ones already pushed to in the same session. Do not retry
-  it, do not test ssh, do not try another remote, do not go looking at key files. Commit as normal,
-  then hand over `cd <repo> && git push origin <branch>` and move on. Recorded 2026-08-21 after
-  burning turns diagnosing this.
+- **Never commit or push on the default branch**, except in a repo that declares itself
+  push-to-default in its own root `AGENTS.md`. That declaration is the only authorization; never
+  infer it from a repo looking personal.
+- **Merging a PR is the user's call.** Open it, let CI and review land, hand it over.
+- **Force-push:** `--force`, `-f`, and `+refspec` never. `--force-with-lease` only on a personal
+  feature branch, never on the default branch, `develop`, `release/*`, or `story/*`.
+- **Open a PR only when the task was heading there.**
+- **Could not verify it? Do not push.** Verified means the project's own gates ran and passed. A
+  skipped suite, a module that would not compile, or a check blocked by a stale credential is a
+  gap, not a pass. Say what is unverified and let the user decide.
+- **`Permission denied (publickey)` is the user's to run.** The ssh-agent has died. Do not retry,
+  test ssh, try another remote, or inspect keys. Commit, then hand over
+  `cd <repo> && git push origin <branch>`.
 
-## A handed-over command is bare. Never prefix it with `!`
+Not gates: the branch is shared or deploys somewhere, it is a merge commit, the change is large, a
+reviewer might want a look, or you want confirmation. Say what was decided in the report.
 
-**As of 2026-09-22.** When you give Ahsan a command to run himself, give the command and nothing
-in front of it. No `!`, no `$`, no `>` prompt character.
+## When an attribution hook blocks a commit in his own repo
 
-He pastes it into a real terminal, not into the Claude Code prompt. In zsh `!` is the logical NOT
-operator and it binds only to the first command in the list, so
+An org plugin may block every `git commit` that lacks an AI co-author trailer, in every repo. In a
+repo he owns personally (no trailer, see the attribution rule), do not add the trailer and do not
+stop. Run the repo's own pre-commit hook by hand (`"$(git config core.hooksPath || echo .git/hooks)/pre-commit"`),
+and if it passes, commit with `--no-verify`, which that hook accepts as the opt-out. Never use
+`--no-verify` in a company repo: there the trailer is added and the hooks run. (`git commit
+--no-verify` is allowed in his Claude settings for this, as of 2026-10-30.)
 
-```
-! cd /path/to/repo && git commit -m "..." && git push origin staging
-```
+## Pulling in his own repos: plain pull, no rebase
 
-runs `cd` (which succeeds), inverts that to a failure, and the `&&` chain stops there. The commit
-and the push never run. **It prints nothing at all** — no error, no warning — so it reads exactly
-like a command that worked. He then reports having run it and the work is still sitting
-uncommitted.
+In a repo he owns, when a push is rejected or the branch is behind, run a plain `git pull` (a
+merge). Do not rebase and do not ask which to use. If the merge conflicts, resolve the conflicts,
+commit, and push. Keep it simple. Recorded 2026-11-06.
 
-That silent failure is what makes this worth a rule. A command that fails loudly costs one turn;
-this one costs several, because both sides believe it succeeded and start looking for the problem
-somewhere else.
+## A handed-over command is bare
 
-Also drop the `cd` when he is already in that directory. Check where the work is before writing
-the command.
+Give a command for him to run with nothing in front of it: no `!`, `$`, or `>`. He pastes into
+zsh, where `! cd repo && git commit ... && git push` inverts the `cd`, stops the chain, and prints
+nothing, so it looks like it worked. This overrides the harness suggestion of `! <command>`, which
+only works at the Claude Code prompt. Drop the `cd` when he is already in that directory.
 
-Recorded 2026-09-22, after it cost two rounds on a commit to a shared integration branch. The
-earlier text in this file instructed the `! ` form in three places; that was the bug, and it is
-why the habit kept coming back. Those are corrected above and in the opening section.
-
-Note this overrides a harness default: Claude Code's own guidance suggests offering `! <command>`,
-which is valid **only** when typed at the Claude Code prompt. Since he pastes into a terminal, that
-default is wrong here and this rule wins.
-
-## Not a gate
-
-None of these justify holding a push:
-
-- The branch is shared, long-lived, or deploys somewhere.
-- The commit is a merge commit, or resolves conflicts.
-- The change is large, or touches many files.
-- A reviewer might want to look first. Review happens on the pushed branch, not on a local one.
-- Wanting confirmation that a resolution was right. Say what was decided in the report; a commit is
-  revertable, an unpushed branch is invisible.
+Never hand over a heredoc (`cat > file <<'EOF'`): pasting indents the closing `EOF`, so zsh hangs
+at `heredoc>`. Keep each command short, one per code block, because a long line wraps when copied
+and the inserted newline breaks it. Split the work: `cd` first, then short lines with `echo` or
+`printf` and single-quoted content. Recorded 2026-10-31.

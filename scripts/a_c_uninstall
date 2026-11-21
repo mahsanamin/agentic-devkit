@@ -1,0 +1,419 @@
+#!/bin/bash
+#
+# a_c_uninstall - remove a macOS app or tool, and everything it left behind.
+#
+# Dragging an app out of /Applications leaves its icon around (Launchpad,
+# Spotlight, Open With) and leaves its data behind: preferences, caches,
+# containers, launch agents, a browser extension. This finds all of it by
+# name, shows the plan, asks, and then MOVES it to the Trash. Nothing is
+# deleted outright, so a wrong match is recoverable until you empty the Trash.
+#
+# What it finds:
+#   * the .app (in /Applications, ~/Applications, or still sitting in the
+#     Trash) plus the bundle ids of the app and its embedded helpers
+#   * matching items in ~/Library and /Library: Application Support, Caches,
+#     Preferences, Logs, Containers, Group Containers, Application Scripts,
+#     HTTPStorages, WebKit, LaunchAgents/Daemons, privileged helpers, ...
+#   * running processes (quit before anything is moved)
+#   * stale LaunchServices records (the "icon still shows up" cause)
+#   * reported only, never touched: browser extensions, Homebrew casks and
+#     formulae, installer receipts, CLI binaries on PATH
+#
+# What it cannot do on its own, and says so at the end:
+#   * root-owned items (/Library, privileged helpers) need sudo. Run it
+#     yourself in a terminal and it asks for your password per item.
+#   * ~/Library/Containers and Group Containers are protected by macOS. Your
+#     terminal needs Full Disk Access (System Settings > Privacy & Security >
+#     Full Disk Access), or drag them to the Trash in Finder.
+#   Re-running the same command later picks up whatever is still left.
+#
+# Usage:
+#   a_c_uninstall <name>            find, show the plan, ask, then remove
+#   a_c_uninstall <path/to/App.app> use this exact app
+#   a_c_uninstall <name> -n         dry run: show the plan only
+#   a_c_uninstall <name> -y         no prompt (refuses when the name matches
+#                                   more than one app)
+#
+# Examples:
+#   a_c_uninstall languagetool
+#   a_c_uninstall "Language Tool" -n
+
+set -u
+
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//; s/^#$//'; }
+
+GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+
+DRY_RUN=false
+ASSUME_YES=false
+QUERY=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n|--dry-run) DRY_RUN=true ;;
+    -y|--yes) ASSUME_YES=true ;;
+    --delete) ;;  # accepted from a_c_uninstall_app.sh; removal is the default now
+    -h|--help) usage; exit 0 ;;
+    -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *) QUERY="${QUERY:+$QUERY }$1" ;;
+  esac
+  shift
+done
+
+if [ -z "$QUERY" ]; then usage >&2; exit 2; fi
+if [ "$(uname)" != "Darwin" ]; then echo "a_c_uninstall: macOS only." >&2; exit 1; fi
+
+lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+norm() { lc "$1" | tr -d ' ._-'; }
+is_tty() { [ -t 0 ] && [ -t 1 ]; }
+
+# ---- keywords ---------------------------------------------------------------
+# Every match below is a case-insensitive substring of one of these. Short or
+# Apple-owned keywords are dropped: "mail" or "com.apple" would match half the
+# system.
+KEYWORDS=""
+add_keyword() {
+  local k
+  k=$(printf '%s' "$1" | tr -d '*?[]')
+  [ "${#k}" -ge 4 ] || return 0
+  case "$(lc "$k")" in com.apple*) return 0 ;; esac
+  printf '%s\n' "$KEYWORDS" | grep -qixF -- "$k" && return 0
+  KEYWORDS="${KEYWORDS:+$KEYWORDS
+}$k"
+}
+
+# ---- 1. the app bundle(s) ---------------------------------------------------
+QNORM=$(norm "$QUERY")
+if [ "${#QNORM}" -lt 4 ] && [[ "$QUERY" != */* ]]; then
+  echo "a_c_uninstall: '$QUERY' is too short to match safely. Use at least 4 characters." >&2
+  exit 2
+fi
+
+find_apps() {
+  {
+    for d in /Applications /Applications/Utilities "$HOME/Applications" "$HOME/.Trash"; do
+      [ -d "$d" ] && find "$d" -maxdepth 2 -iname '*.app' -prune 2>/dev/null
+    done
+    mdfind "kMDItemContentType == 'com.apple.application-bundle' && kMDItemFSName == '*${QUERY}*'cd" 2>/dev/null
+  } | while IFS= read -r p; do
+    case "$p" in
+      /System/*|*.app/*|"$HOME"/.Trash/*-uninstalled-*) continue ;;
+    esac
+    case "$(norm "$(basename "$p" .app)")" in *"$QNORM"*) printf '%s\n' "$p" ;; esac
+  done | sort -u
+}
+
+APPS=""
+if [[ "$QUERY" == */* ]]; then
+  [ -d "$QUERY" ] || { echo "a_c_uninstall: no such app: $QUERY" >&2; exit 1; }
+  APPS="${QUERY%/}"
+  QUERY=$(basename "$APPS" .app)
+  QNORM=$(norm "$QUERY")
+else
+  APPS=$(find_apps)
+fi
+
+APP_COUNT=0
+[ -n "$APPS" ] && APP_COUNT=$(printf '%s\n' "$APPS" | wc -l | tr -d ' ')
+if [ "$APP_COUNT" -gt 1 ]; then
+  echo "${BOLD}'$QUERY' matches more than one app:${RESET}"
+  printf '%s\n' "$APPS" | nl -w3 -s'  '
+  if $ASSUME_YES || ! is_tty; then
+    echo "Be more specific, or pass the app's path." >&2
+    exit 1
+  fi
+  printf 'Which to remove? numbers separated by spaces, a = all, 0 = none (leftovers only): '
+  read -r pick
+  case "$pick" in
+    a|A) ;;
+    *) chosen=""
+       for n in $pick; do
+         [ "$n" = 0 ] && continue
+         line=$(printf '%s\n' "$APPS" | sed -n "${n}p")
+         [ -n "$line" ] && chosen="${chosen:+$chosen
+}$line"
+       done
+       APPS="$chosen" ;;
+  esac
+fi
+
+add_keyword "$QUERY"
+add_keyword "$QNORM"
+if [ -n "$APPS" ]; then
+  while IFS= read -r app; do
+    add_keyword "$(basename "$app" .app)"
+    # The app's own bundle id plus every embedded helper, extension and login
+    # item: those ids name the containers and preferences left behind.
+    find "$app/Contents" -maxdepth 4 -name Info.plist 2>/dev/null | while IFS= read -r plist; do
+      /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist" 2>/dev/null
+    done | sort -u > "${TMPDIR:-/tmp}/a_c_uninstall.$$"
+    while IFS= read -r bid; do add_keyword "$bid"; done < "${TMPDIR:-/tmp}/a_c_uninstall.$$"
+    rm -f "${TMPDIR:-/tmp}/a_c_uninstall.$$"
+  done <<< "$APPS"
+fi
+
+if [ -z "$KEYWORDS" ]; then echo "a_c_uninstall: nothing safe to search for." >&2; exit 2; fi
+
+# nocasematch makes `case` compare case-insensitively without forking `tr`
+# per comparison, which matters across thousands of Library entries.
+shopt -s nocasematch
+name_matches() {
+  local k
+  while IFS= read -r k; do
+    case "$1" in *"$k"*) return 0 ;; esac
+  done <<< "$KEYWORDS"
+  return 1
+}
+
+# ---- 2. leftovers -----------------------------------------------------------
+LIB_DIRS="$HOME/Library/Application Support
+$HOME/Library/Application Support/CrashReporter
+$HOME/Library/Caches
+$HOME/Library/Preferences
+$HOME/Library/Preferences/ByHost
+$HOME/Library/Logs
+$HOME/Library/Logs/DiagnosticReports
+$HOME/Library/Saved Application State
+$HOME/Library/Containers
+$HOME/Library/Group Containers
+$HOME/Library/Application Scripts
+$HOME/Library/HTTPStorages
+$HOME/Library/WebKit
+$HOME/Library/Cookies
+$HOME/Library/LaunchAgents
+$HOME/Library/Internet Plug-Ins
+$HOME/Library/PreferencePanes
+$HOME/Library/Services
+/Library/Application Support
+/Library/Caches
+/Library/Preferences
+/Library/Logs
+/Library/LaunchAgents
+/Library/LaunchDaemons
+/Library/PrivilegedHelperTools
+/Library/Internet Plug-Ins
+/Library/PreferencePanes"
+
+ITEMS=""
+if [ -n "$APPS" ]; then ITEMS="$APPS"; fi
+while IFS= read -r dir; do
+  [ -d "$dir" ] || continue
+  while IFS= read -r p; do
+    b=$(basename "$p")
+    case "$b" in com.apple.*|*.apple.*) continue ;; esac
+    name_matches "$b" || continue
+    ITEMS="${ITEMS:+$ITEMS
+}$p"
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null)
+done <<< "$LIB_DIRS"
+[ -n "$ITEMS" ] && ITEMS=$(printf '%s\n' "$ITEMS" | awk '!seen[$0]++')
+
+# ---- 3. running processes ---------------------------------------------------
+# Match the executable's name, or anything running from inside the app. Not
+# the whole path: "/Volumes/Work/..." would match a query like "work".
+in_apps() {
+  local app
+  [ -n "$APPS" ] || return 1
+  while IFS= read -r app; do
+    case "$1" in "$app"/*) return 0 ;; esac
+  done <<< "$APPS"
+  return 1
+}
+PROCS=$(ps -axo pid=,comm= | while read -r pid comm; do
+  [ "$pid" = "$$" ] && continue
+  if name_matches "${comm##*/}" || in_apps "$comm"; then printf '%s %s\n' "$pid" "$comm"; fi
+done)
+
+# ---- 4. report-only finds ---------------------------------------------------
+REPORTS=""
+report() { REPORTS="${REPORTS:+$REPORTS
+}$1"; }
+
+AS="$HOME/Library/Application Support"
+for root in "Google/Chrome" "BraveSoftware/Brave-Browser" "Microsoft Edge" "Arc/User Data" "Vivaldi"; do
+  [ -d "$AS/$root" ] || continue
+  for m in "$AS/$root"/*/Extensions/*/*/manifest.json; do
+    [ -f "$m" ] || continue
+    while IFS= read -r k; do
+      if grep -qiF -- "$k" "$m" 2>/dev/null; then
+        report "browser extension in ${root%%/*} (remove it from the browser's Extensions page): $(dirname "$(dirname "$m")")"
+        break
+      fi
+    done <<< "$KEYWORDS"
+  done
+done
+for root in "Firefox/Profiles" "zen/Profiles" "Waterfox/Profiles" "LibreWolf/Profiles"; do
+  [ -d "$AS/$root" ] || continue
+  for e in "$AS/$root"/*/extensions/*; do
+    [ -e "$e" ] || continue
+    name_matches "$(basename "$e")" && report "browser extension in ${root%%/*} (remove it from about:addons): $e"
+  done
+done
+
+if command -v brew >/dev/null 2>&1; then
+  for c in $(brew list --cask -1 2>/dev/null); do
+    case "$(norm "$c")" in *"$QNORM"*) report "Homebrew cask '$c': brew uninstall --zap --cask $c" ;; esac
+  done
+  for f in $(brew list --formula -1 2>/dev/null); do
+    case "$(norm "$f")" in *"$QNORM"*) report "Homebrew formula '$f': brew uninstall $f" ;; esac
+  done
+fi
+
+for r in $(pkgutil --pkgs 2>/dev/null); do
+  name_matches "$r" && report "installer receipt '$r': sudo pkgutil --forget $r"
+done
+
+while IFS= read -r k; do
+  bin=$(command -v "$k" 2>/dev/null) || continue
+  case "$bin" in
+    "$(brew --prefix 2>/dev/null || echo /opt/homebrew)"/*) ;;  # already reported as a formula or cask
+    /*) report "command on PATH: $bin (remove it with whatever installed it)" ;;
+  esac
+done <<< "$KEYWORDS"
+
+# ---- plan -------------------------------------------------------------------
+echo "${BOLD}a_c_uninstall: $QUERY${RESET}"
+echo "${DIM}matching: $(printf '%s' "$KEYWORDS" | tr '\n' ',' | sed 's/,/, /g')${RESET}"
+echo
+if [ -n "$PROCS" ]; then
+  echo "${BOLD}Running (will be quit first):${RESET}"
+  printf '%s\n' "$PROCS" | sed 's/^/  /'
+  echo
+fi
+if [ -n "$ITEMS" ]; then
+  echo "${BOLD}Move to the Trash:${RESET}"
+  while IFS= read -r p; do
+    tag=""
+    [ -O "$p" ] || tag=" ${YELLOW}(needs sudo)${RESET}"
+    case "$p" in "$HOME/Library/Containers/"*|"$HOME/Library/Group Containers/"*) tag=" ${YELLOW}(protected container)${RESET}" ;; esac
+    echo "  ${BLUE}$p${RESET}$tag"
+  done <<< "$ITEMS"
+  echo
+fi
+if [ -n "$REPORTS" ]; then
+  echo "${BOLD}Found, but not removed by this script:${RESET}"
+  printf '%s\n' "$REPORTS" | sed 's/^/  - /'
+  echo
+fi
+
+if [ -z "$ITEMS" ] && [ -z "$PROCS" ]; then
+  # A removed app can still be registered with LaunchServices, so carry on.
+  echo "${GREEN}Nothing to move.${RESET}"
+fi
+
+if $DRY_RUN; then echo "${DIM}Dry run: nothing changed.${RESET}"; exit 0; fi
+
+SELECTED="$ITEMS"
+if [ -n "$ITEMS" ] && ! $ASSUME_YES; then
+  if ! is_tty; then echo "Not a terminal: re-run with -y to proceed, or -n for a dry run." >&2; exit 1; fi
+  printf 'Proceed? [y] all / [s] choose one by one / [N] cancel: '
+  read -r ans
+  case "$ans" in
+    y|Y|yes) ;;
+    s|S)
+      SELECTED=""
+      while IFS= read -r p; do
+        printf '  move %s? [y/N] ' "$p"
+        read -r one < /dev/tty
+        case "$one" in y|Y) SELECTED="${SELECTED:+$SELECTED
+}$p" ;; esac
+      done <<< "$ITEMS" ;;
+    *) echo "Cancelled."; exit 1 ;;
+  esac
+fi
+
+# ---- execute ----------------------------------------------------------------
+MANUAL=""
+manual() { MANUAL="${MANUAL:+$MANUAL
+}$1"; }
+
+# Quit gracefully first (apps get to save), then TERM what is left.
+if [ -n "$APPS" ]; then
+  while IFS= read -r app; do
+    osascript -e "quit app \"$(basename "$app" .app)\"" >/dev/null 2>&1 || true
+  done <<< "$APPS"
+  sleep 2
+fi
+if [ -n "$PROCS" ]; then
+  while read -r pid comm; do
+    kill -0 "$pid" 2>/dev/null || continue
+    kill -TERM "$pid" 2>/dev/null || manual "sudo kill $pid    # $comm"
+  done <<< "$PROCS"
+fi
+
+TRASH_DIR="$HOME/.Trash/$(printf '%s' "$QUERY" | tr ' /' '__')-uninstalled-$(date +%Y%m%d-%H%M%S)"
+MOVED=0
+APP_REMOVED=false
+
+if [ -n "$SELECTED" ]; then
+  mkdir -p "$TRASH_DIR"
+  while IFS= read -r p; do
+    [ -e "$p" ] || [ -L "$p" ] || continue
+    # Keep the origin in the name: two leftovers are often both called
+    # "org.vendor.app" (HTTPStorages and WebKit, for one).
+    rel="${p#"$HOME"/}"; rel="${rel#/}"
+    dest="$TRASH_DIR/$(printf '%s' "$rel" | sed 's#/#__#g')"
+
+    case "$p" in
+      */LaunchAgents/*.plist)
+        if [[ "$p" == "$HOME"/* ]]; then launchctl bootout "gui/$(id -u)" "$p" 2>/dev/null || true
+        else manual "sudo launchctl bootout system '$p'"; fi ;;
+      */LaunchDaemons/*.plist) manual "sudo launchctl bootout system '$p'" ;;
+      *.app) "$LSREGISTER" -u "$p" 2>/dev/null
+             find "$p/Contents" -name '*.app' -prune 2>/dev/null | while IFS= read -r inner; do "$LSREGISTER" -u "$inner" 2>/dev/null; done ;;
+    esac
+
+    if mv "$p" "$dest" 2>/dev/null; then
+      MOVED=$((MOVED + 1)); echo "  ${GREEN}moved${RESET}  $p"
+      case "$p" in *.app) APP_REMOVED=true ;; esac
+      continue
+    fi
+    case "$p" in
+      "$HOME/Library/Containers/"*|"$HOME/Library/Group Containers/"*)
+        echo "  ${YELLOW}protected${RESET} $p"
+        manual "mv '$p' '$dest'    # needs Full Disk Access, or drag it to the Trash in Finder"
+        continue ;;
+    esac
+    if is_tty && ! $ASSUME_YES && sudo mv "$p" "$dest"; then
+      MOVED=$((MOVED + 1)); echo "  ${GREEN}moved${RESET}  $p (sudo)"
+      case "$p" in *.app) APP_REMOVED=true ;; esac
+    elif sudo -n mv "$p" "$dest" 2>/dev/null; then
+      MOVED=$((MOVED + 1)); echo "  ${GREEN}moved${RESET}  $p (sudo)"
+    else
+      echo "  ${YELLOW}needs sudo${RESET} $p"
+      manual "sudo mv '$p' '$dest'"
+    fi
+  done <<< "$SELECTED"
+  [ -n "$MANUAL" ] || rmdir "$TRASH_DIR" 2>/dev/null || true
+fi
+
+# Drop LaunchServices records that still point at the app, including copies
+# sitting in the Trash. This is what keeps a removed app's icon in Launchpad,
+# Spotlight and "Open With".
+UNREG=0
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  # By name, or a record whose file is gone and whose path names the tool (an
+  # updater that lived in the app's cache folder, say).
+  name_matches "$(basename "$p")" || { [ ! -e "$p" ] && name_matches "$p"; } || continue
+  "$LSREGISTER" -u "$p" 2>/dev/null && UNREG=$((UNREG + 1))
+done < <("$LSREGISTER" -dump 2>/dev/null | sed -n 's/^path: *\(.*\) (0x[0-9a-f]*)$/\1/p' | grep -i '\.app$' | grep -iF -f <(printf '%s\n' "$KEYWORDS") | sort -u)
+
+if $APP_REMOVED || [ "$UNREG" -gt 0 ]; then killall Dock 2>/dev/null || true; fi
+
+# ---- summary ----------------------------------------------------------------
+echo
+where=""; [ "$MOVED" -gt 0 ] && where=" to $TRASH_DIR"
+echo "${BOLD}Done.${RESET} Moved $MOVED item(s)$where; cleared $UNREG stale LaunchServices record(s)."
+if [ -n "$MANUAL" ]; then
+  echo
+  echo "${BOLD}${YELLOW}Still needs you${RESET} (run these, or re-run ${BOLD}a_c_uninstall '$QUERY'${RESET} yourself in a terminal):"
+  printf '%s\n' "$MANUAL" | sed 's/^/  /'
+fi
+if [ -n "$REPORTS" ]; then
+  echo
+  echo "${BOLD}Remove by hand:${RESET}"
+  printf '%s\n' "$REPORTS" | sed 's/^/  - /'
+fi
+[ "$MOVED" -gt 0 ] && echo && echo "${DIM}Everything moved is in the Trash. Empty it to delete for good.${RESET}"
+exit 0

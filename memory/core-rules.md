@@ -2,35 +2,18 @@
 
 Managed skills and agents in `~/.claude/`, `~/.agents/skills`, `~/.codex/agents`, and
 `~/.gemini/` come from a git-backed devkit. Edit the canonical repo source, never a provider
-copy or generated adapter. Re-run the installer to refresh links and provider-native files.
+copy or generated adapter, and re-run the installer to refresh links.
 
-This rules file is **generated**. The region between the `agentic-devkit: managed memory`
-markers is composed from source files by `a_c_agent_memory build`. Editing inside the region
-works until the next build, then it is gone. Edit the source listed at the top of the region,
-then run `a_c_agent_memory build`. Anything outside the markers is hand-written and is never
-touched by the tooling.
-
-### Identity — always say which machine you are on
-
-The machine's name and role are in the **Machine** section below. Say that name whenever the
-host is even slightly in question: asked who or where you are, asked what you can see, starting
-work that touches machine-specific state (paths, keys, launchd jobs, containers, mounted
-volumes), or reporting that something was installed or changed here. More than one machine runs
-this setup; a session that does not name its host cannot be placed.
-
-**The name is read, never derived.** It is `MACHINE_NAME` in the machine's own config, and the
-Machine section below is the file that name selected. Do not build a name out of the hostname,
-and do not copy the pattern of another machine's name: a naming convention describes names that
-were chosen, it is not a formula for generating one. If no machine file loaded, say the name is
-not configured here and ask. A confidently invented machine name is worse than no name, because
-it looks like an answer.
+This guidance is **generated** by `a_c_agent_memory build` from source files, between the
+`agentic-devkit: managed memory` markers. An edit inside the markers is lost on the next build:
+edit the source listed at the top of the region, then rebuild. Text outside the markers is
+hand-written and never touched.
 
 ### Glossary first — resolve the shorthand before acting
 
-The **Glossary** section below maps the user's shorthand to the concrete thing: which repo,
-which skill, which command, which path. When a request uses a term that appears there, follow
-the glossary instead of guessing or searching. If a term is clearly glossary material and is
-missing, say so and offer to add it — the glossary is meant to grow.
+The **Glossary** section below maps the user's shorthand to the concrete repo, skill, command, or
+path. When a request uses a term listed there, follow it instead of guessing or searching. If a
+term is clearly glossary material and is missing, say so and offer to add it.
 
 ### Naming — one scheme
 
@@ -43,142 +26,102 @@ missing, say so and offer to add it — the glossary is meant to grow.
 | `a_s_*` | helper script |
 | `a_g_*` | git command |
 
-The full glossary of markers lives in the devkit's `AGENTS.md`. Do not invent a second scheme.
+The full list lives in the devkit's `AGENTS.md`. Do not invent a second scheme.
 
 ### Searches run on the cheap tier, not on this model
 
-A plain "go find it" ask is retrieval, and retrieval does not need the session's model. Delegate it
-to **`a_sag_searcher`** (haiku) instead of searching yourself, automatically, without being asked
-and without offering it as an option first. This covers the everyday phrasing: "search this",
-"search for X", "find where Y is", "which file has Z", "grep for ...", "where is the config for
-...", "look up X", "is X installed", "does this repo use ...".
+A plain "go find it" ask is retrieval. Delegate it to **`a_sag_searcher`** (haiku) automatically,
+without asking first: "search for X", "find where Y is", "which file has Z", "grep for ...",
+"where is the config for ...", "is X installed", "does this repo use ...".
 
 | The ask | Who does it |
 |---|---|
-| Single known target: a file you already have the path to, one grep whose answer you need in the next step | do it inline, spawning an agent costs more |
-| Unknown location, several files, fan-out, "find/search/where is" | `a_sag_searcher` on haiku |
-| Retrieval plus judgment: trace behavior across layers, explain WHY, reconcile sources that disagree | `a_sag_searcher` with `model: sonnet` |
-| Sessions, Confluence, Jira, deep web research | the dedicated finder: `a_sag_claude_session_finder`, `a_sag_confluence_finder`, `a_sag_jira`, `a_sag_crawler` |
+| Single known target: a file you have the path to, one grep you need for the next step | inline, an agent costs more |
+| Unknown location, several files, fan-out | `a_sag_searcher` on haiku |
+| Retrieval plus judgment: trace behavior across layers, explain why, reconcile sources | `a_sag_searcher` with `model: sonnet` |
+| Sessions, Confluence, Jira, deep web research | `a_sag_claude_session_finder`, `a_sag_confluence_finder`, `a_sag_jira`, `a_sag_crawler` |
+| Reading Slack | `a_sag_slack_reader` (read-only). Posting or drafting is `a_sag_slack_writer`, which drafts unless told to send |
 
-If it returns `ESCALATE: sonnet`, re-spawn it on sonnet with its partial findings rather than
-finishing the search yourself. Relay its answer; do not re-run the search to check it.
+If it returns `ESCALATE: sonnet`, re-spawn it on sonnet with its partial findings. Relay its answer;
+do not re-run the search to check it.
+
+**Never spawn a read-only agent with worktree isolation.** Searchers, finders, readers and reviewers
+change nothing, so they gain nothing from a worktree, and the spawn fails outright when the working
+directory is not a git repo ("Cannot create agent worktree: not in a git repository"). If any agent
+spawn fails on that error, re-send it once without `isolation`. Never retry a failed spawn
+unchanged: the same call gives the same error.
 
 ### Task work gets its own session, not a subagent
 
-The section above sends retrieval to a subagent. This one is its other half, and the two are read
-together: **what decides the answer is what the work produces, not how big it is.**
+The test is one question: **does this end in a diff someone reviews?** If yes, it is a task lane
+and gets its own session in a tab, started with `a_c_task_start -c -z <session>`, one per lane.
+Never an in-process subagent: a session is visible while it runs, can be steered, and outlives
+the session that started it. Subagents are for answers you need to keep working.
 
-| The work produces | Who does it |
-|---|---|
-| An answer needed to keep working: a search, a lookup, a read-only verification, a bounded exploration | a subagent (see above) |
-| **A change in a repo** — writes code, commits, ends in a PR or a push | **its own session**, started with `a_c_task_start -c -z <session>`, one per lane |
+"Hand this over", "run these in parallel", and "keep an eye on them" are asking for sessions.
 
-The test is one question: **does this end in a diff someone reviews?** If yes it is a task lane, and
-a task lane gets a real session in a tab. Never an in-process subagent, however well-scoped the
-brief is.
+A session already busy with something else (a release, a bug report, other lanes) that finds new
+work ending in its own PR does not branch and code in place. It writes a brief with what it found
+(cause, call sites, traps, how to verify), launches `a_c_task_start -c -z <session> --task-file
+<brief>`, then supervises: answers questions, checks reports, relays results.
 
-Three things a subagent cannot give a task lane, and all three are the point of handing work over:
-it is visible while it runs, it can be steered mid-flight, and it outlives the session that started
-it. A subagent has none of those — the work happens where nobody can see it and arrives only as a
-final report.
-
-"Hand this over", "run these in parallel", and "keep an eye on them" are asking for sessions. Read
-them that way even when the work looks like something a subagent could carry.
-
-**The same holds against doing it inline.** When a session that is already busy with something else
-(monitoring a release, answering a bug report, coordinating other lanes) finds a new piece of work
-that will end in its own PR, it starts a session for it instead of branching and coding in place.
-It writes a brief with everything it already found (the cause, the call sites, the traps, how to
-verify), launches the session with `a_c_task_start -c -z <session> --task-file <brief>`, and then
-supervises it: it answers the new session's questions, checks its reports, and passes results to
-the user.
-
-- **One lane at a time.** Start the next session only after the current one is running on its
-  own, and don't have several going at once unless the user asks for it.
-- **Only for a real task.** A proper change with its own PR qualifies. A one-line fix, a comment
-  reply, or a follow-up commit on a branch this session already owns does not, so do that directly.
-
-Recorded 2026-09-30, after a session that was handling a production bug report started editing a
-fresh branch for the fix itself, when the user wanted it handed to its own tab and supervised.
+- **One lane at a time**, unless the user asks for several.
+- **Only for a real task.** A one-line fix, a comment reply, or a follow-up commit on a branch
+  this session already owns is done directly.
 
 ### Messaging another session when its name does not resolve
 
-Some Claude Code versions start sessions that never register their name, so `ListAgents` does not
-show them and `SendMessage` to the name fails with "No agent named ... is reachable", even though
-the session is alive and its socket accepts messages. When that happens, do not conclude the
-session is gone: run `a_s_session_address <name>` and send to the `uds:` address it prints
-(`a_s_session_address --list` shows every live session it can find). When you start a session that
-is expected to report back, put your own `uds:` address in its brief next to your name, so the
-reply still arrives. It is `uds:$CLAUDE_CODE_MESSAGING_SOCKET`, or `a_s_session_address <your name>`.
-To answer a message you received, reply to its `from=` address, which already works.
+Some sessions never register their name, so `SendMessage` fails with "No agent named ... is
+reachable" while the session is alive. Do not conclude it is gone: run `a_s_session_address
+<name>` and send to the `uds:` address it prints (`--list` shows every live session). When you
+start a session that should report back, put your own address in its brief
+(`uds:$CLAUDE_CODE_MESSAGING_SOCKET`). Reply to a received message at its `from=` address.
 
 ### A tab is `a_c_zellij_tab`, never hand-rolled zellij
 
-Anything that wants a tab calls **`a_c_zellij_tab`**, including "open a new tab", "give it its own
-tab", and every task-lane handover above. `a_c_task_start` and its fronts already do.
-
-```
-a_c_zellij_tab <session> <tab> --cwd <dir> --cmd '<command>'
-```
-
-Driving `zellij action` by hand fails two ways that look like the tool is broken rather than the
-caller. `write-chars` types into the pane that is **already focused**, not the tab just created, so
-the keystrokes land in whatever the user was looking at. And a bare `--layout` tab is not wrapped in
-the session's default template, so a layout holding only the command pane opens with no tab-bar and
-no status-bar: the tab appears unclickable and the other tabs vanish. The script bakes both plugin
-panes in and marks the command pane `focus=true`, and it also handles idempotent re-focus, an EXITED
-session, verifying the tab exists because `new-tab` exits 0 regardless, and the launcher's
-PATH/TERM/VIRTUAL_ENV. `a_c_zellij_fix` repairs a session already damaged this way.
+Anything that wants a tab calls `a_c_zellij_tab <session> <tab> --cwd <dir> --cmd '<command>'`.
+Raw `zellij action` types into whichever pane is focused and opens tabs without the tab-bar and
+status-bar. `a_c_zellij_fix` repairs a session already damaged that way.
 
 ### Devkit friction goes to the devkit's issues, not into a private note
 
-When the tooling itself is the problem, a skill that misfired, an agent that returned the wrong
-shape, a helper the docs name that does not exist, a default that cost you time, **report it** with
-`a_sk_report_improvement`. It files one GitHub issue on the devkit repository, and
-`a_r_l_improve_from_issues` works that backlog later.
-
-This is the default destination, from every machine. Several machines run this setup, so a private
-workaround fixes it for one person and leaves it broken for the rest, and nobody ever learns the
-same gap was hit three times. Fix it yourself instead when the fix is small and you are already in
-the repo: a commit beats an issue.
-
-The tracker is **public**. Describe the problem in generic terms and never paste employer, client,
-project, host, ticket or colleague names into it. If it cannot be described without them, do not
-file it, and say why.
+When the tooling itself is the problem (a skill that misfired, an agent with the wrong output, a
+helper the docs name that does not exist), file it with `a_sk_report_improvement`;
+`a_r_l_improve_from_issues` works that backlog. If the fix is small and you are already in the
+repo, fix it instead: a commit beats an issue. The tracker is **public**: describe the problem
+generically, never with employer, client, project, host, ticket or colleague names. If it cannot
+be described without them, do not file it, and say why.
 
 ### A status is verified, or it says "not confirmed"
 
-Any claim about the state of something (deployed, merged, running, passing, done, owned) is checked
-against its system of record in this session before it is stated, and the answer says where it was
-checked. What was not checked is written as **"not confirmed"**, never as a negative such as "not
-yet" or "not deployed". A signal that only suggests the state is not the state: a merge, a release
-tag, a branch that contains the commit, a green CI run, or a passing deploy job can each be true
-while the thing is still not live. Before a status reaches other people (a page, a message, a
-ticket), re-check every negative claim, because a wrong "not done" lands as an accusation against
-whoever owns it. Recorded 2026-09-30, after a published status page called two teams' deployed
-changes undeployed.
+Any claim about the state of something (deployed, merged, running, passing, done, owned) is
+checked against its system of record right before you say it, and the answer says where. A check
+from earlier in the session, a brief, or a peer's report is stale once time or work has passed:
+run it again yourself before repeating it. What was not
+checked is written as **"not confirmed"**, never as "not yet" or "not deployed". A merge, a tag, a
+branch containing the commit, or a green CI or deploy job only suggests the state. Before a status
+reaches other people, re-check every negative claim: a wrong "not done" reads as an accusation.
 
-**A peer's finding is a lead, not a fact.** When another session or a subagent reports something,
-check which branch, repo or system it actually looked at before repeating it. "Not on the
-`development` branch" is not the same as "not done": the work can sit in an open PR or a release
-branch. Check open PRs and release branches before saying something is missing.
+**A peer's finding is a lead, not a fact.** Check which branch, repo or system another session or
+subagent actually looked at before repeating it. "Not on `development`" is not "not done": check
+open PRs and release branches first.
+
+**"Is it done" is judged against the ticket, not the brief.** Read the ticket's own Done when list,
+its Out of scope section and its latest comments before answering. A session brief, another
+session's goal, or your own research can describe more than the ticket asks for, and that extra is
+not a reason to say "not done".
 
 ### Before sending a value to more places, find who reads it
 
-When a report says a value (a header, an id, a field) is missing from some calls, first check
-whether anything on the receiving side reads it there: search the backend code for the name. If
-nothing consumes it, the missing value is harmless, and the answer is "by design", not a sweep and a
-PR. Do this cheap check before planning call sites, CORS or tests. Recorded 2026-09-30, after a
-two-hour sweep planned a change that no backend would have used.
+When a value (a header, an id, a field) is reported missing from some calls, first search the
+receiving side for it. If nothing consumes it there, the answer is "by design", not a sweep and a
+PR.
 
 ### Knowledge placement — where a new fact goes
 
-Project-specific guidance belongs **in that project's repo**. `AGENTS.md` is canonical;
-provider bridge files such as `CLAUDE.md` and `GEMINI.md` should only import it. Provider-specific
-skills or agents may stay in their native project directories. Never put durable project facts
-in a provider's machine-local session memory, where they cannot travel with the repository.
-
-Anything cross-project, most specific wins:
+Project-specific guidance belongs **in that project's repo**: `AGENTS.md` is canonical, and
+`CLAUDE.md` / `GEMINI.md` only import it. Never put durable project facts in a provider's
+machine-local session memory. Anything cross-project, most specific wins:
 
 | What it is | Where it goes |
 |---|---|
@@ -186,7 +129,12 @@ Anything cross-project, most specific wins:
 | A term whose meaning implies an action | the glossary |
 | A reusable procedure | a skill or agent in a devkit repo |
 | A one-line always-on rule | a rules source file, then rebuild |
-| Anything else | nowhere. Session-only, let it go. |
+| Anything else | nowhere, it is session-only |
 
-`a_sk_teach_claude` makes this call and writes the result in the right place. Prefer it over
-deciding by hand.
+`a_sk_teach_claude` makes this call and writes it in the right place. Prefer it.
+
+### Use full links
+
+When a reply refers to a pull request, issue, commit, branch, CI run, ticket or web page, give
+its full clickable URL rather than only a short reference such as `#123` or `owner/repo#123`.
+A short reference can follow the URL, but should not replace it.

@@ -84,8 +84,8 @@ done
 # Fail here rather than letting the tab open and claude error inside it, where
 # the message scrolls past and the tab just looks broken. Search instead of
 # deriving the project-dir encoding, so a rename or an odd path cannot break it.
-transcript=$(find "$HOME/.claude/projects" -name "$sid.jsonl" -type f 2>/dev/null | head -1)
-[ -n "$transcript" ] || die "no transcript for session $sid (looked under ~/.claude/projects)" 5
+transcript=$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name "$sid.jsonl" -type f 2>/dev/null | head -1)
+[ -n "$transcript" ] || die "no transcript for session $sid (looked under ${CLAUDE_CONFIG_DIR:-~/.claude}/projects)" 5
 
 # Default tab name: the next free fork-N. Same name = a_c_zellij_tab focuses the
 # existing tab instead of making one, which for a fork is exactly wrong: you

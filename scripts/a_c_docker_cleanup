@@ -38,6 +38,7 @@
 # Tuning (env vars):
 #   CONTAINER_AGE   Age cutoff for stopped containers   (default 24h)
 #   CACHE_AGE       Age cutoff for build cache          (default 168h = 7 days)
+#   DOCKER_TIMEOUT  Seconds to wait for the daemon to answer (default 15)
 #   DOCKER_CLEANUP_LOG   Log file  (default ~/Library/Logs/a_c_docker_cleanup.log)
 #
 # Exit codes: 0 ok (incl. daemon not running - a scheduled run must not error).
@@ -47,6 +48,7 @@ set -euo pipefail
 # ---- config -------------------------------------------------------------
 CONTAINER_AGE="${CONTAINER_AGE:-24h}"
 CACHE_AGE="${CACHE_AGE:-168h}"
+DOCKER_TIMEOUT="${DOCKER_TIMEOUT:-15}"
 LOG_FILE="${DOCKER_CLEANUP_LOG:-$HOME/Library/Logs/a_c_docker_cleanup.log}"
 
 DRY_RUN=0
@@ -94,8 +96,24 @@ log "${BLUE}Docker cleanup${NC}  $(date '+%Y-%m-%d %H:%M:%S')  mode=$([ "$AGGRES
 rule
 
 # Daemon reachable? If not, exit clean - a scheduled run must not fail loudly.
-if ! docker info >/dev/null 2>&1; then
-    log "${YELLOW}Docker daemon not reachable. Nothing to do; exiting cleanly.${NC}"
+# A Docker Desktop stuck mid-shutdown keeps the socket open but never answers,
+# so `docker info` would wait forever. macOS has no `timeout`, so poll by hand.
+docker_answers() {
+    docker info >/dev/null 2>&1 &
+    local pid=$! waited=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$DOCKER_TIMEOUT" ]; then
+            kill "$pid" 2>/dev/null
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$pid"
+}
+if ! docker_answers; then
+    log "${YELLOW}Docker daemon not reachable within ${DOCKER_TIMEOUT}s. Nothing to do; exiting cleanly.${NC}"
+    log "${DIM}  If Docker Desktop shows as running, it is likely stuck: quit and reopen it.${NC}"
     exit 0
 fi
 

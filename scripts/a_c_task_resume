@@ -10,7 +10,14 @@
 # Usage:
 #   a_c_task_resume                      pick from a numbered list (Enter = task #1)
 #   a_c_task_resume <ticket-or-branch>   jump straight to the matching task
+#   a_c_task_resume <key> -c              launch its saved provider in the worktree
+#   a_c_task_resume <key> --provider codex [-m model] [-p prompt] [-- native args]
 #   a_c_task_resume -h                   show this help
+#
+# No launch flags: cd only. -c/--claude launches the saved provider, falling back
+# to A_TASK_PROVIDER then claude for older tasks. --provider overrides and saves
+# that choice. -p, -m, --bypass and native args also imply launch. This starts an
+# interactive session; it does not restore a previous provider conversation.
 #
 # Argument (optional):
 #   <ticket-or-branch>   a ticket (e.g. PROJ-123) or branch name to match.
@@ -26,10 +33,28 @@ fi
 . "$A_C_TASK_BASE/scripts/a_s_task_common.sh"
 
 _a_c_task_resume_main() {
-    case "${1:-}" in
-        -h|--help) sed -n '2,17p' "$A_C_TASK_BASE/scripts/a_c_task_resume" | sed 's/^# \{0,1\}//'; return 0 ;;
-    esac
-    local key="${1:-}" records sel
+    local key="" records sel provider_arg="" launch=0 prompt="" bypass=0
+    local passthrough=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -h|--help) sed -n '2,/^# Locate this repo/p' "$A_C_TASK_BASE/scripts/a_c_task_resume" | sed 's/^# \{0,1\}//; /^Locate this repo/d'; return 0 ;;
+            --provider|-p|--prompt|-m|--model)
+                [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "$1 requires a value" >&2; return 1; }
+                case "$1" in
+                    --provider) provider_arg="$2" ;;
+                    -p|--prompt) prompt="$2" ;;
+                    -m|--model) passthrough+=(--model "$2") ;;
+                esac
+                launch=1; shift ;;
+            -c|--claude) launch=1 ;;
+            --bypass|--dangerous) bypass=1; launch=1 ;;
+            --) shift; passthrough+=("$@"); launch=1; break ;;
+            -*) echo "Unknown argument: $1" >&2; return 1 ;;
+            *) [ -z "$key" ] || { echo "Unexpected argument: $1" >&2; return 1; }; key="$1" ;;
+        esac
+        shift
+    done
+    [ -z "$provider_arg" ] || a_task_validate_provider "$provider_arg" || return 1
     records="$(a_task_records)"
     if [ -z "$records" ]; then
         echo -e "${A_T_YELLOW}No active tasks. Start one with a_c_task_start.${A_T_NC}"
@@ -71,12 +96,26 @@ EOF
         cd "$repo" || return 1
         echo -e "${A_T_YELLOW}Worktree missing - switched to $repo; checking out $branch.${A_T_NC}"
         git checkout "$branch" 2>/dev/null \
-            || echo -e "${A_T_RED}Branch $branch not found here.${A_T_NC}"
+            || { echo -e "${A_T_RED}Branch $branch not found here.${A_T_NC}"; return 1; }
     else
         echo -e "${A_T_RED}Neither the worktree nor the repo path exists for $ticket.${A_T_NC}"
         echo -e "${A_T_DIM}Clean it up with: a_c_task_finish $ticket${A_T_NC}"
         return 1
     fi
+    if [ "$launch" -eq 1 ]; then
+        local provider name target slug ticket_slug
+        target="$PWD"
+        provider="$(a_task_provider_get "$worktree" "$provider_arg")" || return 1
+        command -v "$provider" >/dev/null 2>&1 || { echo "Required provider CLI not found: $provider" >&2; return 1; }
+        a_task_provider_save "$worktree" "$provider" || return 1
+        slug="${branch#*/}"
+        ticket_slug="$(printf '%s' "$ticket" | tr '[:upper:]' '[:lower:]')"
+        slug="${slug#"$ticket_slug"}"; slug="${slug#-}"
+        name="$(a_task_session_name "$ticket" "$(a_task_repo_prefix "$(basename "$repo")")" "$slug")"
+        bash "$A_C_TASK_BASE/scripts/a_s_task_launch" "$provider" "$name" "$target" "$prompt" "$bypass" -- "${passthrough[@]}"
+        return $?
+    fi
+
 }
 
 _a_c_task_resume_main "$@"

@@ -1,0 +1,211 @@
+#!/bin/bash
+# a_c_claude_profile: extra Claude Code commands (e.g. claudeWork, claudeAlt) that
+# share your main ~/.claude setup but keep their own login, history and sessions.
+#
+# Claude Code reads everything from one folder, and CLAUDE_CONFIG_DIR picks which
+# folder. Each profile gets its own folder under ~/.claude-profiles/<name>/, where
+# the shared items (CLAUDE.md, skills, agents, plugins, ...) are symlinks back to
+# ~/.claude. A skill changed in one place applies to every profile. Login
+# (.credentials.json, .claude.json), history and projects stay separate, so each
+# profile can sign in to a different account.
+#
+# A launcher at ~/.local/bin/<name> runs claude with that folder. Profiles are
+# for subscription logins, so the launcher keeps API-key auth out:
+#   - settings.json is a copy of ~/.claude/settings.json without the auth keys
+#     (apiKeyHelper, forceLogin*, and ANTHROPIC_* / Bedrock / Vertex env), rebuilt
+#     on every launch. Change settings in ~/.claude/settings.json, not in a profile.
+#   - ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL and
+#     CLAUDE_CODE_OAUTH_TOKEN from your shell are cleared for the profile.
+#
+# Usage:
+#   a_c_claude_profile add <name>       create or refresh a profile and its command
+#   a_c_claude_profile list             show profiles and their link state
+#   a_c_claude_profile usage            account, plan and usage limits of every profile
+#   a_c_claude_profile remove <name>    remove the command (keeps the folder)
+#   a_c_claude_profile remove <name> --purge   also delete the folder and its login
+#
+# `add` is safe to re-run: it links shared items that appeared in ~/.claude since.
+# On the first `add`, user-level MCP servers from ~/.claude.json are copied over.
+# Run the new command once and log in (/login) to finish.
+#
+# Usage limits come from the status line: Claude Code passes it .rate_limits on
+# every redraw, and the status line saves them to <config dir>/.usage-limits.json.
+# Add this after `input=$(cat)` in your status line script (once per machine):
+#   cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+#   rl=$(printf '%s' "$input" | jq -c 'select(.rate_limits) | {saved_at: (now|floor), rate_limits}' 2>/dev/null)
+#   [ -n "$rl" ] && printf '%s\n' "$rl" >"$cfg/.usage-limits.json.tmp" && mv -f "$cfg/.usage-limits.json.tmp" "$cfg/.usage-limits.json"
+# So the numbers are as of that profile's last session, and the age is shown.
+#
+# Environment:
+#   A_CLAUDE_PROFILES_DIR   where profile folders live (default ~/.claude-profiles)
+#   A_CLAUDE_PROFILE_BIN    where launchers go (default ~/.local/bin)
+
+set -euo pipefail
+
+prog="${0##*/}"
+main_dir="$HOME/.claude"
+profiles_dir="${A_CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}"
+bin_dir="${A_CLAUDE_PROFILE_BIN:-$HOME/.local/bin}"
+marker="# managed by a_c_claude_profile"
+
+shared_items=(
+  CLAUDE.md skills agents commands hooks output-styles plugins
+  scripts statusline-command.sh aa-framework-hints.md keybindings.json
+)
+
+usage() { sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0"; }
+die() { echo "$prog: $*" >&2; exit 1; }
+
+check_name() {
+  local name="$1"
+  [[ "$name" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] || die "invalid name '$name' (letters, digits, - and _ only)"
+  [ "$name" != "claude" ] || die "'claude' is the main command, pick another name"
+}
+
+# Settings keys that pick an auth method; a profile must log in on its own.
+settings_filter='del(.apiKeyHelper, .awsAuthRefresh, .awsCredentialExport, .forceLoginMethod, .forceLoginOrgUUID)
+  | if .env then .env |= with_entries(select(.key | test("^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_(BEDROCK|VERTEX)$|AWS_|CLOUD_ML_)") | not)) else . end'
+
+launcher_is_ours() { [ -f "$1" ] && grep -qF "$marker" "$1"; }
+
+cmd_add() {
+  local name="$1" dir="$profiles_dir/$1" launcher="$bin_dir/$1" item existing
+  check_name "$name"
+  [ -d "$main_dir" ] || die "no $main_dir to share from"
+
+  if [ -e "$launcher" ] && ! launcher_is_ours "$launcher"; then
+    die "$launcher exists and was not made by this tool"
+  fi
+  if ! launcher_is_ours "$launcher"; then
+    existing="$(command -v "$name" 2>/dev/null || true)"
+    [ -z "$existing" ] || die "'$name' already runs $existing"
+  fi
+
+  mkdir -p "$dir" "$bin_dir"
+  for item in "${shared_items[@]}"; do
+    [ -e "$main_dir/$item" ] || continue
+    if [ -L "$dir/$item" ]; then
+      ln -sfn "$main_dir/$item" "$dir/$item"
+    elif [ -e "$dir/$item" ]; then
+      echo "  kept own $item (a real file in the profile, not linked)"
+    else
+      ln -s "$main_dir/$item" "$dir/$item"
+      echo "  linked $item"
+    fi
+  done
+
+  command -v jq >/dev/null || die "needs jq (mise use -g jq@latest)"
+  if [ -L "$dir/settings.json" ]; then
+    rm "$dir/settings.json"
+    echo "  settings.json is now a filtered copy (was a link)"
+  fi
+
+  if [ ! -e "$dir/.claude.json" ] && [ -f "$HOME/.claude.json" ]; then
+    node -e '
+      const fs = require("fs");
+      const src = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const out = src.mcpServers ? { mcpServers: src.mcpServers } : {};
+      fs.writeFileSync(process.argv[2], JSON.stringify(out, null, 2), { mode: 0o600 });
+      console.log("  copied MCP servers: " + (Object.keys(out.mcpServers || {}).join(", ") || "none"));
+    ' "$HOME/.claude.json" "$dir/.claude.json"
+  fi
+
+  {
+    echo '#!/bin/sh'
+    echo "$marker"
+    echo "export CLAUDE_CONFIG_DIR=\"$dir\""
+    echo 'unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN'
+    echo "main=\"$main_dir/settings.json\""
+    echo 'if [ -f "$main" ]; then'
+    echo "  jq '$settings_filter' \"\$main\" >\"\$CLAUDE_CONFIG_DIR/settings.json.tmp\" &&"
+    echo '    mv -f "$CLAUDE_CONFIG_DIR/settings.json.tmp" "$CLAUDE_CONFIG_DIR/settings.json"'
+    echo 'fi'
+    echo 'exec claude "$@"'
+  } >"$launcher"
+  chmod +x "$launcher"
+  # Build the settings copy now too, so `claude auth status` sees it before first launch.
+  [ ! -f "$main_dir/settings.json" ] || jq "$settings_filter" "$main_dir/settings.json" >"$dir/settings.json"
+
+  echo "Ready: run '$name' and log in with /login on first start."
+  echo "  config: $dir"
+  echo "  command: $launcher"
+}
+
+cmd_list() {
+  local dir name item state
+  [ -d "$profiles_dir" ] || { echo "No profiles yet."; return; }
+  for dir in "$profiles_dir"/*/; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    if launcher_is_ours "$bin_dir/$name"; then state="command ok"; else state="no command"; fi
+    [ -f "$dir/.credentials.json" ] && state="$state, logged in" || state="$state, not logged in"
+    local missing=()
+    for item in "${shared_items[@]}"; do
+      [ -e "$main_dir/$item" ] && [ ! -e "$dir/$item" ] && missing+=("$item")
+    done
+    [ ${#missing[@]} -eq 0 ] || state="$state, not linked: ${missing[*]} (re-run add)"
+    echo "$name: $state"
+  done
+}
+
+fmt_time() {
+  local t="$1"
+  [ -n "$t" ] && [ "$t" != "null" ] || return 0
+  [[ "$t" =~ ^[0-9]+$ ]] && t="@$t"
+  date -d "$t" '+%a %H:%M' 2>/dev/null || date -r "${t#@}" '+%a %H:%M' 2>/dev/null || echo "$t"
+}
+
+usage_row() {
+  local label="$1" dir="$2" auth who cache line age
+  if [ "$dir" = "$main_dir" ]; then
+    auth="$(env -u CLAUDE_CONFIG_DIR claude auth status --json 2>/dev/null || true)"
+  else
+    auth="$(CLAUDE_CONFIG_DIR="$dir" claude auth status --json 2>/dev/null || true)"
+  fi
+  who="$(printf '%s' "$auth" | jq -r 'if .loggedIn then "\(.email // "?") (\(.subscriptionType // .authMethod // "?"))" else "not logged in" end' 2>/dev/null || echo "unknown")"
+  echo "$label: $who"
+  cache="$dir/.usage-limits.json"
+  if [ ! -f "$cache" ]; then
+    echo "  usage: no data yet (start a session in it with the status line snippet in place)"
+    return
+  fi
+  age=$(( ($(date +%s) - $(jq -r '.saved_at // 0' "$cache")) / 60 ))
+  while IFS=$'\t' read -r name pct resets; do
+    line="  $name: ${pct}% used"
+    [ -n "$resets" ] && [ "$resets" != "null" ] && line="$line, resets $(fmt_time "$resets")"
+    echo "$line"
+  done < <(jq -r '.rate_limits | to_entries[] | select(.value | type == "object" and has("used_percentage"))
+                  | [(.key | sub("five_hour"; "5-hour") | sub("seven_day"; "7-day")), (.value.used_percentage | floor), (.value.resets_at // "")] | @tsv' "$cache")
+  echo "  (as of ${age} min ago)"
+}
+
+cmd_usage() {
+  local dir
+  command -v jq >/dev/null || die "usage needs jq"
+  usage_row "claude" "$main_dir"
+  [ -d "$profiles_dir" ] || return 0
+  for dir in "$profiles_dir"/*/; do
+    [ -d "$dir" ] || continue
+    usage_row "$(basename "$dir")" "${dir%/}"
+  done
+}
+
+cmd_remove() {
+  local name="$1" purge="${2:-}" launcher="$bin_dir/$1"
+  check_name "$name"
+  if launcher_is_ours "$launcher"; then rm -f "$launcher"; echo "removed $launcher"; fi
+  if [ "$purge" = "--purge" ]; then
+    [ -d "$profiles_dir/$name" ] && rm -rf "${profiles_dir:?}/$name" && echo "deleted $profiles_dir/$name"
+  else
+    echo "kept $profiles_dir/$name (add --purge to delete it and its login)"
+  fi
+}
+
+case "${1:-}" in
+  add) [ $# -eq 2 ] || die "usage: $prog add <name>"; cmd_add "$2" ;;
+  list) cmd_list ;;
+  usage) cmd_usage ;;
+  remove) [ $# -ge 2 ] || die "usage: $prog remove <name> [--purge]"; cmd_remove "$2" "${3:-}" ;;
+  -h | --help | "") usage ;;
+  *) die "unknown command '$1' (try --help)" ;;
+esac

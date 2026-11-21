@@ -92,6 +92,22 @@ fi
 Put that in the file your shell rc already sources. Everything else is in git. `a_sk_setup_agents`
 does this and the rest of the machine setup.
 
+Doctor can restore a missing repository with `a_c_doctor set private overlay`,
+`a_c_doctor set org overlay`, or `a_c_doctor --configure root`. Each overlay command goes
+straight to that role's local directory prompt, then asks for the matching Git URL if cloning
+is needed. An empty directory skips without changing configuration. Values are backed up:
+
+| Role | Local directory | Git clone URL | Configuration file |
+|---|---|---|---|
+| `root` | `A_ROOT_DIR` | `A_ROOT_REMOTE` | the machine's `my_settings` profile |
+| private, with root | `PRIVATE_DEVKIT_DIR` | `PRIVATE_DEVKIT_REMOTE` | `root.local.config` |
+| organization, with root | `ORG_DEVKIT_DIR` | `ORG_DEVKIT_REMOTE` | `root.local.config` |
+| private, standalone | `A_AGENT_OVERLAY_DIR` | `A_AGENT_OVERLAY_REMOTE` | the machine's `my_settings` profile |
+| organization, standalone | `A_AGENT_ORG_OVERLAY_DIR` | `A_AGENT_ORG_OVERLAY_REMOTE` | the machine's `my_settings` profile |
+
+Configured paths that are missing are warned about on every doctor run. Skipping preserves
+the configuration. Empty optional roles remain valid.
+
 **Then check what the shell sources after it.** Anything that redefines the same alias later
 silently wins, and the failure is slow to find because every variable still reads correctly while
 the alias is wrong.

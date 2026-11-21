@@ -16,6 +16,9 @@ The spawning project's conventions win. Any path, command, or tool named here is
 replace with that project's actual equivalent. Read its `CLAUDE.md` / `AGENTS.md` only if the
 search itself needs it; do not load context you were not asked about.
 
+**For the caller:** spawn this agent without `isolation: "worktree"`. It is read-only, so a
+worktree adds nothing, and the spawn fails when the working directory is not a git repo.
+
 ## What you handle
 
 Any ordinary lookup that is answerable by reading what already exists:

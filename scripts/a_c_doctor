@@ -5,6 +5,19 @@
 # Usage:
 #   a_c_doctor             check everything, fetching from each repo's origin for updates
 #   a_c_doctor --offline   same, but compare against what was last fetched (no network)
+#   a_c_doctor --shell-only  check command loading in a fresh shell only
+#   a_c_doctor set private overlay
+#                          set the private overlay path and Git URL
+#   a_c_doctor set org overlay
+#                          set the organization overlay path and Git URL
+#   a_c_doctor --configure root|overlay
+#                          configure a root or choose an overlay role
+#   a_c_doctor --fix       also repair: repoint the config at repos that were moved (keeps
+#                          backups), shell wiring, and skill/agent links that point at an
+#                          old copy or at a repo that no longer has them
+#   a_c_doctor --set-overlay <folder>
+#                          record where your private overlay repo is on this machine (in
+#                          the right config file, with a backup), then re-run install.sh
 #
 # Checks, each with the command that fixes what it finds:
 #   - the shell rc file loads the devkit profile
@@ -23,15 +36,31 @@
 set -uo pipefail
 
 OFFLINE=false
-for a in "$@"; do
+FIX=false
+SHELL_ONLY=false
+SET_OVERLAY=""
+CONFIGURE=""
+case "${1:-} ${2:-} ${3:-}" in
+    "set private overlay") CONFIGURE=private-overlay; shift 3 ;;
+    "set org overlay") CONFIGURE=org-overlay; shift 3 ;;
+esac
+while [ $# -gt 0 ]; do
+    a="$1"; shift
     case "$a" in
         --offline) OFFLINE=true ;;
+        --fix) FIX=true ;;
+        --shell-only) SHELL_ONLY=true ;;
+        --configure) CONFIGURE="${1:?--configure needs root or overlay}"; shift ;;
+        --set-overlay) SET_OVERLAY="${1:?--set-overlay needs the folder of your overlay repo}"; shift ;;
         -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "a_c_doctor: unknown argument: $a (see --help)" >&2; exit 2 ;;
     esac
 done
 
 DEVKIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -n "$CONFIGURE" ]; then
+    exec "$DEVKIT/scripts/a_s_doctor_configure" "$CONFIGURE"
+fi
 
 if [ -t 1 ]; then
     GREEN='\033[0;32m' YELLOW='\033[1;33m' RED='\033[0;31m' BLUE='\033[0;34m' DIM='\033[2m' NC='\033[0m'
@@ -45,6 +74,22 @@ broken()  { echo -e " ${RED}✗${NC} $1"; err=$((err+1)); }
 info()    { echo -e " ${DIM}·${NC} $1"; }
 fix()     { echo -e "     ${DIM}fix:${NC} ${GREEN}$1${NC}"; }
 section() { echo; echo -e "${BLUE}$1${NC}"; }
+
+if $FIX; then
+    # Moved repos first: every check below reads the paths they fix.
+    if ! "$DEVKIT/scripts/a_s_relocate_repos" --list >/dev/null; then
+        echo -e "${BLUE}Moved repos${NC}"
+        if "$DEVKIT/scripts/a_s_relocate_repos" --apply; then
+            # The calling shell still exports the old paths, so drop them and relink from the files.
+            echo "relinking skills, agents and guidance from the new paths ..."
+            env -u A_ROOT_DIR -u DEVKIT_DIR -u MY_WORKFLOW_DIR -u A_AGENT_OVERLAY_DIR -u A_AGENT_ORG_OVERLAY_DIR \
+                -u A_MACHINE_NAME "$DEVKIT/install.sh" --link-only
+            exit $?
+        fi
+        unset A_ROOT_DIR
+    fi
+    "$DEVKIT/install.sh" --shell-only || broken "shell wiring repair failed"
+fi
 
 # ------------------------------------------------------------------- load the config
 #
@@ -68,23 +113,22 @@ done
 
 ROOT="${A_ROOT_DIR:-}"
 [ -n "$ROOT" ] || ROOT="$(read_assignment A_ROOT_DIR "${PROFILE:-/dev/null}")"
+EXPECTED_ROOT="$ROOT"
 [ -n "$ROOT" ] && [ -f "$ROOT/root.config" ] || ROOT=""
 
 if [ -n "$ROOT" ]; then
     # The keys a user edits, and the file they edit them in.
     CONFIG="$ROOT/root.local.config"
     KEY_P=PERSONAL_REPOS_DIR KEY_W=ORG_REPOS_DIR KEY_G=GLOBAL_REPOS_DIR
-    if [ -z "${MY_WORKFLOW_DIR:-}" ]; then
-        set +u
-        [ -f "$ROOT/root.local.config" ] && . "$ROOT/root.local.config"
-        . "$ROOT/root.config"
-        set -u
-        a_dir_p_repos="${PERSONAL_REPOS_DIR:-}"
-        a_dir_w_repos="${ORG_REPOS_DIR:-}"
-        a_dir_g_repos="${GLOBAL_REPOS_DIR:-}"
-        A_AGENT_OVERLAY_DIR="${PRIVATE_DEVKIT_DIR:-}"
-        A_AGENT_ORG_OVERLAY_DIR="${ORG_DEVKIT_DIR:-}"
-    fi
+    set +u
+    [ -f "$ROOT/root.local.config" ] && . "$ROOT/root.local.config"
+    . "$ROOT/root.config"
+    set -u
+    a_dir_p_repos="${PERSONAL_REPOS_DIR:-}"
+    a_dir_w_repos="${ORG_REPOS_DIR:-}"
+    a_dir_g_repos="${GLOBAL_REPOS_DIR:-}"
+    A_AGENT_OVERLAY_DIR="${PRIVATE_DEVKIT_DIR:-}"
+    A_AGENT_ORG_OVERLAY_DIR="${ORG_DEVKIT_DIR:-}"
 else
     CONFIG="$PROFILE"
     KEY_P=a_dir_p_repos KEY_W=a_dir_w_repos KEY_G=a_dir_g_repos
@@ -96,6 +140,34 @@ else
         A_AGENT_ORG_OVERLAY_DIR="$(read_assignment A_AGENT_ORG_OVERLAY_DIR "$PROFILE")"
     fi
 fi
+# Older profiles use A_CLAUDE_OVERLAY_DIR for the private overlay.
+if [ -z "${A_AGENT_OVERLAY_DIR:-}" ]; then
+    A_AGENT_OVERLAY_DIR="${A_CLAUDE_OVERLAY_DIR:-$(read_assignment A_CLAUDE_OVERLAY_DIR "${PROFILE:-/dev/null}")}"
+fi
+if [ -n "$SET_OVERLAY" ]; then
+    dir="$(cd -P "${SET_OVERLAY/#\~/$HOME}" 2>/dev/null && pwd)" \
+        || { echo "a_c_doctor: no folder at $SET_OVERLAY" >&2; exit 2; }
+    [ -d "$dir/skills" ] || [ -d "$dir/agents" ] \
+        || { echo "a_c_doctor: $dir has no skills/ or agents/ folder; is it the overlay repo?" >&2; exit 2; }
+    if [ -n "$ROOT" ]; then file="$ROOT/root.local.config"; key=PRIVATE_DEVKIT_DIR; line="$key=\"$dir\""
+    else file="$PROFILE"; key=A_AGENT_OVERLAY_DIR; line="export $key=\"$dir\""; fi
+    [ -n "$file" ] || { echo "a_c_doctor: no config file found; run install.sh first" >&2; exit 2; }
+    if [ -f "$file" ]; then
+        bak="$file.bak-$(date +%Y%m%d%H%M%S)"
+        (umask 077; cp -p "$file" "$bak") && chmod go-rwx "$bak"
+    fi
+    if [ -f "$file" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$key=" "$file"; then
+        tmp="$(mktemp)"
+        sed -E "s|^[[:space:]]*(export[[:space:]]+)?$key=.*|$line|" "$file" > "$tmp" && cat "$tmp" > "$file"; rm -f "$tmp"
+    else
+        printf '\n# Private overlay repo on this machine (set by a_c_doctor --set-overlay)\n%s\n' "$line" >> "$file"
+    fi
+    echo -e "${GREEN}set${NC} $line ${DIM}in $file${NC}"
+    export A_AGENT_OVERLAY_DIR="$dir" PRIVATE_DEVKIT_DIR="$dir"
+    echo "running install.sh to link its skills and agents ..."
+    exec "$DEVKIT/install.sh" --link-only
+fi
+
 # The name is read fresh from the file, so a rename shows up before the shell reloads.
 NAME="$(read_assignment MACHINE_NAME "${CONFIG:-/dev/null}")"
 [ -n "$NAME" ] || NAME="$(read_assignment A_MACHINE_NAME "${CONFIG:-/dev/null}")"
@@ -106,8 +178,7 @@ echo -e "${BLUE}agentic-devkit doctor${NC} ${DIM}($DEVKIT)${NC}"
 # ------------------------------------------------------------------- shell wiring
 section "Shell"
 if [ -z "$PROFILE" ]; then
-    broken "no profile in ~/my_settings, so nothing loads the devkit"
-    fix "$DEVKIT/install.sh"
+    info "no standard settings profile; checking command loading directly"
 else
     rc=""
     case "$(basename "${SHELL:-}")" in
@@ -116,10 +187,34 @@ else
     esac
     if [ -f "$rc" ] && grep -Eq "^[^#]*(source|\.)[[:space:]].*my_settings/[^ ]*\.profile" "$rc"; then
         good "$(basename "$rc") loads $(basename "$PROFILE")"
+    elif [ -f "$rc" ] && grep -Fq '# >>> agentic-devkit shell hook >>>' "$rc"; then
+        info "$rc has a devkit startup hook; checking command loading directly"
     else
         broken "$rc does not load $PROFILE"
         fix "$DEVKIT/install.sh"
     fi
+fi
+# An rc source line and an exported variable cannot prove commands load. Start
+# with those inherited paths removed so the user's startup files must wire them.
+shell_bin="${SHELL:-/bin/zsh}"
+case "$(basename "$shell_bin")" in
+    bash|zsh)
+        if shell_result="$(env -u MY_WORKFLOW_DIR -u DEVKIT_DIR "$shell_bin" -ic '
+            [ "${MY_WORKFLOW_DIR:-}" = "$1" ] &&
+            [ "$(command -v a_c_doctor)" = "$1/scripts/a_c_doctor" ] &&
+            command -v a_c_workflow_doctor >/dev/null 2>&1
+        ' devkit-shell-check "$DEVKIT" 2>&1)"; then
+            good "fresh $(basename "$shell_bin") loads this checkout’s commands"
+        else
+            broken "fresh $(basename "$shell_bin") does not load this checkout’s commands"
+            fix "$DEVKIT/scripts/a_c_doctor --fix --shell-only"
+        fi
+        ;;
+    *) broken "cannot check unsupported shell: $shell_bin" ;;
+esac
+if $SHELL_ONLY; then
+    [ $((warn + err)) -eq 0 ]
+    exit $?
 fi
 # A settings file that still names an old or moved checkout loads that copy's shell
 # functions and prompt, not this devkit's, even though every link here is correct.
@@ -131,6 +226,42 @@ if [ -n "$CONFIG" ]; then
         fix "set MY_WORKFLOW_DIR='$DEVKIT' in $CONFIG, then: source ~/.zshrc"
     fi
 fi
+
+section "Configured repositories"
+# A configured folder that is gone, but whose repo is nearby under the same name, was
+# moved. Say where it is now; --fix repoints all of them at once.
+MOVED="$("$DEVKIT/scripts/a_s_relocate_repos" --list 2>/dev/null || true)"
+moved_to() { printf '%s\n' "$MOVED" | awk -F'\t' -v k="$1" '$1 == k { print $4; exit }'; }
+moved_any=false
+while IFS="$(printf '\t')" read -r key old file found; do
+    [ -n "$found" ] || continue
+    bad "$key=$old is gone; the repo is now at ${found//|/ or }"
+    moved_any=true
+done <<MOVED_EOF
+$MOVED
+MOVED_EOF
+$moved_any && fix "$DEVKIT/scripts/a_c_doctor --fix   (repoints them, with backups, and relinks)"
+if [ -n "$EXPECTED_ROOT" ] && [ ! -f "$EXPECTED_ROOT/root.config" ] && [ -z "$(moved_to A_ROOT_DIR)" ]; then
+    bad "A_ROOT_DIR=$EXPECTED_ROOT has no root.config"
+    info "A_ROOT_DIR needs a local root-repo directory; A_ROOT_REMOTE needs its Git clone URL"
+    fix "a_c_doctor --configure root"
+fi
+for role in private-overlay org-overlay; do
+    # With the root moved, these values are only what an old shell exported; --fix reads the real ones.
+    [ -z "$(moved_to A_ROOT_DIR)" ] || break
+    if [ "$role" = private-overlay ]; then
+        dir="${A_AGENT_OVERLAY_DIR:-}"; key=A_AGENT_OVERLAY_DIR; remote_key=A_AGENT_OVERLAY_REMOTE
+        [ -z "$ROOT" ] || { key=PRIVATE_DEVKIT_DIR; remote_key=PRIVATE_DEVKIT_REMOTE; }
+    else
+        dir="${A_AGENT_ORG_OVERLAY_DIR:-}"; key=A_AGENT_ORG_OVERLAY_DIR; remote_key=A_AGENT_ORG_OVERLAY_REMOTE
+        [ -z "$ROOT" ] || { key=ORG_DEVKIT_DIR; remote_key=ORG_DEVKIT_REMOTE; }
+    fi
+    if [ -n "$dir" ] && [ ! -d "$dir" ] && [ -z "$(moved_to "$key")" ]; then
+        bad "$key=$dir is missing"
+        info "$key needs a local overlay directory; $remote_key needs its Git clone URL"
+        fix "a_c_doctor --configure $role"
+    fi
+done
 [ -n "$CONFIG" ] && info "settings file: $CONFIG"
 
 # ------------------------------------------------------------------- machine
@@ -211,7 +342,8 @@ if ! $OFFLINE; then
     wait
 fi
 
-needs_install=false
+PULL_CMD=""   # one pull per repo with updates, joined with &&, then a single install
+BEHIND=" "   # repos with updates waiting, space separated (bash 3.2 has no maps)
 i=0
 for d in "${REPOS[@]}"; do
     n="$(basename "$d")"
@@ -226,8 +358,9 @@ for d in "${REPOS[@]}"; do
         behind="$(git -C "$d" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)"
         ahead="$(git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)"
         if [ "$behind" -gt 0 ]; then
+            BEHIND="$BEHIND$d "
             bad "$n: $behind update(s) waiting on ${branch:-its branch}"
-            fix "git -C \"$d\" pull && \"$DEVKIT/install.sh\""
+            PULL_CMD="${PULL_CMD:+$PULL_CMD && }git -C \"$d\" pull"
         else
             good "$n is up to date"
         fi
@@ -237,21 +370,41 @@ for d in "${REPOS[@]}"; do
     [ "$dirty" -gt 0 ] && info "$n has $dirty uncommitted change(s)"
     i=$((i+1))
 done
+[ -n "$PULL_CMD" ] && fix "$PULL_CMD && \"$DEVKIT/install.sh\""
 $OFFLINE && info "offline: compared against the last fetch, not the origin"
 
 # ------------------------------------------------------------------- installed links
 section "Installed skills and agents"
 # A name can come from the devkit or an overlay, so a link is right if it points into
-# any of the repos above.
+# any of the repos above. A wrong link gets a reason and a fix that actually clears it:
+#   repoint  a configured repo has this name, the link points somewhere else
+#   orphan   no configured repo has this name and the link leads nowhere: remove it
+#   foreign  it leads into a folder outside the configured repos that still exists
+#            (an overlay this machine no longer configures): yours to decide
 points_into_repos() {
     local target r
     target="$(cd -P "$1" 2>/dev/null && pwd || readlink "$1")"
     for r in "${REPOS[@]}"; do case "$target" in "$r"/*) return 0 ;; esac; done
     return 1
 }
-missing=() stale=()
+# provider_of <name> <skills|agents> -> the path in a configured repo that provides it
+provider_of() {
+    local r
+    for r in "${REPOS[@]}"; do
+        if [ "$2" = skills ]; then [ -f "$r/skills/$1/SKILL.md" ] && { echo "$r/skills/$1"; return; }
+        else [ -f "$r/agents/$1" ] && { echo "$r/agents/$1"; return; }; fi
+    done
+}
+missing=() repoint=() orphan=() foreign=() missing_from=" "
+classify() {  # classify <link> <skills|agents>
+    local link="$1" kind="$2" want
+    want="$(provider_of "$(basename "$link")" "$kind")"
+    if [ -n "$want" ]; then repoint+=("$link|$want")
+    elif [ ! -e "$link" ]; then orphan+=("$link")
+    else foreign+=("$link"); fi
+}
 check_home() {
-    local home="$1" kind="$2" r src n link
+    local home="$1" kind="$2" r src n link seen=" "
     [ -d "$home" ] || return 0
     for r in "${REPOS[@]}"; do
         if [ "$kind" = skills ]; then
@@ -261,36 +414,145 @@ check_home() {
                 [ "$home" != "$HOME/.claude/skills" ] \
                     && grep -Eq '^providers:[[:space:]]*claude[[:space:]]*$' "$src" && continue
                 n="$(basename "$(dirname "$src")")"; link="$home/$n"
-                if [ ! -e "$link" ]; then missing+=("$link")
-                elif [ -L "$link" ] && ! points_into_repos "$link"; then stale+=("$link"); fi
+                if [ ! -e "$link" ] && [ ! -L "$link" ]; then missing+=("$link"); missing_from="$missing_from$r "
+                elif [ -L "$link" ] && ! points_into_repos "$link"; then classify "$link" skills; seen="$seen$link "; fi
             done
         else
             for src in "$r"/agents/*.md; do
                 [ -f "$src" ] || continue
                 n="$(basename "$src")"; [ "$n" = README.md ] && continue
                 link="$home/$n"
-                if [ ! -e "$link" ]; then missing+=("$link")
-                elif [ -L "$link" ] && ! points_into_repos "$link"; then stale+=("$link"); fi
+                if [ ! -e "$link" ] && [ ! -L "$link" ]; then missing+=("$link"); missing_from="$missing_from$r "
+                elif [ -L "$link" ] && ! points_into_repos "$link"; then classify "$link" agents; seen="$seen$link "; fi
             done
         fi
     done
-    # Links whose repo file is gone.
-    for link in "$home"/*; do
-        [ -L "$link" ] && [ ! -e "$link" ] && stale+=("$link")
+    # Links nothing above checked: their name is in no configured repo.
+    # Only names in the a_ namespace: anything else (a marketplace or plugin skill) is
+    # not installed by these repos, so it is not ours to judge.
+    for link in "$home"/a_*; do
+        [ -L "$link" ] || continue
+        case "$seen" in *" $link "*) continue ;; esac
+        points_into_repos "$link" && continue
+        if [ ! -e "$link" ]; then orphan+=("$link"); else foreign+=("$link"); fi
     done
 }
 check_home "$HOME/.claude/skills" skills
 check_home "$HOME/.agents/skills" skills
 check_home "$HOME/.claude/agents" agents
 
-if [ "${#missing[@]}" -eq 0 ] && [ "${#stale[@]}" -eq 0 ]; then
+short() { echo "${1/#$HOME/~}"; }
+INSTALL_CMD="\"$DEVKIT/install.sh\""
+if $FIX; then
+    for pair in ${repoint[@]+"${repoint[@]}"}; do
+        rm "${pair%%|*}" && ln -s "${pair#*|}" "${pair%%|*}" && info "repointed $(short "${pair%%|*}") -> $(short "${pair#*|}")"
+    done
+    for link in ${orphan[@]+"${orphan[@]}"}; do rm "$link" && info "removed $(short "$link") (no repo has it)"; done
+    repoint=() orphan=()
+fi
+if [ "${#missing[@]}" -eq 0 ] && [ "${#repoint[@]}" -eq 0 ] && [ "${#orphan[@]}" -eq 0 ] && [ "${#foreign[@]}" -eq 0 ]; then
     good "every skill and agent in these repos is linked"
 else
-    [ "${#missing[@]}" -gt 0 ] && bad "${#missing[@]} not installed yet, e.g. ${missing[0]/#$HOME/~}"
-    [ "${#stale[@]}" -gt 0 ] && bad "${#stale[@]} link(s) broken or pointing elsewhere, e.g. ${stale[0]/#$HOME/~}"
-    needs_install=true
+    if [ "${#missing[@]}" -gt 0 ]; then
+        bad "${#missing[@]} not installed yet, e.g. $(short "${missing[0]}")"
+        # An installer that is out of date cannot install what it does not know about,
+        # so a repo with updates waiting has to be pulled first.
+        stale_src=""
+        for r in "${REPOS[@]}"; do
+            case "$missing_from" in *" $r "*) case "$BEHIND" in *" $r "*) stale_src="$stale_src $r" ;; esac ;; esac
+        done
+        if [ -n "$stale_src" ]; then
+            for r in $stale_src; do info "they come from $(basename "$r"), which has updates waiting; its installer here is older"; done
+            fix "$(for r in $stale_src; do printf 'git -C "%s" pull && ' "$r"; done)$INSTALL_CMD"
+        else
+            fix "$INSTALL_CMD"
+        fi
+    fi
+    if [ "${#repoint[@]}" -gt 0 ]; then
+        bad "${#repoint[@]} link(s) point at an old copy; a configured repo has the right one:"
+        for pair in "${repoint[@]}"; do info "$(short "${pair%%|*}") -> $(short "$(readlink "${pair%%|*}")")"; done
+    fi
+    if [ "${#repoint[@]}" -gt 0 ]; then
+        fix "$INSTALL_CMD"
+    fi
+    if [ "${#orphan[@]}" -gt 0 ]; then
+        unknown_overlay_role=false
+        # Group the dead links by the repo they were linked from (<root>/skills/<name>).
+        roots=" "
+        for link in "${orphan[@]}"; do
+            src="$(dirname "$(dirname "$(readlink "$link")")")"
+            case "$roots" in *" $src "*) ;; *) roots="$roots$src " ;; esac
+        done
+        for src in $roots; do
+            names=""; count=0; first=""
+            for link in "${orphan[@]}"; do
+                [ "$(dirname "$(dirname "$(readlink "$link")")")" = "$src" ] || continue
+                n="$(basename "$link")"; count=$((count+1))
+                case " $names " in *" $n "*) ;; *) names="$names $n"; [ -n "$first" ] || first="$n" ;; esac
+            done
+            if [ -d "$src" ]; then
+                bad "$count link(s) to skills or agents that $(short "$src") no longer has:"
+                info "${names# }"
+                fix "a_c_doctor --fix   (removes these dead links)"
+                continue
+            fi
+            bad "$count link(s) lead into $(short "$src"), which is not on this machine:"
+            info "${names# }"
+            # Is that repo somewhere else here? Look in the repo folders and next to the devkit.
+            found=""
+            for d in "${a_dir_p_repos:-}" "${a_dir_w_repos:-}" "${a_dir_g_repos:-}" "$(dirname "$DEVKIT")"; do
+                [ -n "$d" ] || continue
+                c="$d/$(basename "$src")"
+                if [ -f "$c/skills/$first/SKILL.md" ] || [ -f "$c/agents/$first" ]; then found="$c"; break; fi
+            done
+            if [ -n "$found" ]; then
+                info "that repo is on this machine at $(short "$found")"
+                fix "a_c_doctor --set-overlay \"$found\""
+            else
+                info "they came from your overlay repo ($(basename "$src")). To keep them, clone it on this machine and record where:"
+                private_dir="${A_AGENT_OVERLAY_DIR:-${PRIVATE_DEVKIT_DIR:-}}"
+                org_dir="${A_AGENT_ORG_OVERLAY_DIR:-${ORG_DEVKIT_DIR:-}}"
+                private_dir="${private_dir/#\~/$HOME}"; org_dir="${org_dir/#\~/$HOME}"
+                if [ -n "$private_dir" ] && [ "${private_dir%/}" = "$src" ]; then
+                    fix "a_c_doctor set private overlay"
+                elif [ -n "$org_dir" ] && [ "${org_dir%/}" = "$src" ]; then
+                    fix "a_c_doctor set org overlay"
+                else
+                    info "its overlay role is not recorded here"
+                    unknown_overlay_role=true
+                fi
+                info "or, if this machine should not have them:"
+                fix "a_c_doctor --fix   (removes these dead links)"
+            fi
+        done
+        if $unknown_overlay_role; then
+            info "For each unclassified source above, choose its role once:"
+            info "personal: a_c_doctor set private overlay"
+            info "organisation: a_c_doctor set org overlay"
+        fi
+    fi
+    if [ "${#foreign[@]}" -gt 0 ]; then
+        roots=" "
+        for link in "${foreign[@]}"; do
+            src="$(dirname "$(dirname "$(readlink "$link")")")"
+            case "$roots" in *" $src "*) ;; *) roots="$roots$src " ;; esac
+        done
+        for src in $roots; do
+            names=""; count=0
+            for link in "${foreign[@]}"; do
+                [ "$(dirname "$(dirname "$(readlink "$link")")")" = "$src" ] || continue
+                n="$(basename "$link")"; count=$((count+1))
+                case " $names " in *" $n "*) ;; *) names="$names $n" ;; esac
+            done
+            bad "$count link(s) lead into $(short "$src"), which this machine does not use as a repo:"
+            info "${names# }"
+            info "if that is your overlay, record it:"
+            fix "a_c_doctor --set-overlay \"$src\""
+            info "if not, remove the links (--fix leaves them alone, since the folder still exists):"
+            fix "find ~/.claude/skills ~/.claude/agents ~/.agents/skills -maxdepth 1 -lname '$src/*' -delete 2>/dev/null"
+        done
+    fi
 fi
-$needs_install && fix "\"$DEVKIT/install.sh\""
 
 # ------------------------------------------------------------------- guidance
 section "Agent guidance"
@@ -299,7 +561,7 @@ if [ -x "$DEVKIT/scripts/a_c_agent_memory" ]; then
         good "Claude, Codex and Gemini guidance matches its sources"
     else
         bad "the generated guidance is out of date with its sources"
-        fix "a_c_agent_memory build"
+        fix "$INSTALL_CMD"
     fi
 fi
 

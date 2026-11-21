@@ -1,0 +1,100 @@
+#!/bin/bash
+# a_c_keyring_unlock: unlock the GNOME login keyring from a terminal, on a Linux
+# machine that nobody logs into through a desktop.
+#
+# The problem: the login keyring is normally unlocked by the desktop login,
+# which hands your password to the keyring service. A machine used only over ssh
+# or a remote terminal never gets that, so after a reboot or a restart of the
+# keyring service the keyring stays locked. Any tool that reads a secret from it
+# (acli, gh with the keyring backend, git credential helpers) then asks the
+# service for the secret, the service tries to show a graphical unlock prompt
+# that has no screen to appear on, and the tool waits forever.
+#
+# The fix: read your password in the terminal and start a new keyring service
+# with it (gnome-keyring-daemon --replace --unlock). The new service takes over
+# from the locked one, already unlocked. Secrets stay encrypted on disk.
+#
+# Usage:
+#   a_c_keyring_unlock            unlock if locked (asks for your password)
+#   a_c_keyring_unlock --check    only report; exit 1 if locked, 0 otherwise
+#   a_c_keyring_unlock -h         show this help
+#
+# Exit codes: 0 unlocked (or nothing to do), 1 still locked, 2 cannot run here.
+#
+# The shell profile calls `a_c_keyring_unlock --check` when an interactive shell
+# starts and runs the unlock if it says locked, so the first terminal after a
+# boot asks once. See sourced/keyring.sh.
+
+set -u
+
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
+
+mode=unlock
+case "${1:-}" in
+  -c|--check) mode=check ;;
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) echo "a_c_keyring_unlock: unknown option '$1'" >&2; usage >&2; exit 2 ;;
+esac
+
+if [ "$(uname -s)" != "Linux" ] || ! command -v gnome-keyring-daemon >/dev/null 2>&1; then
+  [ "$mode" = check ] && exit 0
+  echo "a_c_keyring_unlock: no GNOME keyring on this machine, nothing to do." >&2
+  exit 0
+fi
+
+# Prints true / false / missing. Bounded by a timeout so a stuck bus never hangs
+# the caller, which is the whole point.
+login_locked() {
+  local out
+  out=$(timeout 3 gdbus call --session --dest org.freedesktop.secrets \
+        --object-path /org/freedesktop/secrets/collection/login \
+        --method org.freedesktop.DBus.Properties.Get \
+        org.freedesktop.Secret.Collection Locked 2>/dev/null) || { echo missing; return; }
+  case "$out" in
+    *true*) echo true ;;
+    *) echo false ;;
+  esac
+}
+
+state=$(login_locked)
+
+if [ "$mode" = check ]; then
+  [ "$state" = true ] && exit 1
+  exit 0
+fi
+
+if [ "$state" != true ]; then
+  echo "Keyring is already unlocked."
+  exit 0
+fi
+
+if [ ! -t 0 ]; then
+  echo "a_c_keyring_unlock: the keyring is locked and this needs your password," >&2
+  echo "so run it in a terminal: a_c_keyring_unlock" >&2
+  exit 1
+fi
+
+control_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/keyring"
+
+for attempt in 1 2 3; do
+  printf 'Keyring is locked. Login password: ' >&2
+  IFS= read -rs pw
+  echo >&2
+  [ -z "$pw" ] && { echo "Skipped. Tools that read the keyring will fail until you run a_c_keyring_unlock." >&2; exit 1; }
+  printf '%s' "$pw" | gnome-keyring-daemon --replace --unlock --daemonize \
+    --components=pkcs11,secrets --control-directory="$control_dir" >/dev/null 2>&1
+  unset pw
+  # The new service needs a moment to take the bus name over.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    state=$(login_locked)
+    [ "$state" = false ] && break
+    sleep 0.3
+  done
+  if [ "$state" = false ]; then
+    echo "Keyring unlocked." >&2
+    exit 0
+  fi
+  echo "Still locked, probably a wrong password (try $attempt of 3)." >&2
+done
+exit 1

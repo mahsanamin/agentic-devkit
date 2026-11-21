@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(git grep:*)",
+      "Bash(git worktree add:*)",
+      "Bash(git worktree remove:*)",
+      "Bash(git cherry-pick:*)",
+      "Bash(git commit --no-verify:*)",
+      "Bash(gh api:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(gh pr comment:*)"
+    ]
+  },
+  "model": "opus",
+  "effortLevel": "xhigh",
+  "theme": "dark",
+  "tui": "fullscreen",
+  "statusLine": {
+    "type": "command",
+    "command": "${DEVKIT_DIR}/scripts/a_c_statusline",
+    "padding": 0
+  },
+  "enabledPlugins": {
+    "skill-creator@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "ui-ux-pro-max@ui-ux-pro-max-skill": true
+  },
+  "extraKnownMarketplaces": {
+    "ui-ux-pro-max-skill": {
+      "source": {"source": "github", "repo": "nextlevelbuilder/ui-ux-pro-max-skill"}
+    }
+  },
+  "agentPushNotifEnabled": true,
+  "skipDangerousModePermissionPrompt": true,
+  "skipAutoPermissionPrompt": true,
+  "skipWorkflowUsageWarning": true
+}

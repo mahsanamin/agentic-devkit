@@ -6,22 +6,22 @@ These are the rules for everyone who changes this repository, people and agents 
 
 | Branch | What it holds | How it changes |
 |---|---|---|
-| `develop` | The next release. The default branch. | Pull requests only, with one approval and green checks |
-| `main` | The latest release. | Only a release PR from `develop`, cut by the maintainer |
-| anything else | Your work in progress | Push freely to your own branch or fork |
+| `develop` | The next release. Every PR targets this branch. | Pull requests only, with one approval and green checks |
+| `main` | The latest release. The default branch, so the repo opens on released code. | Only a release PR from `develop`, cut by the maintainer |
+| your fork | Your work in progress | Anything you like |
 
-Both `develop` and `main` refuse direct pushes and force pushes on GitHub, so a push straight to either one fails. That is expected: push your branch and open a PR.
+Both `develop` and `main` refuse direct pushes and force pushes on GitHub. Contributors work in a fork and open a PR from it.
 
 ## Making a change
 
-1. Branch from the latest `develop`. Name the branch after the change, for example `fix/worktree-cleanup-dirty-check` or `feat/zellij-tab-reuse`.
+1. Fork the repository on GitHub, clone your fork, and branch from the latest `develop`. Name the branch after the change, for example `fix/worktree-cleanup-dirty-check` or `feat/zellij-tab-reuse`. Keep your fork's `develop` in step with this repo's `develop` before you start.
 2. Keep one change per PR. A skill fix and an unrelated script refactor are two PRs.
 3. Run the tests before you push:
    ```bash
    for t in tests/*.sh; do bash "$t" || echo "FAIL $t"; done
    python3 -m unittest tests/test_agent_modes.py
    ```
-4. Open the PR into `develop`. Say what changed and why, and how you checked it. CI runs the same tests and must pass before the PR can merge.
+4. Open the PR from your fork into this repo's `develop`. GitHub suggests `main` because it is the default branch, so change the base to `develop`. A PR into `main` fails the `Release source` check. Say what changed and why, and how you checked it. CI runs the same tests and must pass before the PR can merge.
 5. The maintainer reviews it. A PR that changes the direction of the toolkit (naming scheme, the source-of-truth model, provider parity) needs that discussed in an issue first.
 
 PRs into `develop` are squash-merged, so the commit history on `develop` reads as one line per change.

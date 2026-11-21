@@ -17,4 +17,5 @@ alias a_g_remote='a_g_origin_url'
 # Renamed scripts on PATH.
 alias a_slack_inbox='a_c_slack_inbox'
 alias a_time_range.sh='a_s_time_range.sh'
-alias a_uninstall_app.sh='a_c_uninstall_app.sh'
+alias a_uninstall_app.sh='a_c_uninstall'
+alias a_c_uninstall_app.sh='a_c_uninstall'
