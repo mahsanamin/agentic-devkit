@@ -5,7 +5,7 @@
 #        [-c] [--provider claude|codex] [-m model] [-p prompt]
 #        [--task-file path | --task-text text] [-z session] [-y]
 #        [--bypass] [--fresh] [--prefix name | --no-prefix] [--label text]
-#        [--dry-run] [-- native-provider-args]
+#        [--parent addr | --no-parent] [--dry-run] [-- native-provider-args]
 #
 # -r/--repo selects a repository; omitted, use the picker (current repo with -y).
 # -t/--ticket is optional. It accepts a Jira key or link, a GitHub issue (#12 or its link),
@@ -27,6 +27,10 @@
 # flags after -- override these defaults; Claude-only flags are rejected for Codex.
 # --fresh recreates an existing worktree only if it has no commits beyond its base.
 # --prefix/--no-prefix and --label override the tab/session name components.
+# --parent names a supervising Claude session (a SendMessage address such as uds:/path.sock).
+# The kickoff then routes every question, plan check and report to it instead of the human
+# in the tab. When a Claude session hands off --task-file/--task-text work, the parent
+# defaults to that caller ($CLAUDE_CODE_MESSAGING_SOCKET); --no-parent turns it off.
 # --dry-run prints the plan, creates nothing, and launches nothing. -h shows help.
 # Arguments after -- pass unchanged to the selected provider and imply -c.
 #
@@ -61,6 +65,7 @@ _a_c_task_start_main() {
     local zellij_arg="" auto_flag=0 fresh_flag=0 bypass_flag=0 start_pwd="$PWD"
     local task_file_arg="" task_text_arg="" prefix_arg="" prefix_set=0 dry_flag=0
     local label_arg="" label_set=0 provider_arg="" provider=""
+    local parent_arg="" parent_set=0
     local passthrough=() after_ddash=0
     while [ "$#" -gt 0 ]; do
         if [ "$after_ddash" -eq 1 ]; then
@@ -89,6 +94,10 @@ _a_c_task_start_main() {
             --no-prefix)  prefix_arg=""; prefix_set=1 ;;
             --label)      label_arg="$2"; label_set=1; shift ;;
             --dry-run)    dry_flag=1 ;;
+            --parent)
+                [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "--parent requires a SendMessage address" >&2; return 1; }
+                parent_arg="$2"; parent_set=1; shift ;;
+            --no-parent)  parent_arg=""; parent_set=1 ;;
             --)           after_ddash=1 ;;
             -h|--help)    _a_c_task_start_help; return 0 ;;
             *) echo -e "${A_T_RED}Unknown argument: $1${A_T_NC}"; _a_c_task_start_help; return 1 ;;
@@ -422,6 +431,27 @@ _a_c_task_start_main() {
         if [ -z "$prompt_arg" ] && [ -s "$desc" ]; then
             prompt_arg="Your task is described in the file ${desc}. Read it first (it is the source of truth for scope and Done-when), then understand the relevant code, plan the change, confirm the plan with me, and implement it. If this repo has the /task-flow skill, follow its phases."
             claude_flag=1
+        fi
+    fi
+
+    # A session handed work by another Claude session is supervised by it. A
+    # question shown in the tab parks the lane until a human notices, and the
+    # parent cannot answer it there, so route questions to the parent. Default
+    # the parent only for a task handoff, so a plain `-c` session opened for a
+    # human from inside Claude can still ask that human.
+    if [ "$parent_set" -eq 0 ] && [ -n "${CLAUDE_CODE_MESSAGING_SOCKET:-}" ] \
+        && { [ -n "$task_file_arg" ] || [ -n "$task_text_arg" ]; }; then
+        parent_arg="uds:$CLAUDE_CODE_MESSAGING_SOCKET"
+    fi
+    if [ -n "$parent_arg" ]; then
+        if [ "$provider" != "claude" ]; then
+            echo -e "${A_T_YELLOW}--parent ignored: SendMessage is Claude-only (provider: $provider)${A_T_NC}" >&2
+        elif [ -z "$prompt_arg" ]; then
+            echo -e "${A_T_YELLOW}--parent ignored: no kickoff prompt to carry it (give -p or --task-file/--task-text)${A_T_NC}" >&2
+        else
+            prompt_arg="$prompt_arg
+
+You were started by a supervising Claude session at ${parent_arg}; for this task it is your user. Never ask the human in this terminal anything: no AskUserQuestion, no plan confirmation, no 'which option' prompt. Send every question, plan check and your final report to the parent with SendMessage (to: ${parent_arg}), and while an answer is pending keep working on whatever does not depend on it. When a choice is reversible, take the option you would recommend and say so in your report."
         fi
     fi
 
